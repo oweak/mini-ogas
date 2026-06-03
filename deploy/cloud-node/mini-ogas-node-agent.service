@@ -1,0 +1,18 @@
+[Unit]
+Description=Mini-OGAS cloud workshop node agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/mini-ogas/node-agent.env
+ExecStart=/opt/mini-ogas/node-agent/node-agent
+Restart=always
+RestartSec=5
+User=miniogas
+Group=miniogas
+WorkingDirectory=/opt/mini-ogas/node-agent
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+# Mini-OGAS root compose — wraps central services and node agents.
+# Usage:
+#   docker compose up -d                     # central + all nodes
+#   docker compose -f docker-compose.yml \
+#     -f deploy/docker-compose.central.yml up -d  # central only
+
+include:
+  - deploy/docker-compose.central.yml
+  - deploy/docker-compose.node.yml

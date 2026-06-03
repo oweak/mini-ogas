@@ -1,0 +1,16 @@
+{
+  "files.encoding": "utf8",
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.pytest_cache": true,
+    "**/node_modules": true,
+    "**/dist": true
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "python.defaultInterpreterPath": "${workspaceFolder}/services/central-api/.venv/Scripts/python.exe",
+  "python.analysis.typeCheckingMode": "basic",
+  "editor.formatOnSave": false,
+  "go.goroot": "${workspaceFolder}/.runtime/tools/go",
+  "go.gopath": "${workspaceFolder}/.runtime/go",
+  "typescript.tsdk": "${workspaceFolder}/services/dashboard/node_modules/typescript/lib"
+}

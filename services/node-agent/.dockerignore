@@ -1,0 +1,10 @@
+.pytest_cache/
+.venv/
+tests/
+tmp/
+*.db
+*.sqlite
+*.log
+node-agent
+Dockerfile
+.dockerignore

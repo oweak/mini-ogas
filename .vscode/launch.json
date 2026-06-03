@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Central API (FastAPI)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "uvicorn",
+      "args": ["app.main:app", "--reload", "--host", "127.0.0.1", "--port", "8080"],
+      "cwd": "${workspaceFolder}/services/central-api",
+      "python": "${workspaceFolder}/services/central-api/.venv/Scripts/python.exe",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Node Agent (Go)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/node-agent/cmd/node-agent",
+      "env": {
+        "NODE_CODE": "turning-workshop-01",
+        "CENTRAL_API_URL": "http://127.0.0.1:8080"
+      }
+    }
+  ]
+}

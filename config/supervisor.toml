@@ -1,0 +1,99 @@
+session_token_auto = true
+api_port = 9099
+
+[[process]]
+name = "central-api"
+command = "python"
+args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8080", "--log-level", "warning"]
+dir = "services/central-api"
+
+[process.health]
+type = "http"
+endpoint = "http://127.0.0.1:8080/health"
+interval = 5
+timeout = 3
+retries = 5
+
+[[process]]
+name = "ai-dispatcher"
+command = "python"
+args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8081", "--log-level", "warning"]
+dir = "services/ai-dispatcher"
+depends_on = ["central-api"]
+
+[process.health]
+endpoint = "http://127.0.0.1:8081/health"
+
+[[process]]
+name = "market-simulator"
+command = "python"
+args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8082", "--log-level", "warning"]
+dir = "services/market-simulator"
+depends_on = ["central-api"]
+
+[process.health]
+endpoint = "http://127.0.0.1:8082/health"
+
+[[process]]
+name = "production-planner"
+command = "python"
+args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8083", "--log-level", "warning"]
+dir = "services/production-planner"
+depends_on = ["central-api"]
+
+[process.health]
+endpoint = "http://127.0.0.1:8083/health"
+
+# Node agents — each simulates one workshop
+[[process]]
+name = "turning-agent"
+command = "python"
+args = ["-u", "services/node-agent/agent.py", "--node-code", "turning-workshop-01", "--workshop-type", "turning", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+dir = "."
+depends_on = ["central-api"]
+
+[process.health]
+type = "process"
+interval = 10
+timeout = 5
+retries = 3
+
+[[process]]
+name = "milling-agent"
+command = "python"
+args = ["-u", "services/node-agent/agent.py", "--node-code", "milling-workshop-01", "--workshop-type", "milling", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+dir = "."
+depends_on = ["central-api"]
+
+[process.health]
+type = "process"
+
+[[process]]
+name = "grinding-agent"
+command = "python"
+args = ["-u", "services/node-agent/agent.py", "--node-code", "grinding-workshop-01", "--workshop-type", "grinding", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+dir = "."
+depends_on = ["central-api"]
+
+[process.health]
+type = "process"
+
+[[process]]
+name = "cloud-agent"
+command = "python"
+args = ["-u", "services/node-agent/agent.py", "--node-code", "cloud-workshop-01", "--workshop-type", "cloud", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+dir = "."
+depends_on = ["central-api"]
+
+[process.health]
+type = "process"
+
+[[process]]
+name = "cloud-db-agent"
+command = "python"
+args = ["-u", "services/node-agent/agent.py", "--node-code", "cloud-db-01", "--workshop-type", "database", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+dir = "."
+depends_on = ["central-api"]
+
+[process.health]
+type = "process"

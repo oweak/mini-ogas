@@ -1,0 +1,17 @@
+# Mini-OGAS SSH config — use with: ssh -F deploy/ssh-config <host>
+
+# Central VM — bridged (from router DHCP)
+Host ogas-central ogas-central-bridged
+    HostName 192.168.1.5
+    User root1
+    IdentityFile ~/.ssh/id_rsa
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /tmp/mini-ogas-known-hosts
+
+# Central VM — Host-Only (static, always works)
+Host ogas-central-ho
+    HostName 192.168.56.10
+    User root1
+    IdentityFile ~/.ssh/id_rsa
+    StrictHostKeyChecking accept-new
+    UserKnownHostsFile /tmp/mini-ogas-known-hosts

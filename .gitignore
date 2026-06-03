@@ -1,0 +1,14 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+build/
+*.db
+*.sqlite
+*.log
+.DS_Store
+.runtime/
+.pytest_cache/
+.playwright-mcp/

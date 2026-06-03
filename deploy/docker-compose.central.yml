@@ -1,0 +1,149 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: mini_ogas
+      POSTGRES_USER: mini_ogas
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mini_ogas_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - mini-ogas-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mini_ogas"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - mini-ogas-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  nats:
+    image: nats:2-alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    networks:
+      - mini-ogas-net
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  central-api:
+    build: ../services/central-api
+    env_file:
+      - ./env.central.example
+    environment:
+      - PROJECT_ROOT=/app
+    volumes:
+      - ../services/central-api/app:/app/app:ro
+    ports:
+      - "8080:8080"
+    networks:
+      - mini-ogas-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  ai-dispatcher:
+    build: ../services/ai-dispatcher
+    env_file:
+      - ./env.central.example
+    ports:
+      - "8081:8081"
+    networks:
+      - mini-ogas-net
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  market-simulator:
+    build: ../services/market-simulator
+    env_file:
+      - ./env.central.example
+    ports:
+      - "8082:8082"
+    networks:
+      - mini-ogas-net
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8082/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  production-planner:
+    build: ../services/production-planner
+    env_file:
+      - ./env.central.example
+    ports:
+      - "8083:8083"
+    networks:
+      - mini-ogas-net
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8083/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  dashboard:
+    build: ../services/dashboard
+    ports:
+      - "5173:5173"
+    networks:
+      - mini-ogas-net
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5173/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  postgres_data:
+
+networks:
+  mini-ogas-net:
+    driver: bridge
