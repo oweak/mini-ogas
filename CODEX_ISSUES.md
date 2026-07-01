@@ -15,6 +15,7 @@ This file records the current verified state after the v2.2 first-phase remediat
 | AI runtime | central-api and ai-dispatcher both support provider-chain fallback; current live runtime can use DeepSeek when unlocked. |
 | Persistence | PostgreSQL is the central persistence backend when configured; SQLite remains an explicit local fallback for tests or edge use. |
 | Supervisor | Go supervisor is the preferred v2.5 runtime owner. `scripts/start-miniogas.ps1` defaults to supervisor mode, owns dashboard plus backend/node processes, and the `-ReplaceRunning` handover has been verified. |
+| Command lifecycle | v2.5 Command Manager owns command creation, approval, rejection, claim, result, timeout, supersede, and heartbeat verification transitions. |
 
 ## Resolved Items
 
@@ -39,6 +40,7 @@ This file records the current verified state after the v2.2 first-phase remediat
 | 17 | Kali red-team workflow boundary | Resolved for v2.5. `scripts/kali_redteam_workflow.py` now requires explicit lab acknowledgement, rejects public targets by default, separates node-ingest token from administrator bearer auth, records structured evidence, and holds high-risk AI decisions at `waiting_human_approval` unless `--auto-approve-high-risk` is explicitly passed. |
 | 18 | Production report export | Resolved for v2.5. `/api/reports/production/export` now exports the live production report as JSON, Markdown, or node CSV; the dashboard report page can download Markdown and CSV using the authenticated API client. |
 | 19 | Commit hygiene | Resolved. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, secret scan and staged whitespace checks passed, and the implementation was committed as `4addc36`. |
+| 20 | Command Manager lifecycle | Resolved for initial v2.5. Command transitions are centralized in `app/command_manager.py`; duplicate results are idempotent, stale claimed commands expire, older pending same-node commands are superseded, and heartbeat verification drives `verified`. |
 
 ## Remaining Work After v2.2
 

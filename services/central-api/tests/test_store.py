@@ -303,6 +303,80 @@ def test_shadow_persistence_restores_part_queue_and_commands(tmp_path) -> None:
     assert restored_command.result_message == "applied"
 
 
+def test_command_manager_supersedes_pending_same_node_command(store: MemoryStore) -> None:
+    first = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.7},
+    )
+    second = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.8},
+    )
+
+    assert first.status == "superseded"
+    assert first.result_message == f"superseded by command_id={second.id}"
+    assert second.status == "pending"
+    assert any(
+        event.stage == "command-superseded" and str(first.id) in event.message
+        for event in store.incident_events
+    )
+
+
+def test_command_manager_expires_stale_claimed_commands(store: MemoryStore) -> None:
+    command = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.7},
+    )
+    claimed = store.claim_pending_commands_for_node("milling-workshop-01", "pytest-agent")
+    assert [item.id for item in claimed] == [command.id]
+    with store._lock:
+        command.updated_at = utc_now() - timedelta(seconds=settings.command_claim_timeout_seconds + 5)
+
+    pending = store.pending_commands_for_node("milling-workshop-01")
+
+    assert pending == []
+    assert command.status == "expired"
+    assert "timed out" in command.result_message
+    assert any(
+        event.stage == "command-expired" and str(command.id) in event.message
+        for event in store.incident_events
+    )
+
+
+def test_command_manager_accepts_duplicate_result_idempotently(store: MemoryStore) -> None:
+    command = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.72},
+    )
+    store.claim_pending_commands_for_node("milling-workshop-01", "pytest-agent")
+
+    first = store.record_command_result("milling-workshop-01", command.id, "executed", "applied")
+    before_events = len(store.incident_events)
+    second = store.record_command_result("milling-workshop-01", command.id, "executed", "applied")
+
+    assert first["status"] == "executed"
+    assert second["status"] == "executed"
+    assert command.status == "executed"
+    assert command.result_message == "applied"
+    assert len(store.incident_events) == before_events
+
+
 def test_record_metric_disk_90_generates_alert(store: MemoryStore) -> None:
     alerts = store.record_metric(
         MetricIn(

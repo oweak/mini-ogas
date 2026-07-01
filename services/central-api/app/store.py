@@ -16,6 +16,7 @@ from .core.config import settings
 from .core.session import get_session_token
 from .core.database import get_db, init_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
+from .command_manager import CommandManager, CommandTransition
 
 logger = logging.getLogger(__name__)
 from .models import (
@@ -183,6 +184,7 @@ class MemoryStore:
         self.alerts: list[Alert] = []
         self.audit_logs: list[AuditLog] = []
         self.commands: list[NodeCommand] = []
+        self.command_manager = CommandManager()
         self.incident_events: list[IncidentEvent] = []
         self._shadow_event_count = 0
         self.ai_diagnoses: list[AiDiagnosis] = []
@@ -459,7 +461,7 @@ class MemoryStore:
                         command.claimed_by,
                         command.result_message,
                         command.created_at.isoformat(),
-                        utc_now().isoformat(),
+                        command.updated_at.isoformat(),
                     ),
                 )
         except Exception as exc:  # pragma: no cover
@@ -474,7 +476,7 @@ class MemoryStore:
                 rows = db.execute(
                     """
                     SELECT command_id, node_code, command_type, risk_level, status, operator,
-                           parameters_json, claimed_by, result_message, created_at
+                           parameters_json, claimed_by, result_message, created_at, updated_at
                     FROM command_shadow
                     ORDER BY command_id ASC
                     """
@@ -500,6 +502,7 @@ class MemoryStore:
                 claimed_by=data.get("claimed_by") or "",
                 result_message=data.get("result_message") or "",
                 created_at=_database_datetime(data["created_at"]),
+                updated_at=_database_datetime(data.get("updated_at") or data["created_at"]),
             ))
         with self._lock:
             self.commands = loaded[-100:]
@@ -802,6 +805,20 @@ class MemoryStore:
         self.persist_event(event)
         return event
 
+    def _apply_command_transitions(
+        self,
+        transitions: list[CommandTransition],
+        severity: Severity = Severity.info,
+    ) -> None:
+        for transition in transitions:
+            self.persist_command_shadow(transition.command)
+            self.add_event(
+                transition.command.node_code,
+                transition.stage,
+                severity,
+                transition.message,
+            )
+
     def add_command(
         self,
         node_code: str,
@@ -812,14 +829,18 @@ class MemoryStore:
         parameters: dict[str, object] | None = None,
     ) -> NodeCommand:
         with self._lock:
-            next_id = max((item.id for item in self.commands), default=0) + 1
-            command = NodeCommand(id=next_id, node_code=node_code,
-                                  command_type=command_type, risk_level=risk_level,
-                                  status=status, operator=operator,
-                                  parameters=parameters or {})
-            self.commands.append(command)
-            self.commands = self.commands[-100:]
-        self.persist_command(command)
+            command, transitions, created = self.command_manager.create_command(
+                self.commands,
+                node_code=node_code,
+                command_type=command_type,
+                risk_level=risk_level,
+                status=status,
+                operator=operator,
+                parameters=parameters,
+            )
+        self._apply_command_transitions(transitions, Severity.medium)
+        if created:
+            self.persist_command(command)
         return command
 
     def create_alert(self, node_code: str, alert_type: str, severity: Severity, description: str,
@@ -1241,17 +1262,23 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def pending_commands_for_node(self, node_code: str) -> list[NodeCommand]:
-        return [c for c in self.commands if c.node_code == node_code and c.status in {"pending", "queued"}]
+        expired = self._expire_stale_commands()
+        if expired:
+            self._apply_command_transitions(expired, Severity.medium)
+        return self.command_manager.pending_for_node(self.commands, node_code)
 
     def claim_pending_commands_for_node(self, node_code: str, agent_id: str = "") -> list[NodeCommand]:
-        claimed: list[NodeCommand] = []
         with self._lock:
-            for command in self.commands:
-                if command.node_code != node_code or command.status not in {"pending", "queued"}:
-                    continue
-                command.status = "claimed"
-                command.claimed_by = agent_id or node_code
-                claimed.append(command)
+            expired = self.command_manager.expire_stale_claims(
+                self.commands,
+                ttl_seconds=settings.command_claim_timeout_seconds,
+            )
+            claimed = self.command_manager.claim_for_node(
+                self.commands,
+                node_code=node_code,
+                agent_id=agent_id,
+            )
+        self._apply_command_transitions(expired, Severity.medium)
         for command in claimed:
             self.persist_command_shadow(command)
         if claimed:
@@ -1265,20 +1292,19 @@ class MemoryStore:
 
     def record_command_result(self, node_code: str, command_id: int, status: str,
                               message: str) -> dict[str, object]:
-        found = None
         with self._lock:
-            for c in self.commands:
-                if c.id == command_id and c.node_code == node_code:
-                    c.status = status
-                    c.result_message = message
-                    found = c
-                    break
-        if found is None:
-            raise ValueError(f"command {command_id} not found for node {node_code}")
-        self.persist_command_shadow(found)
-        self.add_event(node_code, "command-result", Severity.info,
-                       f"command_id={command_id} status={status}: {message}")
-        return {"accepted": True, "command_id": command_id, "status": status, "message": message}
+            command, changed = self.command_manager.record_result(
+                self.commands,
+                node_code=node_code,
+                command_id=command_id,
+                status=status,
+                message=message,
+            )
+        if changed:
+            self.persist_command_shadow(command)
+            self.add_event(node_code, "command-result", Severity.info,
+                           f"command_id={command_id} status={command.status}: {message}")
+        return {"accepted": True, "command_id": command_id, "status": command.status, "message": message}
 
     def record_agent_command_result(self, command_id: int, status: str, message: str) -> dict[str, object]:
         command = next((c for c in self.commands if c.id == command_id), None)
@@ -1291,28 +1317,19 @@ class MemoryStore:
             heartbeat_target = float(production.get("target_rate"))
         except (TypeError, ValueError):
             return
-        for command in self.commands:
-            if (
-                command.node_code != node_code
-                or command.command_type != "set_target_rate"
-                or command.status != "executed"
-            ):
-                continue
-            try:
-                expected = float(command.parameters.get("target_rate"))
-            except (TypeError, ValueError):
-                continue
-            if abs(heartbeat_target - expected) <= 0.001:
-                command.status = "verified"
-                command.result_message = f"heartbeat target_rate={heartbeat_target} verified"
-                self.persist_command_shadow(command)
-                self.incident_events.append(IncidentEvent(
-                    id=len(self.incident_events) + 1,
-                    node_code=node_code,
-                    stage="command-verified",
-                    severity=Severity.info,
-                    message=f"command_id={command.id} set_target_rate verified by heartbeat.",
-                ))
+        transitions = self.command_manager.verify_target_rate(
+            self.commands,
+            node_code=node_code,
+            target_rate=heartbeat_target,
+        )
+        self._apply_command_transitions(transitions)
+
+    def _expire_stale_commands(self) -> list[CommandTransition]:
+        with self._lock:
+            return self.command_manager.expire_stale_claims(
+                self.commands,
+                ttl_seconds=settings.command_claim_timeout_seconds,
+            )
 
     # ------------------------------------------------------------------
     # Part queue: turning -> milling transfer
@@ -1508,34 +1525,24 @@ class MemoryStore:
         return delta
 
     def pending_approvals(self) -> list[NodeCommand]:
-        return [c for c in self.commands if c.status == "waiting_approval"]
+        return self.command_manager.pending_approvals(self.commands)
 
     def approve_command(self, command_id: int, actor: str) -> dict[str, object]:
-        for c in self.commands:
-            if c.id == command_id:
-                if c.status != "waiting_approval":
-                    raise ValueError(f"command {command_id} is not waiting approval (current: {c.status})")
-                c.status = "pending"
-                c.operator = actor
-                self.persist_command_shadow(c)
-                self.add_event(c.node_code, "command-approved", Severity.info,
-                               f"运维人员 {actor} 审批通过命令 #{command_id} ({c.command_type})。")
-                return {"accepted": True, "command_id": command_id, "status": "pending", "actor": actor}
-        raise ValueError(f"command {command_id} not found")
+        with self._lock:
+            command = self.command_manager.approve(self.commands, command_id=command_id, actor=actor)
+        self.persist_command_shadow(command)
+        self.add_event(command.node_code, "command-approved", Severity.info,
+                       f"运维人员 {actor} 审批通过命令 #{command_id} ({command.command_type})。")
+        return {"accepted": True, "command_id": command_id, "status": command.status, "actor": actor}
 
     def reject_command(self, command_id: int, actor: str, reason: str = "") -> dict[str, object]:
-        for c in self.commands:
-            if c.id == command_id:
-                if c.status != "waiting_approval":
-                    raise ValueError(f"command {command_id} is not waiting approval (current: {c.status})")
-                c.status = "rejected"
-                c.operator = actor
-                self.persist_command_shadow(c)
-                self.add_event(c.node_code, "command-rejected", Severity.medium,
-                               f"运维人员 {actor} 拒绝命令 #{command_id} ({c.command_type})。原因: {reason or '未提供'}。")
-                return {"accepted": True, "command_id": command_id, "status": "rejected",
-                        "actor": actor, "reason": reason}
-        raise ValueError(f"command {command_id} not found")
+        with self._lock:
+            command = self.command_manager.reject(self.commands, command_id=command_id, actor=actor)
+        self.persist_command_shadow(command)
+        self.add_event(command.node_code, "command-rejected", Severity.medium,
+                       f"运维人员 {actor} 拒绝命令 #{command_id} ({command.command_type})。原因: {reason or '未提供'}。")
+        return {"accepted": True, "command_id": command_id, "status": command.status,
+                "actor": actor, "reason": reason}
 
     def escalate_to_human(self, node_code: str, issue_type: str, description: str) -> dict[str, object]:
         self.add_event(node_code, "escalation", Severity.high, f"[需人工介入] {issue_type}: {description}")

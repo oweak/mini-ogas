@@ -49,6 +49,7 @@ class Settings(BaseModel):
     simulation_min_interval_seconds: float = 0.8
     simulation_base_interval_seconds: float = 3.0
     heartbeat_timeout_seconds: int = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "30"))
+    command_claim_timeout_seconds: int = int(os.getenv("COMMAND_CLAIM_TIMEOUT_SECONDS", "120"))
     # ---- AI multi-provider settings ----
     ai_enabled: bool = os.getenv("AI_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     ai_timeout_seconds: int = int(os.getenv("AI_TIMEOUT_SECONDS", "25"))

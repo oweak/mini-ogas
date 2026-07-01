@@ -217,6 +217,7 @@ class NodeCommand(BaseModel):
     claimed_by: str = ""
     result_message: str = ""
     created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
 
 
 class IncidentEvent(BaseModel):

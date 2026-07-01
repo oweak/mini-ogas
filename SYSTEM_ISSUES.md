@@ -19,6 +19,7 @@ The original first-phase blockers have been addressed. The system now has a work
 11. Heartbeat shadow data now has a bounded per-node retention policy.
 12. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
 13. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
+14. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
 
 The remaining work is roadmap selection for the next v2.5/v3.0 target, not an unresolved first-phase blocker.
 
@@ -38,6 +39,7 @@ The remaining work is roadmap selection for the next v2.5/v3.0 target, not an un
 | node-agent DB metric looked real while estimated | Resolved. Legacy node agent reports `db_size_source` as `local_file` or `estimated`. |
 | Kali red-team path blurred production status | Resolved. The workflow no longer contributes production availability truth, requires explicit lab acknowledgement, rejects public targets by default, uses bearer auth for protected operations, and stops high-risk AI decisions at human approval unless explicitly overridden for a lab run. |
 | Missing report export | Resolved. `/api/reports/production/export` supports JSON, Markdown, and CSV, and the dashboard report view exposes authenticated Markdown/CSV downloads. |
+| Command lifecycle spread across Store | Resolved for initial v2.5. `CommandManager` now owns deterministic transitions; Store performs persistence and incident-event side effects. |
 
 ## Current Issues
 
