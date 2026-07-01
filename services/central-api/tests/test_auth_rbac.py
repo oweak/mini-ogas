@@ -117,6 +117,7 @@ def test_high_risk_alert_human_approval_closes_active_queues(monkeypatch) -> Non
     assert confirmed.json()["lifecycle"]["status"] == "confirmed"
     assert diagnosed.json()["decision"]["requires_human"] is True
     assert denied.json()["error"] == "confirmation_code_required"
+    assert denied.json()["safety"]["reason_code"] == "confirmation_code_required"
     assert approved.json()["effect"]["verification"]["issue_closed"] is True
     assert not any(item.get("issue_id") == issue_id for item in active_alerts)
     assert not any(item.get("issue_id") == issue_id for item in active_queue)

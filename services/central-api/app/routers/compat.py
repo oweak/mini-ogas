@@ -25,6 +25,7 @@ from ..core.security import (
     require_permission,
 )
 from ..models import AiDiagnoseRequest, AuditLog, ControlCommandRequest, Severity
+from ..safety_governor import safety_governor
 from ..store import store
 
 router = APIRouter(tags=["compat"])
@@ -328,14 +329,20 @@ def recalculate_dispatch_plan():
 def approve_dispatch_plan(payload: _ActorPayload,
                           actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE))):
     """Approve a dispatch plan and return the updated dashboard contract."""
-    if payload.confirmation_code != "CONFIRM":
+    safety = safety_governor.review_manual_approval(
+        action="dispatch_plan_approve",
+        actor_role=actor.role,
+        confirmation_code=payload.confirmation_code,
+    )
+    if not safety.allow:
         current = _dispatch_payload()
         return {
             "ok": False,
             "accepted": False,
             "executed": False,
             "status": "confirmation_required",
-            "message": "Dispatch approval requires confirmation code CONFIRM.",
+            "message": safety.message,
+            "safety": safety.model_dump(mode="json"),
             **current,
         }
     if not store.dispatch_tasks:
@@ -374,6 +381,7 @@ def approve_dispatch_plan(payload: _ActorPayload,
         "executed": True,
         "status": "approved_executed",
         "message": result,
+        "safety": safety.model_dump(mode="json"),
         **updated,
         "audit_event": _make_audit_event(
             action="dispatch:approve",
@@ -645,8 +653,18 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
 
     closed_alerts: list[str] = []
     if decision == "approve":
-        if confirmation_code != "CONFIRM":
-            return {"ok": False, "error": "confirmation_code_required", "status": "blocked"}
+        safety = safety_governor.review_manual_approval(
+            action="escalation_approve",
+            actor_role=actor.role,
+            confirmation_code=confirmation_code,
+        )
+        if not safety.allow:
+            return {
+                "ok": False,
+                "error": safety.reason_code,
+                "status": "blocked",
+                "safety": safety.model_dump(mode="json"),
+            }
         msg = f"人工升级 #{escalation_id} 已批准。操作员: {operator}。确认码: {confirmation_code}"
         store.add_event(
             node_code=escalation.node_code if escalation else "central-api",

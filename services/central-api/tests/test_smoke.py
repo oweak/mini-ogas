@@ -624,6 +624,27 @@ def test_ops_issue_command_uses_control_contract() -> None:
     assert payload["plan"]["action"] == "refresh_status"
 
 
+def test_ops_issue_command_uses_safety_governor() -> None:
+    with TestClient(app) as client:
+        missing_confirm = client.post(
+            "/ops/issue-command",
+            headers=AUTH_HEADERS,
+            json={"text": "isolate milling", "execute": True},
+        )
+        control_plane = client.post(
+            "/ops/issue-command",
+            headers=AUTH_HEADERS,
+            json={"text": "isolate cloud", "execute": True, "confirm": "CONFIRM"},
+        )
+
+    assert missing_confirm.status_code == 200
+    assert missing_confirm.json()["status"] == "blocked-confirmation-required"
+    assert missing_confirm.json()["safety"]["reason_code"] == "confirmation_code_required"
+    assert control_plane.status_code == 200
+    assert control_plane.json()["status"] == "blocked-safety-governor"
+    assert control_plane.json()["safety"]["reason_code"] == "control_plane_isolation_blocked"
+
+
 def test_dispatch_recalculate_returns_dashboard_contract() -> None:
     with TestClient(app) as client:
         response = client.post("/api/ops/dispatch-plan/recalculate", headers=AUTH_HEADERS)
@@ -665,6 +686,7 @@ def test_dispatch_approval_executes_and_archives_blocked_tasks() -> None:
             )
             assert rejected.status_code == 200
             assert rejected.json()["status"] == "confirmation_required"
+            assert rejected.json()["safety"]["reason_code"] == "confirmation_code_required"
             assert store.dispatch_tasks[0].status == "blocked"
 
             approved = client.post(
@@ -677,6 +699,7 @@ def test_dispatch_approval_executes_and_archives_blocked_tasks() -> None:
         payload = approved.json()
         assert payload["ok"] is True
         assert payload["executed"] is True
+        assert payload["safety"]["reason_code"] == "allowed"
         assert payload["dispatch_plan"]["status"] == "approved_executed"
         assert payload["dispatch_plan"]["result"].startswith("Approved and rerouted")
         assert all(task.status != "blocked" for task in store.dispatch_tasks)

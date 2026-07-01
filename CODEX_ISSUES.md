@@ -1,6 +1,6 @@
 ﻿# Mini-OGAS Issues Status
 
-> Last updated: 2026-06-28
+> Last updated: 2026-07-01
 
 This file records the current verified state after the v2.2 first-phase remediation pass. It replaces older notes that still described the system as a three-node or VirtualBox-primary deployment.
 
@@ -16,6 +16,7 @@ This file records the current verified state after the v2.2 first-phase remediat
 | Persistence | PostgreSQL is the central persistence backend when configured; SQLite remains an explicit local fallback for tests or edge use. |
 | Supervisor | Go supervisor is the preferred v2.5 runtime owner. `scripts/start-miniogas.ps1` defaults to supervisor mode, owns dashboard plus backend/node processes, and the `-ReplaceRunning` handover has been verified. |
 | Command lifecycle | v2.5 Command Manager owns command creation, approval, rejection, claim, result, timeout, supersede, and heartbeat verification transitions. |
+| Safety governance | v2.5 Safety Governor centrally gates high-risk control commands and human approval actions, returning machine-readable `safety.reason_code` evidence to API clients. |
 
 ## Resolved Items
 
@@ -41,10 +42,11 @@ This file records the current verified state after the v2.2 first-phase remediat
 | 18 | Production report export | Resolved for v2.5. `/api/reports/production/export` now exports the live production report as JSON, Markdown, or node CSV; the dashboard report page can download Markdown and CSV using the authenticated API client. |
 | 19 | Commit hygiene | Resolved. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, secret scan and staged whitespace checks passed, and the implementation was committed as `4addc36`. |
 | 20 | Command Manager lifecycle | Resolved for initial v2.5. Command transitions are centralized in `app/command_manager.py`; duplicate results are idempotent, stale claimed commands expire, older pending same-node commands are superseded, and heartbeat verification drives `verified`. |
+| 21 | Safety Governor for high-risk actions | Resolved for initial v2.5. `app/safety_governor.py` now applies shared confirmation-code and control-plane isolation rules to `/control/command`, `/ops/issue-command`, dispatch-plan approval, and escalation approval. Runtime verification blocks missing confirmation as `confirmation_code_required` and blocks cloud isolation as `control_plane_isolation_blocked`. |
 
 ## Remaining Work After v2.2
 
-No open issue is currently tracked in this file. Next work should be planned from the v2.5/v3.0 roadmap rather than treated as an unresolved v2.2 blocker.
+The v2.5 Safety Governor slice is complete. The next known runtime gap is AI live-provider verification: the 2026-07-01 supervised login smoke reported `api_error` while the runtime was configured for provider `ollama`.
 
 ## Verification Targets
 

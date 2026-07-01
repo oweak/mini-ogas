@@ -1,6 +1,6 @@
 # Mini-OGAS Project Status
 
-> Report time: 2026-06-28
+> Report time: 2026-07-01
 
 ## Project Position
 
@@ -45,12 +45,13 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 | v2.5 Kali red-team boundary | Implemented. `scripts/kali_redteam_workflow.py` is lab-acknowledged, private-target guarded, bearer-authenticated for protected operations, evidence-producing, and high-risk AI actions are held for human approval unless explicitly auto-approved for a lab run. |
 | v2.5 production report export | Implemented. Protected report export endpoints provide JSON, Markdown, and node CSV downloads; the dashboard report page exposes Markdown and CSV export actions. |
 | v2.5 Command Manager lifecycle | Implemented initial module. `CommandManager` now owns create, approve, reject, claim, result, timeout, supersede, and heartbeat verification transitions; Store keeps persistence and event side effects. |
+| v2.5 Safety Governor | Implemented initial module. `SafetyGovernor` now gates high-risk natural-language control commands, operations gateway commands, dispatch approval, and escalation approval with shared confirmation-code and control-plane protection decisions. |
 
 ## Current Open Work
 
 | Priority | Item | Reason |
 | --- | --- | --- |
-| Planning | Select next v2.5/v3.0 target | The v2.2 trusted loop, initial v2.5 runtime hardening, report export, Kali lab boundary, Command Manager lifecycle, generated-artifact cleanup, and implementation commits are complete. The next item should be selected from the roadmap. |
+| P1 | AI provider live smoke | Runtime is configured, but the 2026-07-01 login smoke reported `api_error` with provider `ollama`. Next work should restore a verified live provider call or clearly mark fallback mode in the dashboard. |
 
 ## Current Verification Status
 
@@ -59,14 +60,16 @@ Recent runtime check showed:
 - central-api health: ok
 - preflight: ok
 - active nodes: 5
-- AI runtime: live DeepSeek when vault is unlocked
-- persistence: PostgreSQL active when runtime config is present
+- admin login: `admin` / `admin` verified against PostgreSQL-backed JWT auth
+- AI runtime: configured; latest login smoke returned `api_error` for provider `ollama`
+- persistence: PostgreSQL active in the supervised runtime
 - Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes
 - replay readiness: live PostgreSQL status reports heartbeat, command, and part queue shadow facts as replayable
 - retention: live PostgreSQL status reports `keep_latest_per_node` for heartbeat shadow rows
 - Kali red-team boundary: low-risk `coolant_flow` completed attack-detect-AI-repair archival; high-risk `spindle_overheat` stopped at `waiting_human_approval` without isolation or repair until cleanup was run
 - report export: backend smoke tests verify Markdown/CSV attachments, and dashboard production build passes with export buttons
 - command lifecycle: live runtime issued `set_target_rate`, node agent claimed it, reported execution, and heartbeat verified it as `verified`
+- safety governor: live runtime blocks `isolate milling` without confirmation as `confirmation_code_required`, and blocks `isolate cloud` even with confirmation as `control_plane_isolation_blocked`
 - working tree hygiene: generated caches/build outputs/local databases are ignored; `services/dashboard/tsconfig.tsbuildinfo` was removed from version content and verified by a fresh dashboard build
 - commit: implementation committed as `4addc36 feat: complete mini-ogas trusted-loop hardening`
 - `git diff --check`: passes

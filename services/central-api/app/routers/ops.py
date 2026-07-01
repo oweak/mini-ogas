@@ -2,12 +2,13 @@ from fastapi import APIRouter, Depends, Query
 
 from ..core.security import (
     PERM_COMMAND_APPROVE,
-    PERM_COMMAND_REJECT,
     PERM_COMMAND_ISSUE,
+    PERM_COMMAND_REJECT,
     ActorInfo,
     require_permission,
 )
 from ..models import ControlCommandRequest, ControlCommandResponse
+from ..safety_governor import safety_governor
 from ..store import store
 from .control import execute_plan, plan_command
 
@@ -66,7 +67,10 @@ def escalate(node_code: str, issue_type: str, description: str):
 
 
 @router.post("/issue-command", response_model=ControlCommandResponse)
-def issue_command(payload: ControlCommandRequest, actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE))) -> ControlCommandResponse:
+def issue_command(
+    payload: ControlCommandRequest,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+) -> ControlCommandResponse:
     plan, used_deepseek = plan_command(payload.text)
     if not payload.execute:
         return ControlCommandResponse(
@@ -78,16 +82,27 @@ def issue_command(payload: ControlCommandRequest, actor: ActorInfo = Depends(req
             result=None,
             message="命令已解析但未执行。确认后可再次提交 execute=true。",
         )
-    if plan.requires_confirmation and payload.confirm != "CONFIRM":
+
+    decision = safety_governor.review_control_action(
+        action=plan.action,
+        target_node=plan.target_node,
+        risk_level=plan.risk_level,
+        actor_role=actor.role,
+        known_nodes=set(store.nodes),
+        confirmation_code=payload.confirm,
+    )
+    if not decision.allow:
         return ControlCommandResponse(
             accepted=True,
             executed=False,
             used_deepseek=used_deepseek,
-            status="blocked-confirmation-required",
+            status="blocked-confirmation-required" if decision.confirmation_required else "blocked-safety-governor",
             plan=plan,
             result=None,
-            message="高风险命令需要确认码 CONFIRM。",
+            message=decision.message,
+            safety=decision.model_dump(mode="json"),
         )
+
     result = execute_plan(plan, actor.role)
     return ControlCommandResponse(
         accepted=True,
@@ -97,4 +112,5 @@ def issue_command(payload: ControlCommandRequest, actor: ActorInfo = Depends(req
         plan=plan,
         result=result,
         message="命令已通过运维操作网关转发执行。",
+        safety=decision.model_dump(mode="json"),
     )

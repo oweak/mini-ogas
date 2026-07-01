@@ -363,6 +363,7 @@ class ControlCommandResponse(BaseModel):
     plan: ControlCommandPlan
     result: dict[str, object] | None = None
     message: str
+    safety: dict[str, object] | None = None
 
 
 # ---------------------------------------------------------------------------

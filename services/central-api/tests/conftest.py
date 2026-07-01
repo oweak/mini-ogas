@@ -5,12 +5,21 @@ imported, so the suite never depends on a developer's local ``.env`` and never
 makes real network calls to DeepSeek or the optional microservices.
 """
 import os
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+TEST_DB_PATH = PROJECT_ROOT / ".runtime" / "test-central.db"
+TEST_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+TEST_DB_PATH.unlink(missing_ok=True)
 
 os.environ["MINI_OGAS_ENV"] = "test"
 os.environ["API_ACCESS_TOKEN"] = "mini-ogas-dev-token"
 os.environ["NODE_INGEST_TOKEN"] = "mini-ogas-dev-token"
+os.environ["AUTH_BOOTSTRAP_PASSWORD"] = "mini-ogas-dev-token"
+os.environ["CENTRAL_DB_PATH"] = str(TEST_DB_PATH)
 os.environ["AI_ENABLED"] = "false"
 os.environ["PERSIST_ENABLED"] = "false"
+os.environ["PERSIST_BACKEND"] = "sqlite"
 os.environ["MICROSERVICES_ENABLED"] = "false"
 # Existing endpoint tests use the legacy machine header. Production defaults to
 # bearer JWT only; focused migration tests exercise that path directly.

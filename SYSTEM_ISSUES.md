@@ -1,6 +1,6 @@
 # Mini-OGAS System Issues
 
-> Report time: 2026-06-28
+> Report time: 2026-07-01
 
 ## Executive Summary
 
@@ -20,8 +20,9 @@ The original first-phase blockers have been addressed. The system now has a work
 12. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
 13. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
 14. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
+15. High-risk commands and human approvals now pass through a v2.5 Safety Governor with shared confirmation-code and control-plane protection rules.
 
-The remaining work is roadmap selection for the next v2.5/v3.0 target, not an unresolved first-phase blocker.
+The remaining verified runtime gap is AI live-provider smoke: the supervised runtime is configured, but the 2026-07-01 login smoke returned `api_error` for provider `ollama`.
 
 ## Resolved Historical Issues
 
@@ -40,10 +41,13 @@ The remaining work is roadmap selection for the next v2.5/v3.0 target, not an un
 | Kali red-team path blurred production status | Resolved. The workflow no longer contributes production availability truth, requires explicit lab acknowledgement, rejects public targets by default, uses bearer auth for protected operations, and stops high-risk AI decisions at human approval unless explicitly overridden for a lab run. |
 | Missing report export | Resolved. `/api/reports/production/export` supports JSON, Markdown, and CSV, and the dashboard report view exposes authenticated Markdown/CSV downloads. |
 | Command lifecycle spread across Store | Resolved for initial v2.5. `CommandManager` now owns deterministic transitions; Store performs persistence and incident-event side effects. |
+| High-risk action policy spread across routes | Resolved for initial v2.5. `SafetyGovernor` now owns confirmation-code enforcement and production-control-plane isolation denial for control commands, operations commands, dispatch approval, and escalation approval. |
 
 ## Current Issues
 
-No active system issue is currently tracked in this file. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, and the implementation was committed as `4addc36`.
+| Priority | Issue | Current evidence |
+| --- | --- | --- |
+| P1 | AI live-provider smoke failing | 2026-07-01 supervised login succeeds with PostgreSQL JWT auth, but `ai_smoke.status` returns `api_error` while runtime provider is `ollama`. |
 
 ## Verification Commands
 
