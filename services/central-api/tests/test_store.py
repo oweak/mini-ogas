@@ -376,6 +376,49 @@ def test_heartbeat_timeout_ignores_control_plane_placeholders(store: MemoryStore
     )
 
 
+def test_record_metric_does_not_apply_production_fault_rules_to_control_plane(store: MemoryStore) -> None:
+    alerts = store.record_metric(
+        MetricIn(
+            node_code="cloud-workshop-01",
+            workshop_type="cloud",
+            cpu_usage=98,
+            memory_usage=82,
+            disk_usage=94,
+            network_in=120_000_000,
+            network_out=20_000_000,
+            db_latency_ms=180,
+            api_latency_ms=950,
+        )
+    )
+
+    assert alerts == []
+    assert store.nodes["cloud-workshop-01"].status == NodeStatus.online
+    assert not any(alert.node_code == "cloud-workshop-01" for alert in store.alerts)
+    assert not any(command.node_code == "cloud-workshop-01" for command in store.commands)
+
+
+def test_simulation_step_does_not_inject_anomalies_into_control_plane_nodes(store: MemoryStore) -> None:
+    with store._lock:
+        store.nodes = {
+            code: node for code, node in store.nodes.items()
+            if code in {"cloud-workshop-01", "cloud-db-01"}
+        }
+        store.metrics = [
+            metric for metric in store.metrics
+            if metric.node_code in {"cloud-workshop-01", "cloud-db-01"}
+        ]
+    store.simulation_anomaly_rate = 1.0
+
+    before_events = store.simulation_generated_events
+    state = store.simulation_step()
+
+    assert state.tick == 1
+    assert store.simulation_generated_events == before_events
+    assert store.nodes["cloud-workshop-01"].status == NodeStatus.online
+    assert store.nodes["cloud-db-01"].status == NodeStatus.online
+    assert not any(alert.node_code in {"cloud-workshop-01", "cloud-db-01"} for alert in store.alerts)
+
+
 def test_isolate_node_changes_topology_edges(store: MemoryStore) -> None:
     store.isolate_node("turning-workshop-01", "pytest")
 

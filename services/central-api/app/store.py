@@ -1066,9 +1066,15 @@ class MemoryStore:
         return expired
 
     def _requires_agent_heartbeat(self, node_code: str, workshop_type: str | None) -> bool:
+        if self._is_control_plane_node(node_code, workshop_type):
+            return False
         if node_code in self.node_heartbeats_v2:
             return True
         return workshop_type in {"turning", "milling", "grinding"}
+
+    def _is_control_plane_node(self, node_code: str, workshop_type: str | None = None) -> bool:
+        resolved_type = workshop_type or self.infer_workshop_type(node_code)
+        return node_code in {"cloud-workshop-01", "cloud-db-01"} or resolved_type in {"cloud", "database"}
 
     # ------------------------------------------------------------------
     # Metric recording + rule-based fault handling
@@ -1077,6 +1083,7 @@ class MemoryStore:
     def record_metric(self, metric: MetricIn, evaluate: bool = True) -> list[Alert]:
         with self._lock:
             workshop_type = metric.workshop_type or self.infer_workshop_type(metric.node_code)
+            is_control_plane = self._is_control_plane_node(metric.node_code, workshop_type)
             node = self.nodes.setdefault(
                 metric.node_code,
                 Node(node_code=metric.node_code, node_name=self.node_display_name(metric.node_code, workshop_type),
@@ -1092,6 +1099,8 @@ class MemoryStore:
             self.metrics.append(metric)
             self.metrics = self.metrics[-300:]
         self.persist_metric(metric)
+        if is_control_plane:
+            return []
         if not evaluate:
             return []
 
@@ -2405,15 +2414,20 @@ class MemoryStore:
 
         # ---- Anomaly injection ----
         if self.rng.random() < self.simulation_anomaly_rate:
-            target = self.rng.choice([nc for nc, _ in nodes_snapshot])
-            node_ref = self.nodes.get(target)
-            ws_type = node_ref.workshop_type if node_ref else self.infer_workshop_type(target)
-            lm = self.latest_metrics().get(target) or self._initial_metric(target, ws_type)
-            if self.rng.random() < 0.72:
-                self.record_metric(lm.model_copy(update={"disk_usage": 92.0}))
-            else:
-                self.record_metric(lm.model_copy(update={"cpu_usage": 95.0, "api_latency_ms": 920}))
-            self.simulation_generated_events += 1
+            anomaly_candidates = [
+                (nc, node) for nc, node in nodes_snapshot
+                if not self._is_control_plane_node(nc, node.workshop_type)
+            ]
+            if anomaly_candidates:
+                target = self.rng.choice([nc for nc, _ in anomaly_candidates])
+                node_ref = self.nodes.get(target)
+                ws_type = node_ref.workshop_type if node_ref else self.infer_workshop_type(target)
+                lm = self.latest_metrics().get(target) or self._initial_metric(target, ws_type)
+                if self.rng.random() < 0.72:
+                    self.record_metric(lm.model_copy(update={"disk_usage": 92.0}))
+                else:
+                    self.record_metric(lm.model_copy(update={"cpu_usage": 95.0, "api_latency_ms": 920}))
+                self.simulation_generated_events += 1
 
         tick_now = self.simulation_tick
         self.add_event("simulation-engine", "tick", Severity.info,
