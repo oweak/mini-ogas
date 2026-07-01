@@ -49,7 +49,7 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 
 | Priority | Item | Reason |
 | --- | --- | --- |
-| P2 | Clean and commit working tree | Generated noise is now ignored, and the tracked dashboard TypeScript build cache has been removed from version content. Remaining work is review/staging of intentional source, docs, deployment scripts, and report artifacts. |
+| Planning | Select next v2.5/v3.0 target | The v2.2 trusted loop, initial v2.5 runtime hardening, report export, Kali lab boundary, generated-artifact cleanup, and implementation commit are complete. The next item should be selected from the roadmap. |
 
 ## Current Verification Status
 
@@ -66,6 +66,7 @@ Recent runtime check showed:
 - Kali red-team boundary: low-risk `coolant_flow` completed attack-detect-AI-repair archival; high-risk `spindle_overheat` stopped at `waiting_human_approval` without isolation or repair until cleanup was run
 - report export: backend smoke tests verify Markdown/CSV attachments, and dashboard production build passes with export buttons
 - working tree hygiene: generated caches/build outputs/local databases are ignored; `services/dashboard/tsconfig.tsbuildinfo` was removed from version content and verified by a fresh dashboard build
+- commit: implementation committed as `4addc36 feat: complete mini-ogas trusted-loop hardening`
 - `git diff --check`: passes
 
 ## Important Boundaries

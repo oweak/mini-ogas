@@ -38,14 +38,11 @@ This file records the current verified state after the v2.2 first-phase remediat
 | 16 | PostgreSQL heartbeat-shadow retention | Resolved for v2.5. `HEARTBEAT_SHADOW_RETENTION_PER_NODE` now controls per-node heartbeat shadow retention, `/api/persistence/status` exposes the policy, and the live runtime reports `keep_latest_per_node` with replay readiness still ok. |
 | 17 | Kali red-team workflow boundary | Resolved for v2.5. `scripts/kali_redteam_workflow.py` now requires explicit lab acknowledgement, rejects public targets by default, separates node-ingest token from administrator bearer auth, records structured evidence, and holds high-risk AI decisions at `waiting_human_approval` unless `--auto-approve-high-risk` is explicitly passed. |
 | 18 | Production report export | Resolved for v2.5. `/api/reports/production/export` now exports the live production report as JSON, Markdown, or node CSV; the dashboard report page can download Markdown and CSV using the authenticated API client. |
+| 19 | Commit hygiene | Resolved. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, secret scan and staged whitespace checks passed, and the implementation was committed as `4addc36`. |
 
 ## Remaining Work After v2.2
 
-These are not blockers for the v2.2 first phase, but they remain useful v2.5/v3.0 hardening targets.
-
-| Priority | Item | Notes |
-| --- | --- | --- |
-| P2 | Commit hygiene | Partially resolved. Generated noise is now ignored (`__pycache__`, `.pytest_cache`, `.venv`, `dist`, local DB files, `.superpowers`). Remaining work is to stage/commit the intentional source, docs, deployment scripts, and report artifacts as one or more reviewed commits. |
+No open issue is currently tracked in this file. Next work should be planned from the v2.5/v3.0 roadmap rather than treated as an unresolved v2.2 blocker.
 
 ## Verification Targets
 

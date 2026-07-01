@@ -20,7 +20,7 @@ The original first-phase blockers have been addressed. The system now has a work
 12. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
 13. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
 
-The remaining issues are hardening and productization tasks, not evidence that the first phase is disconnected.
+The remaining work is roadmap selection for the next v2.5/v3.0 target, not an unresolved first-phase blocker.
 
 ## Resolved Historical Issues
 
@@ -41,13 +41,7 @@ The remaining issues are hardening and productization tasks, not evidence that t
 
 ## Current Issues
 
-### 1. Working Tree Hygiene
-
-**Severity:** Low
-
-The repository contains many new and modified files from the implementation pass. Generated noise is now ignored, including Python caches, test cache, virtual environments, dashboard builds, local DB files, and local Superpowers artifacts. The remaining visible files are mostly intentional source, docs, deployment scripts, and review evidence.
-
-**Next action:** Review `git status`, stage intentional code/docs/scripts, and commit in coherent slices.
+No active system issue is currently tracked in this file. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, and the implementation was committed as `4addc36`.
 
 ## Verification Commands
 
