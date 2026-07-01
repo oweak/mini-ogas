@@ -6,6 +6,7 @@ from ..core.config import settings
 from ..core.security import PERM_AI_DIAGNOSE, ActorInfo, require_permission
 from ..core.service_client import post_json
 from ..models import AiChatRequest, AiChatResponse, AiDiagnoseRequest, AiStatus, Severity
+from ..rule_explanation import explain_rule_conclusions
 from ..store import store
 
 router = APIRouter(tags=["ai"])
@@ -42,6 +43,29 @@ def ai_status() -> AiStatus:
 @router.get("/ai/shortcuts")
 def list_ai_shortcuts():
     return store.ai_shortcuts
+
+
+@router.get("/ai/rule-explanation")
+def rule_explanation(
+    mode: str = "normal",
+    use_live: bool = True,
+    actor: ActorInfo = Depends(require_permission(PERM_AI_DIAGNOSE)),
+):
+    from .demo import _build_dashboard_snapshot
+
+    snapshot = _build_dashboard_snapshot(mode)
+    active = registry.first_available()
+    use_live_ai = bool(use_live and active and active.name != "rule_fallback")
+    provider = active.name if active else "rule_fallback"
+    model = getattr(active, "_model", "") if active and hasattr(active, "_model") else ""
+    chat_fn = (lambda messages: active.chat(messages, timeout=settings.ai_timeout_seconds)) if use_live_ai and active else None
+    return explain_rule_conclusions(
+        snapshot,
+        use_live_ai=use_live_ai,
+        chat_fn=chat_fn,
+        provider=provider,
+        model=model,
+    )
 
 
 @router.post("/ai/shortcuts/{shortcut_id}/run", response_model=AiChatResponse)
@@ -184,6 +208,8 @@ def diagnose_via_dispatcher(payload: AiDiagnoseRequest, description: str, severi
         return None
     required = {"root_cause", "recommended_action", "need_isolation", "source"}
     if not required.issubset(data):
+        return None
+    if str(data.get("source")) in {"local-fallback", "rule_fallback"} and registry.is_any_live_provider():
         return None
     return data
 

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+import json
 import random
 import threading
+import uuid
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from statistics import mean
 
 import psutil
@@ -11,8 +14,8 @@ import psutil
 from .core.ai.registry import registry
 from .core.config import settings
 from .core.session import get_session_token
-from .core.database import get_db, init_db
-from .core.service_client import get_json
+from .core.database import get_db, init_db, persistence_backend, persistence_label
+from .core.service_client import get_json, post_json
 
 logger = logging.getLogger(__name__)
 from .models import (
@@ -34,6 +37,7 @@ from .models import (
     Node,
     NodeCommand,
     NodeStatus,
+    PartQueueItem,
     PreflightResult,
     PreflightStep,
     ProductionPlanIn,
@@ -54,6 +58,24 @@ PRODUCTS: dict[str, dict[str, object]] = {
     "A5": {"name": "转向连接件", "route": ["milling", "drilling", "inspection"], "price": 140.0},
 }
 
+# Canonical product catalog shared with docs, market-simulator, and production-planner.
+# The A1-A5 aliases remain accepted for older tests and saved demo data.
+PRODUCTS = {
+    "P1": {"name": "标准轴", "route": ["turning", "grinding"], "price": 120.0},
+    "P2": {"name": "法兰", "route": ["turning", "milling"], "price": 180.0},
+    "P3": {"name": "齿轮毛坯", "route": ["turning", "milling", "grinding"], "price": 260.0},
+    "P4": {"name": "精密套筒", "route": ["turning", "grinding"], "price": 310.0},
+    "P5": {"name": "定制连接器", "route": ["milling", "grinding"], "price": 420.0},
+}
+
+PRODUCT_ALIASES = {
+    "A1": "P1",
+    "A2": "P2",
+    "A3": "P3",
+    "A4": "P4",
+    "A5": "P5",
+}
+
 # Which workshop type is preferred for each process step. Steps not listed
 # (e.g. "inspection") may run on any available machine.
 PROCESS_WORKSHOP: dict[str, str] = {
@@ -72,14 +94,62 @@ WORKSHOP_NAMES: dict[str, str] = {
 }
 
 
+def canonical_product_code(product_code: str) -> str:
+    return PRODUCT_ALIASES.get(product_code, product_code)
+
+
 def product_name(product_code: str) -> str:
-    product = PRODUCTS.get(product_code)
+    code = canonical_product_code(product_code)
+    product = PRODUCTS.get(code)
     return str(product["name"]) if product else product_code
 
 
 def product_route(product_code: str) -> list[str]:
-    product = PRODUCTS.get(product_code)
+    product = PRODUCTS.get(canonical_product_code(product_code))
     return list(product["route"]) if product else ["turning", "inspection"]
+
+
+def _database_datetime(value: object) -> datetime:
+    """Normalize SQLite ISO strings and psycopg datetime values on shadow reload."""
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
+
+
+def _heartbeat_alarm_severity(value: str) -> Severity:
+    normalized = value.strip().lower()
+    if normalized in {"critical", "高危"}:
+        return Severity.critical
+    if normalized in {"high", "高"}:
+        return Severity.high
+    if normalized in {"low", "低"}:
+        return Severity.low
+    return Severity.medium
+
+
+def _severity_rank(value: Severity) -> int:
+    return {
+        Severity.info: 0,
+        Severity.low: 1,
+        Severity.medium: 2,
+        Severity.high: 3,
+        Severity.critical: 4,
+    }[value]
+
+
+def _heartbeat_alarm_description(node_code: str, alert_type: str, production: dict[str, object]) -> str:
+    machine = str(production.get("machine_code") or node_code)
+    if alert_type == "SPINDLE_TEMP_HIGH":
+        return f"{machine} 主轴温度 {production.get('spindle_temp', '未上报')} C，建议停机检查冷却、轴承与润滑。"
+    if alert_type == "TOOL_WEAR_WARNING":
+        return f"{machine} 刀具/砂轮磨损 {production.get('tool_wear_level', '未上报')}%，建议降速并安排更换。"
+    if alert_type == "QUALITY_DRIFT":
+        return f"{machine} 良品率漂移，产量 {production.get('finished_quantity', 0)}，缺陷 {production.get('defect_quantity', 0)}。"
+    if alert_type == "VIBRATION_HIGH":
+        return f"{machine} 振动异常，建议暂停加工并检查夹具、刀具与主轴。"
+    if alert_type == "COOLANT_FLOW_LOW":
+        return f"{machine} 冷却液流量偏低，建议降载并检查冷却泵与液位。"
+    return f"{node_code} v2 心跳上报报警 {alert_type}。"
 
 
 class MemoryStore:
@@ -93,6 +163,9 @@ class MemoryStore:
         self.metrics: list[MetricIn] = []
         self.machines: list[Machine] = []
         self.node_db_size_bytes: dict[str, int] = {}
+        self.node_db_size_sources: dict[str, str] = {}
+        self.node_heartbeats_v2: dict[str, dict[str, object]] = {}
+        self.node_record_sync_ids: set[str] = set()
         # Market and inventory
         self.market_signals: list[MarketSignal] = []
         self.market_forecast: list[MarketForecast] = []
@@ -103,11 +176,15 @@ class MemoryStore:
         self.allocation_orders: list[AllocationOrder] = []
         self.dispatch_seq = 0
         self.order_seq = 0
+        self.part_queue: list[PartQueueItem] = []
+        self.part_seq = 0
+        self.part_completion_watermark: dict[str, int] = {}
         # Alerts / audit / commands / events / diagnoses
         self.alerts: list[Alert] = []
         self.audit_logs: list[AuditLog] = []
         self.commands: list[NodeCommand] = []
         self.incident_events: list[IncidentEvent] = []
+        self._shadow_event_count = 0
         self.ai_diagnoses: list[AiDiagnosis] = []
         # Topology / governance
         self.topology_edges: list[TopologyEdge] = []
@@ -127,6 +204,10 @@ class MemoryStore:
         if settings.persist_enabled:
             init_db()
         self.seed_demo()
+        if settings.persist_enabled:
+            self.load_heartbeat_shadow()
+            self.load_command_shadow()
+            self.load_part_queue_shadow()
 
     # ------------------------------------------------------------------
     # Persistence (optional, off by default)
@@ -134,6 +215,9 @@ class MemoryStore:
 
     def _persisting(self) -> bool:
         return settings.persist_enabled and not self._suspend_persist
+
+    def _ephemeral_node_code(self, node_code: str) -> bool:
+        return node_code.startswith("workflow-check-node-")
 
     def persist_metric(self, metric: MetricIn) -> None:
         if not self._persisting():
@@ -149,7 +233,166 @@ class MemoryStore:
                      metric.api_latency_ms, utc_now().isoformat()),
                 )
         except Exception as exc:  # pragma: no cover - persistence is best-effort
-            logger.warning("SQLite persistence warning (metric): %s", exc)
+            logger.warning("Persistence warning (metric): %s", exc)
+
+    def persist_heartbeat_shadow(self, payload: dict[str, object]) -> None:
+        """Persist a replay-ready v2 heartbeat without changing the live read path."""
+        if not self._persisting():
+            return
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        try:
+            with get_db() as db:
+                db.execute(
+                    """INSERT INTO heartbeat_shadow (
+                       node_code, run_id, scenario_id, simulation_time, payload_json, received_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (
+                        str(payload.get("node_code") or ""),
+                        str(runtime.get("run_id") or ""),
+                        str(runtime.get("scenario_id") or ""),
+                        runtime.get("simulation_time"),
+                        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
+                        utc_now().isoformat(),
+                    ),
+                )
+                self._prune_heartbeat_shadow_locked(db)
+        except Exception as exc:  # pragma: no cover - persistence is best-effort
+            logger.warning("Persistence warning (heartbeat shadow): %s", exc)
+
+    def _prune_heartbeat_shadow_locked(self, db: object, max_per_node: int | None = None) -> int:
+        limit = settings.heartbeat_shadow_retention_per_node if max_per_node is None else max_per_node
+        if limit <= 0:
+            return 0
+        cursor = db.execute(
+            """
+            DELETE FROM heartbeat_shadow
+            WHERE id IN (
+                SELECT id FROM (
+                    SELECT id,
+                           ROW_NUMBER() OVER (PARTITION BY node_code ORDER BY id DESC) AS rn
+                    FROM heartbeat_shadow
+                ) ranked
+                WHERE rn > ?
+            )
+            """,
+            (limit,),
+        )
+        rowcount = getattr(cursor, "rowcount", -1)
+        return int(rowcount) if isinstance(rowcount, int) and rowcount >= 0 else 0
+
+    def prune_heartbeat_shadow(self, max_per_node: int | None = None) -> dict[str, object]:
+        """Apply heartbeat-shadow retention without mutating live runtime state."""
+        if not settings.persist_enabled:
+            return {"status": "disabled", "reason": "PERSIST_ENABLED=false"}
+        limit = settings.heartbeat_shadow_retention_per_node if max_per_node is None else max_per_node
+        if limit <= 0:
+            return {"status": "disabled", "reason": "HEARTBEAT_SHADOW_RETENTION_PER_NODE<=0"}
+        try:
+            with get_db() as db:
+                deleted = self._prune_heartbeat_shadow_locked(db, limit)
+                row = db.execute("SELECT COUNT(*) AS count FROM heartbeat_shadow").fetchone()
+                remaining = int(row["count"])
+        except Exception as exc:  # pragma: no cover - depends on external backend
+            return {"status": "degraded", "error": str(exc), "max_per_node": limit}
+        return {"status": "ok", "deleted": deleted, "remaining": remaining, "max_per_node": limit}
+
+    def load_heartbeat_shadow(self, limit: int = 500) -> int:
+        """Restore latest persisted v2 heartbeat facts into the live runtime cache."""
+        if not settings.persist_enabled:
+            return 0
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT node_code, payload_json, received_at
+                    FROM heartbeat_shadow
+                    ORDER BY id DESC LIMIT ?
+                    """,
+                    (max(1, limit),),
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (heartbeat shadow load): %s", exc)
+            return 0
+
+        latest: dict[str, tuple[dict[str, object], object]] = {}
+        for row in rows:
+            data = dict(row)
+            node_code = str(data.get("node_code") or "")
+            if self._ephemeral_node_code(node_code):
+                continue
+            if not node_code or node_code in latest:
+                continue
+            try:
+                payload = json.loads(str(data.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                latest[node_code] = (payload, data.get("received_at"))
+
+        with self._lock:
+            for node_code, (payload, received_at) in latest.items():
+                self._restore_heartbeat_shadow_locked(node_code, payload, received_at)
+        return len(latest)
+
+    def _restore_heartbeat_shadow_locked(self, node_code: str, payload: dict[str, object], received_at: object) -> None:
+        production = payload.get("production") if isinstance(payload.get("production"), dict) else {}
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        sync = payload.get("sync") if isinstance(payload.get("sync"), dict) else {}
+        alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
+        workshop_type = str(production.get("workshop_type") or self.infer_workshop_type(node_code))
+        heartbeat_time = _database_datetime(received_at) if received_at else utc_now()
+        raw_status = str(payload.get("status") or "running")
+        node_status = NodeStatus.online if raw_status in {"running", "online", "idle"} else NodeStatus.degraded
+
+        node = self.nodes.setdefault(
+            node_code,
+            Node(
+                node_code=node_code,
+                node_name=self.node_display_name(node_code, workshop_type),
+                workshop_type=workshop_type,
+            ),
+        )
+        node.workshop_type = workshop_type
+        node.status = node_status
+        node.last_heartbeat = heartbeat_time
+
+        machine_code = str(production.get("machine_code") or node_code)
+        machine = next((item for item in self.machines if item.machine_code == machine_code), None)
+        if machine is None:
+            machine = Machine(machine_code=machine_code, node_code=node_code, machine_type=workshop_type)
+            self.machines.append(machine)
+        machine.node_code = node_code
+        machine.status = "fault" if raw_status == "fault" else "warning" if raw_status == "warning" else "running"
+        machine.load_rate = float(production.get("utilization") or 0) * 100
+        machine.tool_wear_level = float(production.get("tool_wear_level") or machine.tool_wear_level)
+        machine.today_output = int(production.get("finished_quantity") or machine.today_output)
+        machine.defect_count = int(production.get("defect_quantity") or machine.defect_count)
+
+        self.node_heartbeats_v2[node_code] = {
+            **payload,
+            "production": dict(production),
+            "metrics": dict(metrics),
+            "runtime": dict(runtime),
+            "sync": dict(sync),
+            "alarms": list(alarms),
+            "_received_at": heartbeat_time.isoformat(),
+            "_restored_from_persistence": True,
+        }
+        self.metrics.append(MetricIn(
+            node_code=node_code,
+            workshop_type=workshop_type,
+            cpu_usage=float(metrics.get("cpu_usage") or 0),
+            memory_usage=float(metrics.get("memory_usage") or 0),
+            disk_usage=float(metrics.get("disk_usage") or 0),
+            network_in=int(metrics.get("network_in") or metrics.get("network_in_bytes") or 0),
+            network_out=int(metrics.get("network_out") or metrics.get("network_out_bytes") or 0),
+            db_latency_ms=int(metrics.get("db_latency_ms") or 0),
+            api_latency_ms=int(metrics.get("api_latency_ms") or metrics.get("network_latency_ms") or 0),
+            finished_quantity=int(production.get("finished_quantity") or 0),
+            defect_quantity=int(production.get("defect_quantity") or 0),
+        ))
+        self.metrics = self.metrics[-300:]
 
     def persist_alert(self, alert: Alert) -> None:
         if not self._persisting():
@@ -164,7 +407,7 @@ class MemoryStore:
                      alert.status, alert.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("SQLite persistence warning (alert): %s", exc)
+            logger.warning("Persistence warning (alert): %s", exc)
 
     def persist_command(self, command: NodeCommand) -> None:
         if not self._persisting():
@@ -178,7 +421,89 @@ class MemoryStore:
                      command.status, command.operator, command.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("SQLite persistence warning (command): %s", exc)
+            logger.warning("Persistence warning (command): %s", exc)
+        self.persist_command_shadow(command)
+
+    def persist_command_shadow(self, command: NodeCommand) -> None:
+        if not self._persisting():
+            return
+        try:
+            with get_db() as db:
+                db.execute(
+                    """
+                    INSERT INTO command_shadow (
+                        command_id, node_code, command_type, risk_level, status, operator,
+                        parameters_json, claimed_by, result_message, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(command_id) DO UPDATE SET
+                        node_code=excluded.node_code,
+                        command_type=excluded.command_type,
+                        risk_level=excluded.risk_level,
+                        status=excluded.status,
+                        operator=excluded.operator,
+                        parameters_json=excluded.parameters_json,
+                        claimed_by=excluded.claimed_by,
+                        result_message=excluded.result_message,
+                        created_at=excluded.created_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        command.id,
+                        command.node_code,
+                        command.command_type,
+                        command.risk_level,
+                        command.status,
+                        command.operator,
+                        json.dumps(command.parameters, ensure_ascii=False, sort_keys=True),
+                        command.claimed_by,
+                        command.result_message,
+                        command.created_at.isoformat(),
+                        utc_now().isoformat(),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (command shadow): %s", exc)
+
+    def load_command_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[NodeCommand] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT command_id, node_code, command_type, risk_level, status, operator,
+                           parameters_json, claimed_by, result_message, created_at
+                    FROM command_shadow
+                    ORDER BY command_id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (command shadow load): %s", exc)
+            return 0
+
+        for row in rows:
+            data = dict(row)
+            try:
+                parameters = json.loads(data.get("parameters_json") or "{}")
+            except json.JSONDecodeError:
+                parameters = {}
+            loaded.append(NodeCommand(
+                id=int(data["command_id"]),
+                node_code=data["node_code"],
+                command_type=data["command_type"],
+                risk_level=data["risk_level"],
+                status=data["status"],
+                operator=data["operator"],
+                parameters=parameters if isinstance(parameters, dict) else {},
+                claimed_by=data.get("claimed_by") or "",
+                result_message=data.get("result_message") or "",
+                created_at=_database_datetime(data["created_at"]),
+            ))
+        with self._lock:
+            self.commands = loaded[-100:]
+        return len(loaded)
 
     def persist_event(self, event: IncidentEvent) -> None:
         if not self._persisting():
@@ -191,8 +516,10 @@ class MemoryStore:
                     (event.node_code, event.stage, "incident_event", str(event.id),
                      event.severity.value, event.message, event.created_at.isoformat()),
                 )
+            with self._lock:
+                self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover
-            logger.warning("SQLite persistence warning (event): %s", exc)
+            logger.warning("Persistence warning (event): %s", exc)
 
     def persist_ai_diagnosis(self, diagnosis: AiDiagnosis) -> None:
         if not self._persisting():
@@ -205,11 +532,97 @@ class MemoryStore:
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (diagnosis.alert_id, Severity.medium.value, diagnosis.node_code,
                      diagnosis.root_cause, diagnosis.recommended_action, diagnosis.confidence,
-                     int(diagnosis.need_isolation), diagnosis.model_name, None,
+                     bool(diagnosis.need_isolation), diagnosis.model_name, None,
                      diagnosis.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("SQLite persistence warning (ai_diagnosis): %s", exc)
+            logger.warning("Persistence warning (ai_diagnosis): %s", exc)
+
+    def persist_part_queue_item(self, part: PartQueueItem) -> None:
+        if not self._persisting():
+            return
+        try:
+            with get_db() as db:
+                db.execute(
+                    """
+                    INSERT INTO part_queue_shadow (
+                        part_id, parent_part_id, order_id, product_code, current_step, status,
+                        source_node, target_node, claimed_by, claim_token, claim_expires_at,
+                        created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(part_id) DO UPDATE SET
+                        parent_part_id=excluded.parent_part_id,
+                        order_id=excluded.order_id,
+                        product_code=excluded.product_code,
+                        current_step=excluded.current_step,
+                        status=excluded.status,
+                        source_node=excluded.source_node,
+                        target_node=excluded.target_node,
+                        claimed_by=excluded.claimed_by,
+                        claim_token=excluded.claim_token,
+                        claim_expires_at=excluded.claim_expires_at,
+                        created_at=excluded.created_at,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        part.part_id,
+                        part.parent_part_id,
+                        part.order_id,
+                        part.product_code,
+                        part.current_step,
+                        part.status,
+                        part.source_node,
+                        part.target_node,
+                        part.claimed_by,
+                        part.claim_token,
+                        part.claim_expires_at.isoformat() if part.claim_expires_at else None,
+                        part.created_at.isoformat(),
+                        part.updated_at.isoformat(),
+                    ),
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (part_queue): %s", exc)
+
+    def load_part_queue_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[PartQueueItem] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT part_id, parent_part_id, order_id, product_code, current_step, status,
+                           source_node, target_node, claimed_by, claim_token, claim_expires_at,
+                           created_at, updated_at
+                    FROM part_queue_shadow
+                    ORDER BY created_at ASC, part_id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (part_queue load): %s", exc)
+            return 0
+
+        for row in rows:
+            data = dict(row)
+            loaded.append(PartQueueItem(
+                **{
+                    **data,
+                    "claim_expires_at": _database_datetime(data["claim_expires_at"]) if data.get("claim_expires_at") else None,
+                    "created_at": _database_datetime(data["created_at"]),
+                    "updated_at": _database_datetime(data["updated_at"]),
+                }
+            ))
+        with self._lock:
+            self.part_queue = loaded[-500:]
+            max_seq = 0
+            for part in self.part_queue:
+                try:
+                    max_seq = max(max_seq, int(part.part_id.rsplit("-", 1)[-1]))
+                except ValueError:
+                    continue
+            self.part_seq = max(self.part_seq, max_seq)
+        return len(loaded)
 
     # ------------------------------------------------------------------
     # Seed
@@ -226,6 +639,7 @@ class MemoryStore:
             "cloud-db-01": Node(node_code="cloud-db-01", node_name=WORKSHOP_NAMES["database"], workshop_type="database"),
         }
         self.metrics.clear()
+        self.node_heartbeats_v2.clear()
         self.alerts.clear()
         self.audit_logs.clear()
         self.commands.clear()
@@ -235,6 +649,9 @@ class MemoryStore:
         self.dispatch_tasks.clear()
         self.dispatch_seq = 0
         self.order_seq = 0
+        self.part_queue.clear()
+        self.part_seq = 0
+        self.part_completion_watermark.clear()
         self.simulation_running = False
         self.simulation_tick = 0
         self.simulation_generated_orders = 0
@@ -333,7 +750,7 @@ class MemoryStore:
 
         self.allocation_orders = []
         self._add_allocation_order(AllocationOrderIn(
-            product_code="A3", required_quantity=120, priority=2, deadline_hours=18,
+            product_code="P3", required_quantity=120, priority=2, deadline_hours=18,
             assigned_cloud_role="主调配", source_unit="上级调度中心",
             reason="变速箱齿轮订单激增，需要优先排产。"))
 
@@ -385,12 +802,21 @@ class MemoryStore:
         self.persist_event(event)
         return event
 
-    def add_command(self, node_code: str, command_type: str, risk_level: str, status: str,
-                    operator: str) -> NodeCommand:
+    def add_command(
+        self,
+        node_code: str,
+        command_type: str,
+        risk_level: str,
+        status: str,
+        operator: str,
+        parameters: dict[str, object] | None = None,
+    ) -> NodeCommand:
         with self._lock:
-            command = NodeCommand(id=len(self.commands) + 1, node_code=node_code,
+            next_id = max((item.id for item in self.commands), default=0) + 1
+            command = NodeCommand(id=next_id, node_code=node_code,
                                   command_type=command_type, risk_level=risk_level,
-                                  status=status, operator=operator)
+                                  status=status, operator=operator,
+                                  parameters=parameters or {})
             self.commands.append(command)
             self.commands = self.commands[-100:]
         self.persist_command(command)
@@ -427,7 +853,7 @@ class MemoryStore:
 
     def record_heartbeat(self, node_code: str, agent_version: str, uptime_seconds: int,
                          local_db_size_bytes: int, status: str = "online",
-                         session_token: str = "") -> dict[str, object]:
+                         session_token: str = "", db_size_source: str = "reported") -> dict[str, object]:
         # Session token verification: reject heartbeats from stale processes
         my_token = get_session_token()
         token_mismatch = False
@@ -461,15 +887,164 @@ class MemoryStore:
             elif node.status == NodeStatus.online and status == "online":
                 pass
             self.node_db_size_bytes[node_code] = local_db_size_bytes
+            self.node_db_size_sources[node_code] = db_size_source or "reported"
         return {
             "accepted": True,
             "node_code": node_code,
             "agent_version": agent_version,
             "uptime_seconds": uptime_seconds,
             "local_db_size_bytes": local_db_size_bytes,
+            "db_size_source": db_size_source or "reported",
             "status": status,
             "session_verified": not token_mismatch,
         }
+
+    def record_node_heartbeat_v2(self, payload: dict[str, object]) -> dict[str, object]:
+        node_code = str(payload["node_code"])
+        production = payload.get("production") if isinstance(payload.get("production"), dict) else {}
+        metrics = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+        sync = payload.get("sync") if isinstance(payload.get("sync"), dict) else {}
+        alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
+        raw_status = str(payload.get("status") or "running")
+        node_status = "online" if raw_status in {"running", "online", "idle"} else "degraded"
+
+        uptime = int(payload.get("uptime_sec") or payload.get("uptime_seconds") or 0)
+        agent_version = str(payload.get("agent_version") or "0.2.0")
+        heartbeat_result = self.record_heartbeat(
+            node_code=node_code,
+            agent_version=agent_version,
+            uptime_seconds=uptime,
+            local_db_size_bytes=int(sync.get("local_db_size_bytes") or 0),
+            status=node_status,
+            session_token=str(payload.get("session_token") or ""),
+            db_size_source=str(sync.get("db_size_source") or "heartbeat-v2-sync"),
+        )
+
+        workshop_type = str(production.get("workshop_type") or self.infer_workshop_type(node_code))
+        metric = MetricIn(
+            node_code=node_code,
+            workshop_type=workshop_type,
+            cpu_usage=float(metrics.get("cpu_usage") or 0),
+            memory_usage=float(metrics.get("memory_usage") or 0),
+            disk_usage=float(metrics.get("disk_usage") or 0),
+            network_in=int(metrics.get("network_in") or metrics.get("network_in_bytes") or 0),
+            network_out=int(metrics.get("network_out") or metrics.get("network_out_bytes") or 0),
+            db_latency_ms=int(metrics.get("db_latency_ms") or 0),
+            api_latency_ms=int(metrics.get("api_latency_ms") or metrics.get("network_latency_ms") or 0),
+            finished_quantity=int(production.get("finished_quantity") or 0),
+            defect_quantity=int(production.get("defect_quantity") or 0),
+        )
+        self.record_metric(metric, evaluate=False)
+
+        machine_code = str(production.get("machine_code") or node_code)
+        with self._lock:
+            existing_machine = next((m for m in self.machines if m.machine_code == machine_code), None)
+            if existing_machine is None:
+                existing_machine = Machine(
+                    machine_code=machine_code,
+                    node_code=node_code,
+                    machine_type=workshop_type,
+                )
+                self.machines.append(existing_machine)
+            existing_machine.node_code = node_code
+            existing_machine.status = "fault" if raw_status == "fault" else "warning" if raw_status == "warning" else "running"
+            existing_machine.load_rate = float(production.get("utilization") or 0) * 100
+            existing_machine.tool_wear_level = float(production.get("tool_wear_level") or existing_machine.tool_wear_level)
+            existing_machine.today_output = int(production.get("finished_quantity") or existing_machine.today_output)
+            existing_machine.defect_count = int(production.get("defect_quantity") or existing_machine.defect_count)
+            self.node_heartbeats_v2[node_code] = {
+                **payload,
+                "production": dict(production),
+                "metrics": dict(metrics),
+                "runtime": dict(runtime),
+                "sync": dict(sync),
+                "alarms": list(alarms),
+                "_received_at": utc_now().isoformat(),
+            }
+            self._verify_target_rate_commands_locked(node_code, production)
+
+        self.persist_heartbeat_shadow(payload)
+
+        created_alerts = []
+        for alarm in alarms:
+            if not isinstance(alarm, dict):
+                continue
+            alert_type = str(alarm.get("type") or "UNKNOWN_ALARM")
+            if any(a.node_code == node_code and a.alert_type == alert_type and a.status not in {"closed", "resolved"} for a in self.alerts):
+                continue
+            severity = _heartbeat_alarm_severity(str(alarm.get("severity") or "medium"))
+            description = _heartbeat_alarm_description(node_code, alert_type, production)
+            created_alerts.append(self.create_alert(node_code, alert_type, severity, description))
+
+        if created_alerts:
+            self.add_event(
+                node_code,
+                "heartbeat-v2-alerts",
+                max((alert.severity for alert in created_alerts), key=_severity_rank),
+                f"v2 心跳上报 {len(created_alerts)} 个报警，已写入中心报警队列。",
+            )
+
+        parts_created = self._create_parts_from_turning_heartbeat(node_code, production)
+
+        return {
+            **heartbeat_result,
+            "schema_version": payload.get("schema_version") or "2.2",
+            "runtime": runtime,
+            "production": production,
+            "alarms_accepted": len(created_alerts),
+            "parts_created": parts_created,
+        }
+
+    def node_dispatch_for_node(self, node_code: str) -> dict[str, object]:
+        """Return the host-issued task selected for one node agent."""
+        with self._lock:
+            task = next(
+                (
+                    item for item in self.dispatch_tasks
+                    if item.assigned_node == node_code
+                    and item.status in {"scheduled", "queued", "in_progress"}
+                ),
+                None,
+            )
+            if task is None:
+                return {"dispatch": {}}
+            return {
+                "dispatch": {
+                    "dispatch_id": task.id,
+                    "active_order": task.product_code,
+                    "product_code": task.product_code,
+                    "quantity": task.quantity,
+                    "priority": task.priority,
+                    "assigned_machine": task.assigned_machine,
+                    "status": task.status,
+                    "reason": task.reason,
+                }
+            }
+
+    def record_node_records(self, node_code: str, records: list[dict[str, object]]) -> dict[str, object]:
+        """Acknowledge deduplicated local agent records after a transient outage."""
+        accepted = 0
+        with self._lock:
+            for record in records:
+                local_id = record.get("local_id")
+                if not isinstance(local_id, int):
+                    continue
+                key = f"{node_code}:{local_id}"
+                if key in self.node_record_sync_ids:
+                    continue
+                self.node_record_sync_ids.add(key)
+                accepted += 1
+            if len(self.node_record_sync_ids) > 10000:
+                self.node_record_sync_ids = set(list(self.node_record_sync_ids)[-5000:])
+        if accepted:
+            self.add_event(
+                node_code,
+                "node-record-sync",
+                Severity.info,
+                f"Agent local records acknowledged: {accepted}",
+            )
+        return {"accepted": True, "node_code": node_code, "records_accepted": accepted}
 
     def check_heartbeat_timeout(self) -> int:
         """Mark nodes as offline if their last heartbeat is older than the timeout.
@@ -481,12 +1056,19 @@ class MemoryStore:
         expired = 0
         with self._lock:
             for node in self.nodes.values():
+                if not self._requires_agent_heartbeat(node.node_code, node.workshop_type):
+                    continue
                 if node.status in {NodeStatus.online, NodeStatus.degraded} and node.last_heartbeat < cutoff:
                     node.status = NodeStatus.offline
                     expired += 1
                     self.add_event(node.node_code, "heartbeat-timeout", Severity.high,
                                    f"节点 {node.node_code} 心跳超时（>{timeout_seconds}s），自动标记为离线。")
         return expired
+
+    def _requires_agent_heartbeat(self, node_code: str, workshop_type: str | None) -> bool:
+        if node_code in self.node_heartbeats_v2:
+            return True
+        return workshop_type in {"turning", "milling", "grinding"}
 
     # ------------------------------------------------------------------
     # Metric recording + rule-based fault handling
@@ -605,6 +1187,46 @@ class MemoryStore:
         self.rebuild_dispatch()
         return node
 
+    def retire_node(self, node_code: str, actor: str) -> dict[str, object]:
+        """Remove a transient or decommissioned node from active runtime state."""
+        with self._lock:
+            if node_code not in self.nodes:
+                raise KeyError(node_code)
+            removed_node = self.nodes.pop(node_code)
+            self.node_db_size_bytes.pop(node_code, None)
+            self.node_db_size_sources.pop(node_code, None)
+            self.node_heartbeats_v2.pop(node_code, None)
+            self.metrics = [m for m in self.metrics if m.node_code != node_code]
+            self.machines = [m for m in self.machines if m.node_code != node_code]
+            self.dispatch_tasks = [t for t in self.dispatch_tasks if t.assigned_node != node_code]
+            self.part_queue = [
+                p for p in self.part_queue
+                if p.source_node != node_code and p.target_node != node_code and p.claimed_by != node_code
+            ]
+            self.topology_edges = [
+                e for e in self.topology_edges if e.source != node_code and e.target != node_code
+            ]
+            for alert in self.alerts:
+                if alert.node_code == node_code and alert.status not in {"closed", "resolved"}:
+                    alert.status = "closed"
+                    alert.handled_by = actor
+            self.audit_logs.append(AuditLog(
+                id=len(self.audit_logs) + 1,
+                actor=actor,
+                action="node:retire",
+                resource_type="node",
+                resource_id=node_code,
+                result="success",
+            ))
+        self.add_event(node_code, "node-retired", Severity.info, "Runtime node retired from active topology.")
+        return {
+            "ok": True,
+            "node_code": node_code,
+            "status": "retired",
+            "actor": actor,
+            "removed_node": removed_node.model_dump(mode="json"),
+        }
+
     # ------------------------------------------------------------------
     # Approvals / escalation
     # ------------------------------------------------------------------
@@ -612,15 +1234,269 @@ class MemoryStore:
     def pending_commands_for_node(self, node_code: str) -> list[NodeCommand]:
         return [c for c in self.commands if c.node_code == node_code and c.status in {"pending", "queued"}]
 
+    def claim_pending_commands_for_node(self, node_code: str, agent_id: str = "") -> list[NodeCommand]:
+        claimed: list[NodeCommand] = []
+        with self._lock:
+            for command in self.commands:
+                if command.node_code != node_code or command.status not in {"pending", "queued"}:
+                    continue
+                command.status = "claimed"
+                command.claimed_by = agent_id or node_code
+                claimed.append(command)
+        for command in claimed:
+            self.persist_command_shadow(command)
+        if claimed:
+            self.add_event(
+                node_code,
+                "command-claimed",
+                Severity.info,
+                f"agent claimed {len(claimed)} command(s): {', '.join(str(c.id) for c in claimed)}",
+            )
+        return claimed
+
     def record_command_result(self, node_code: str, command_id: int, status: str,
                               message: str) -> dict[str, object]:
-        for c in self.commands:
-            if c.id == command_id and c.node_code == node_code:
-                c.status = status
-                break
+        found = None
+        with self._lock:
+            for c in self.commands:
+                if c.id == command_id and c.node_code == node_code:
+                    c.status = status
+                    c.result_message = message
+                    found = c
+                    break
+        if found is None:
+            raise ValueError(f"command {command_id} not found for node {node_code}")
+        self.persist_command_shadow(found)
         self.add_event(node_code, "command-result", Severity.info,
                        f"command_id={command_id} status={status}: {message}")
         return {"accepted": True, "command_id": command_id, "status": status, "message": message}
+
+    def record_agent_command_result(self, command_id: int, status: str, message: str) -> dict[str, object]:
+        command = next((c for c in self.commands if c.id == command_id), None)
+        if command is None:
+            raise ValueError(f"command {command_id} not found")
+        return self.record_command_result(command.node_code, command_id, status, message)
+
+    def _verify_target_rate_commands_locked(self, node_code: str, production: dict) -> None:
+        try:
+            heartbeat_target = float(production.get("target_rate"))
+        except (TypeError, ValueError):
+            return
+        for command in self.commands:
+            if (
+                command.node_code != node_code
+                or command.command_type != "set_target_rate"
+                or command.status != "executed"
+            ):
+                continue
+            try:
+                expected = float(command.parameters.get("target_rate"))
+            except (TypeError, ValueError):
+                continue
+            if abs(heartbeat_target - expected) <= 0.001:
+                command.status = "verified"
+                command.result_message = f"heartbeat target_rate={heartbeat_target} verified"
+                self.persist_command_shadow(command)
+                self.incident_events.append(IncidentEvent(
+                    id=len(self.incident_events) + 1,
+                    node_code=node_code,
+                    stage="command-verified",
+                    severity=Severity.info,
+                    message=f"command_id={command.id} set_target_rate verified by heartbeat.",
+                ))
+
+    # ------------------------------------------------------------------
+    # Part queue: turning -> milling transfer
+    # ------------------------------------------------------------------
+
+    def create_ready_part(
+        self,
+        order_id: str,
+        product_code: str = "A3",
+        source_node: str = "turning-workshop-01",
+        target_node: str = "milling-workshop-01",
+        current_step: str = "milling",
+        parent_part_id: str = "",
+    ) -> PartQueueItem:
+        with self._lock:
+            self.part_seq += 1
+            part = PartQueueItem(
+                part_id=f"PART-{self.part_seq:05d}",
+                parent_part_id=parent_part_id,
+                order_id=order_id,
+                product_code=product_code or "A3",
+                source_node=source_node,
+                target_node=target_node,
+                current_step=current_step,
+            )
+            self.part_queue.append(part)
+            self.part_queue = self.part_queue[-500:]
+        self.persist_part_queue_item(part)
+        self.add_event(
+            source_node,
+            "part-ready",
+            Severity.info,
+            f"{part.part_id} from {order_id} is ready for {target_node}.",
+        )
+        return part
+
+    def _release_expired_part_claims_locked(self, now: datetime) -> list[PartQueueItem]:
+        released: list[PartQueueItem] = []
+        for part in self.part_queue:
+            if (
+                part.status == "claimed"
+                and part.claim_expires_at is not None
+                and part.claim_expires_at <= now
+            ):
+                part.status = "ready"
+                part.claimed_by = ""
+                part.claim_token = ""
+                part.claim_expires_at = None
+                part.updated_at = now
+                released.append(part)
+        return released
+
+    def _next_part_queue_step(self, part: PartQueueItem, completed_by: str) -> tuple[str, str] | None:
+        route = product_route(part.product_code)
+        current_step = part.current_step
+        if current_step not in route:
+            return None
+        next_steps = route[route.index(current_step) + 1:]
+        for step in next_steps:
+            workshop_type = PROCESS_WORKSHOP.get(step)
+            if workshop_type == "grinding":
+                return ("grinding", "grinding-workshop-01")
+            if workshop_type == "milling" and completed_by != "milling-workshop-01":
+                return ("milling", "milling-workshop-01")
+        return None
+
+    def release_expired_part_claims(self) -> int:
+        with self._lock:
+            released = self._release_expired_part_claims_locked(utc_now())
+        for part in released:
+            self.persist_part_queue_item(part)
+        for part in released:
+            self.add_event(
+                part.target_node,
+                "part-claim-expired",
+                Severity.medium,
+                f"{part.part_id} claim expired and returned to ready queue.",
+            )
+        return len(released)
+
+    def claim_next_part_for_node(self, node_code: str, ttl_seconds: int = 30) -> dict[str, object]:
+        ttl = max(1, min(int(ttl_seconds or 30), 3600))
+        claimed: PartQueueItem | None = None
+        with self._lock:
+            now = utc_now()
+            released = self._release_expired_part_claims_locked(now)
+            for part in self.part_queue:
+                if part.target_node != node_code or part.status != "ready":
+                    continue
+                part.status = "claimed"
+                part.claimed_by = node_code
+                part.claim_token = str(uuid.uuid4())
+                part.claim_expires_at = now + timedelta(seconds=ttl)
+                part.updated_at = now
+                claimed = part
+                break
+        for part in released:
+            self.persist_part_queue_item(part)
+            self.add_event(
+                part.target_node,
+                "part-claim-expired",
+                Severity.medium,
+                f"{part.part_id} claim expired and returned to ready queue.",
+            )
+        if claimed is None:
+            return {"claimed": False, "part": None}
+        self.persist_part_queue_item(claimed)
+        self.add_event(
+            node_code,
+            "part-claimed",
+            Severity.info,
+            f"{claimed.part_id} claimed by {node_code}; token expires at {claimed.claim_expires_at}.",
+        )
+        return {"claimed": True, "part": claimed}
+
+    def complete_claimed_part(self, node_code: str, part_id: str, claim_token: str) -> dict[str, object]:
+        downstream: PartQueueItem | None = None
+        with self._lock:
+            part = next((item for item in self.part_queue if item.part_id == part_id), None)
+            if part is None:
+                raise ValueError(f"part {part_id} not found")
+            if part.target_node != node_code:
+                raise ValueError(f"part {part_id} is assigned to {part.target_node}, not {node_code}")
+            if part.status != "claimed":
+                raise ValueError(f"part {part_id} is not claimed (current: {part.status})")
+            if not claim_token or part.claim_token != claim_token:
+                raise ValueError("invalid claim token")
+            part.status = "completed"
+            part.claim_expires_at = None
+            part.updated_at = utc_now()
+            next_step = self._next_part_queue_step(part, node_code)
+            if next_step is not None:
+                step, target_node = next_step
+                self.part_seq += 1
+                downstream = PartQueueItem(
+                    part_id=f"PART-{self.part_seq:05d}",
+                    parent_part_id=part.part_id,
+                    order_id=part.order_id,
+                    product_code=part.product_code,
+                    current_step=step,
+                    source_node=node_code,
+                    target_node=target_node,
+                    status="ready",
+                )
+                self.part_queue.append(downstream)
+                self.part_queue = self.part_queue[-500:]
+        self.persist_part_queue_item(part)
+        if downstream is not None:
+            self.persist_part_queue_item(downstream)
+        self.add_event(
+            node_code,
+            "part-completed",
+            Severity.info,
+            f"{part.part_id} completed by {node_code} and archived in part queue.",
+        )
+        if downstream is not None:
+            self.add_event(
+                downstream.source_node,
+                "part-ready",
+                Severity.info,
+                f"{downstream.part_id} was generated from {part.part_id} and is ready for {downstream.target_node}.",
+            )
+        return {"accepted": True, "part": part, "downstream_part": downstream}
+
+    def part_queue_snapshot(self) -> dict[str, object]:
+        self.release_expired_part_claims()
+        with self._lock:
+            counts: dict[str, int] = {}
+            for part in self.part_queue:
+                counts[part.status] = counts.get(part.status, 0) + 1
+            return {
+                "counts": counts,
+                "items": [part.model_dump(mode="json") for part in self.part_queue[-100:]],
+            }
+
+    def _create_parts_from_turning_heartbeat(self, node_code: str, production: dict[str, object]) -> int:
+        if node_code != "turning-workshop-01":
+            return 0
+        try:
+            finished = int(production.get("finished_quantity") or 0)
+        except (TypeError, ValueError):
+            return 0
+        with self._lock:
+            previous = self.part_completion_watermark.get(node_code)
+            self.part_completion_watermark[node_code] = finished
+        if previous is None or finished <= previous:
+            return 0
+        delta = min(finished - previous, 5)
+        order_id = str(production.get("active_order") or "WO-LIVE")
+        product_code = str(production.get("product_code") or "A3")
+        for _ in range(delta):
+            self.create_ready_part(order_id, product_code)
+        return delta
 
     def pending_approvals(self) -> list[NodeCommand]:
         return [c for c in self.commands if c.status == "waiting_approval"]
@@ -632,6 +1508,7 @@ class MemoryStore:
                     raise ValueError(f"command {command_id} is not waiting approval (current: {c.status})")
                 c.status = "pending"
                 c.operator = actor
+                self.persist_command_shadow(c)
                 self.add_event(c.node_code, "command-approved", Severity.info,
                                f"运维人员 {actor} 审批通过命令 #{command_id} ({c.command_type})。")
                 return {"accepted": True, "command_id": command_id, "status": "pending", "actor": actor}
@@ -644,6 +1521,7 @@ class MemoryStore:
                     raise ValueError(f"command {command_id} is not waiting approval (current: {c.status})")
                 c.status = "rejected"
                 c.operator = actor
+                self.persist_command_shadow(c)
                 self.add_event(c.node_code, "command-rejected", Severity.medium,
                                f"运维人员 {actor} 拒绝命令 #{command_id} ({c.command_type})。原因: {reason or '未提供'}。")
                 return {"accepted": True, "command_id": command_id, "status": "rejected",
@@ -656,7 +1534,28 @@ class MemoryStore:
         return {"escalated": True, "node_code": node_code, "issue_type": issue_type}
 
     def pending_escalations(self) -> list[IncidentEvent]:
-        return [e for e in self.incident_events if e.stage == "escalation"][-20:]
+        open_alerts = [
+            a for a in self.alerts
+            if a.status not in {"closed", "resolved"} and a.handled_by == "human-required"
+        ]
+
+        def matches_open_alert(event: IncidentEvent) -> bool:
+            return any(
+                alert.node_code == event.node_code and f"{alert.alert_type}:" in event.message
+                for alert in open_alerts
+            )
+
+        return [
+            e for e in self.incident_events
+            if e.stage == "escalation"
+            and matches_open_alert(e)
+            and not any(
+                later.id > e.id
+                and later.node_code == e.node_code
+                and later.stage in {"escalation-approved", "escalation-rejected"}
+                for later in self.incident_events
+            )
+        ][-20:]
 
     # ------------------------------------------------------------------
     # Market and inventory
@@ -668,14 +1567,57 @@ class MemoryStore:
         if not settings.microservices_enabled:
             self.update_integration_edge("market-simulator", False)
             return
-        ok, _ = get_json(f"{settings.market_simulator_url}/health")
-        self.update_integration_edge("market-simulator", ok)
+        ok, data = get_json(f"{settings.market_simulator_url}/signals")
+        if not ok or not isinstance(data, list):
+            ok, _ = get_json(f"{settings.market_simulator_url}/health")
+            self.update_integration_edge("market-simulator", ok)
+            return
+        signals = self._market_signals_from_service(data)
+        if not signals:
+            self.update_integration_edge("market-simulator", False)
+            return
+        with self._lock:
+            self.market_signals = signals
+            inventory_by_code = {item.product_code: item for item in self.inventory}
+            for signal in signals:
+                item = inventory_by_code.get(signal.product_code)
+                if item is not None:
+                    item.pressure_score = signal.inventory_pressure
+        self.update_integration_edge("market-simulator", True)
+
+    def _market_signals_from_service(self, payload: list[object]) -> list[MarketSignal]:
+        signals: list[MarketSignal] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            code = canonical_product_code(str(item.get("product_code") or ""))
+            product = PRODUCTS.get(code)
+            if product is None:
+                continue
+            price = float(product["price"])
+            signals.append(MarketSignal(
+                product_code=code,
+                product_name=str(product["name"]),
+                current_price=float(item.get("current_price") or price),
+                competitor_price=float(item.get("competitor_price") or price),
+                demand_index=float(item.get("demand_index") or 80.0),
+                season_factor=float(item.get("season_factor") or 1.0),
+                inventory_pressure=float(item.get("inventory_pressure") or 0.0),
+            ))
+        return signals
 
     # ------------------------------------------------------------------
     # Production planning and dispatch
     # ------------------------------------------------------------------
 
     def generate_production_plan(self) -> list[ProductionPlanIn]:
+        if settings.microservices_enabled:
+            self.refresh_market_via_service()
+            service_plans = self._generate_production_plan_via_service()
+            if service_plans:
+                self.production_plans = service_plans
+                return service_plans
+
         signals = {s.product_code: s for s in self.market_signals}
         inventory = {i.product_code: i for i in self.inventory}
         plans: list[ProductionPlanIn] = []
@@ -694,6 +1636,56 @@ class MemoryStore:
         plans.sort(key=lambda p: p.priority)
         self.production_plans = plans
         return plans
+
+    def _generate_production_plan_via_service(self) -> list[ProductionPlanIn]:
+        payload = {
+            "market_signals": [
+                {
+                    "product_code": signal.product_code,
+                    "demand_index": signal.demand_index,
+                    "inventory_pressure": signal.inventory_pressure,
+                }
+                for signal in self.market_signals
+            ],
+            "node_health": self._planner_node_health(),
+        }
+        ok, data = post_json(f"{settings.production_planner_url}/plan", payload)
+        self.update_integration_edge("production-planner", ok)
+        if not ok or not isinstance(data, list):
+            return []
+        plans: list[ProductionPlanIn] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            code = canonical_product_code(str(item.get("product_code") or ""))
+            if code not in PRODUCTS:
+                continue
+            try:
+                plans.append(ProductionPlanIn(
+                    product_code=code,
+                    target_quantity=int(item.get("target_quantity") or 0),
+                    priority=int(item.get("priority") or 5),
+                    route=list(item.get("route") or product_route(code)),
+                    reason=str(item.get("reason") or "production-planner service"),
+                ))
+            except (TypeError, ValueError):
+                continue
+        return sorted(plans, key=lambda plan: plan.priority)
+
+    def _planner_node_health(self) -> list[dict[str, object]]:
+        result: list[dict[str, object]] = []
+        for node in self.nodes.values():
+            if node.workshop_type not in {"turning", "milling", "grinding"}:
+                continue
+            machines = [m for m in self.machines if m.node_code == node.node_code]
+            load = round(mean([m.load_rate for m in machines]), 1) if machines else 100.0
+            result.append({
+                "node_code": node.node_code,
+                "workshop_type": node.workshop_type,
+                "status": node.status.value,
+                "load_score": load,
+            })
+        return result
 
     def _available_machine_for(self, process: str) -> Machine | None:
         def usable(machine: Machine) -> bool:
@@ -775,9 +1767,10 @@ class MemoryStore:
 
     def _add_allocation_order(self, order_in: AllocationOrderIn) -> AllocationOrder:
         self.order_seq += 1
+        product_code = canonical_product_code(order_in.product_code)
         order = AllocationOrder(
             order_id=f"AO-{self.order_seq:03d}", source_unit=order_in.source_unit,
-            product_code=order_in.product_code, product_name=product_name(order_in.product_code),
+            product_code=product_code, product_name=product_name(product_code),
             required_quantity=order_in.required_quantity, priority=order_in.priority,
             deadline_hours=order_in.deadline_hours, assigned_cloud_role=order_in.assigned_cloud_role,
             status="received", reason=order_in.reason,
@@ -876,6 +1869,226 @@ class MemoryStore:
                            "status": "online" if ok else "offline", "detail": data})
         return result
 
+    def shadow_consistency_report(self, limit: int = 100) -> dict[str, object]:
+        """Compare live v2 facts with PostgreSQL/SQLite shadow rows without changing reads."""
+        if not settings.persist_enabled:
+            return {"status": "disabled", "reason": "PERSIST_ENABLED=false"}
+        with self._lock:
+            expected_heartbeats = {
+                node_code: dict(payload.get("runtime") or {})
+                for node_code, payload in self.node_heartbeats_v2.items()
+                if not self._ephemeral_node_code(node_code)
+            }
+            expected_commands = {command.id: command.status for command in self.commands}
+            expected_parts = {part.part_id: part.status for part in self.part_queue}
+            expected_events = self._shadow_event_count
+        try:
+            with get_db() as db:
+                heartbeat_rows = db.execute(
+                    """SELECT node_code, run_id, scenario_id FROM heartbeat_shadow
+                       ORDER BY id DESC LIMIT ?""",
+                    (max(1, limit),),
+                ).fetchall()
+                command_rows = db.execute(
+                    "SELECT command_id, status FROM command_shadow"
+                ).fetchall()
+                part_rows = db.execute(
+                    "SELECT part_id, status FROM part_queue_shadow"
+                ).fetchall()
+                event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
+        except Exception as exc:  # pragma: no cover - depends on external backend
+            return {"status": "degraded", "error": str(exc)}
+
+        heartbeat_seen: dict[str, tuple[str, str]] = {}
+        for row in heartbeat_rows:
+            data = dict(row)
+            heartbeat_seen.setdefault(
+                str(data["node_code"]),
+                (str(data.get("run_id") or ""), str(data.get("scenario_id") or "")),
+            )
+        heartbeat_mismatches = [
+            node_code
+            for node_code, runtime in expected_heartbeats.items()
+            if heartbeat_seen.get(node_code) != (
+                str(runtime.get("run_id") or ""),
+                str(runtime.get("scenario_id") or ""),
+            )
+        ]
+        command_shadow = {int(row["command_id"]): str(row["status"]) for row in command_rows}
+        command_mismatches = [
+            command_id for command_id, status in expected_commands.items()
+            if command_shadow.get(command_id) != status
+        ]
+        part_shadow = {str(row["part_id"]): str(row["status"]) for row in part_rows}
+        part_mismatches = [
+            part_id for part_id, status in expected_parts.items()
+            if part_shadow.get(part_id) != status
+        ]
+        ok = not heartbeat_mismatches and not command_mismatches and not part_mismatches and event_count >= expected_events
+        return {
+            "status": "ok" if ok else "degraded",
+            "heartbeats": {"expected": len(expected_heartbeats), "recent_rows": len(heartbeat_rows), "mismatches": heartbeat_mismatches},
+            "commands": {"expected": len(expected_commands), "shadow_rows": len(command_shadow), "mismatches": command_mismatches},
+            "part_queue": {"expected": len(expected_parts), "shadow_rows": len(part_shadow), "mismatches": part_mismatches},
+            "events": {"expected_at_least": expected_events, "shadow_rows": event_count},
+        }
+
+    def replay_readiness_report(self, limit: int = 500) -> dict[str, object]:
+        """Report whether persisted facts are sufficient to rebuild runtime state after restart."""
+        if not settings.persist_enabled:
+            return {"status": "disabled", "reason": "PERSIST_ENABLED=false"}
+
+        with self._lock:
+            live_heartbeat_nodes = sorted(
+                node_code
+                for node_code in self.node_heartbeats_v2
+                if not self._ephemeral_node_code(node_code)
+            )
+            live_command_ids = sorted(command.id for command in self.commands)
+            live_part_ids = sorted(part.part_id for part in self.part_queue)
+            restored_heartbeat_nodes = sorted(
+                node_code
+                for node_code, payload in self.node_heartbeats_v2.items()
+                if payload.get("_restored_from_persistence") is True
+            )
+            restored_command_ids = sorted(
+                command.id for command in self.commands
+                if command.result_message or command.claimed_by or command.status not in {"pending", "queued"}
+            )
+            restored_part_ids = sorted(part.part_id for part in self.part_queue)
+
+        try:
+            with get_db() as db:
+                heartbeat_rows = db.execute(
+                    """SELECT node_code, run_id, scenario_id, received_at
+                       FROM heartbeat_shadow
+                       ORDER BY id DESC LIMIT ?""",
+                    (max(1, limit),),
+                ).fetchall()
+                command_rows = db.execute(
+                    "SELECT command_id, status, updated_at FROM command_shadow"
+                ).fetchall()
+                part_rows = db.execute(
+                    "SELECT part_id, status, updated_at FROM part_queue_shadow"
+                ).fetchall()
+                event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
+        except Exception as exc:  # pragma: no cover - depends on external backend
+            return {"status": "degraded", "error": str(exc)}
+
+        heartbeat_latest: dict[str, dict[str, str]] = {}
+        for row in heartbeat_rows:
+            data = dict(row)
+            node_code = str(data.get("node_code") or "")
+            if not node_code or self._ephemeral_node_code(node_code) or node_code in heartbeat_latest:
+                continue
+            heartbeat_latest[node_code] = {
+                "run_id": str(data.get("run_id") or ""),
+                "scenario_id": str(data.get("scenario_id") or ""),
+                "received_at": str(data.get("received_at") or ""),
+            }
+
+        shadow_command_ids = sorted(int(dict(row)["command_id"]) for row in command_rows)
+        shadow_part_ids = sorted(str(dict(row)["part_id"]) for row in part_rows)
+        missing_heartbeats = [node_code for node_code in live_heartbeat_nodes if node_code not in heartbeat_latest]
+        missing_commands = [command_id for command_id in live_command_ids if command_id not in shadow_command_ids]
+        missing_parts = [part_id for part_id in live_part_ids if part_id not in shadow_part_ids]
+
+        ok = not missing_heartbeats and not missing_commands and not missing_parts
+        return {
+            "status": "ok" if ok else "degraded",
+            "backend": persistence_label(),
+            "live": {
+                "heartbeat_nodes": len(live_heartbeat_nodes),
+                "commands": len(live_command_ids),
+                "part_queue_items": len(live_part_ids),
+            },
+            "shadow": {
+                "heartbeat_nodes": len(heartbeat_latest),
+                "heartbeat_rows_sampled": len(heartbeat_rows),
+                "commands": len(shadow_command_ids),
+                "part_queue_items": len(shadow_part_ids),
+                "audit_events": event_count,
+            },
+            "restored_cache": {
+                "heartbeat_nodes": restored_heartbeat_nodes,
+                "commands": restored_command_ids,
+                "part_queue_items": restored_part_ids,
+            },
+            "missing": {
+                "heartbeat_nodes": missing_heartbeats,
+                "commands": missing_commands,
+                "part_queue_items": missing_parts,
+            },
+            "latest_heartbeats": heartbeat_latest,
+        }
+
+    def persistence_status(self) -> dict[str, object]:
+        backend = persistence_backend()
+        db_path = Path(settings.central_db_path)
+        base: dict[str, object] = {
+            "enabled": settings.persist_enabled,
+            "backend": persistence_label(),
+            "db_path": str(db_path) if backend == "sqlite" else "",
+            "dsn_configured": bool(settings.postgres_dsn) if backend == "postgres" else False,
+            "db_exists": db_path.exists() if backend == "sqlite" else False,
+            "retention": {
+                "heartbeat_shadow_per_node": settings.heartbeat_shadow_retention_per_node,
+                "heartbeat_shadow_policy": (
+                    "disabled"
+                    if settings.heartbeat_shadow_retention_per_node <= 0
+                    else "keep_latest_per_node"
+                ),
+            },
+            "tables": {},
+            "counts": {},
+            "last_error": "",
+        }
+        if not settings.persist_enabled:
+            return {**base, "status": "disabled"}
+
+        required_tables = ("heartbeat_shadow", "part_queue_shadow", "command_shadow", "audit_logs", "commands")
+        try:
+            init_db()
+            with get_db() as db:
+                if backend == "postgres":
+                    rows = db.execute(
+                        """
+                        SELECT table_name AS name
+                        FROM information_schema.tables
+                        WHERE table_schema = ? AND table_type = ?
+                        """,
+                        ("public", "BASE TABLE"),
+                    ).fetchall()
+                else:
+                    rows = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                table_names = {str(row["name"]) for row in rows}
+                tables = {name: name in table_names for name in required_tables}
+                counts: dict[str, int] = {}
+                for table_name in required_tables:
+                    if table_name in table_names:
+                        row = db.execute(f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+                        counts[table_name] = int(row["count"])
+            consistency = self.shadow_consistency_report()
+            replay = self.replay_readiness_report()
+            status = (
+                "ok"
+                if all(tables.values())
+                and consistency["status"] == "ok"
+                and replay["status"] == "ok"
+                else "degraded"
+            )
+            return {
+                **base,
+                "status": status,
+                "db_exists": True if backend == "postgres" else db_path.exists(),
+                "tables": tables,
+                "counts": counts,
+                "consistency": consistency,
+                "replay_readiness": replay,
+            }
+        except Exception as exc:  # pragma: no cover
+            return {**base, "status": "degraded", "last_error": str(exc)}
+
     def run_preflight(self) -> PreflightResult:
         import time as time_mod
 
@@ -937,6 +2150,8 @@ class MemoryStore:
         stale_nodes: list[str] = []
         with self._lock:
             for node in list(self.nodes.values()):
+                if self._ephemeral_node_code(node.node_code):
+                    continue
                 if node.status == NodeStatus.isolated:
                     continue
                 if now_utc - node.last_heartbeat <= timeout_threshold:
@@ -1038,6 +2253,30 @@ class MemoryStore:
         step4.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
         steps.append(step4)
 
+        # ----------------------------------------------------------------
+        # Step 5 - durable persistence
+        # ----------------------------------------------------------------
+        t0 = time_mod.monotonic()
+        step5 = PreflightStep(key="persistence", label="中心持久化检查", status="running")
+        persistence = self.persistence_status()
+        if persistence["status"] == "degraded":
+            step5.status = "fail"
+            step5.detail = f"{persistence.get('backend')} 持久化异常: {persistence.get('last_error') or persistence.get('tables')}"
+        elif persistence["status"] == "disabled":
+            step5.status = "pass"
+            step5.detail = "PERSIST_ENABLED=false，当前为内存测试模式。"
+        else:
+            counts = persistence.get("counts", {})
+            if isinstance(counts, dict):
+                parts = counts.get("part_queue_shadow", 0)
+                commands = counts.get("command_shadow", 0)
+            else:
+                parts = commands = 0
+            step5.status = "pass"
+            step5.detail = f"{persistence.get('backend')} 持久化正常，part_queue={parts}，commands={commands}。"
+        step5.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
+        steps.append(step5)
+
         all_pass = all(s.status == "pass" for s in steps)
         message = "所有自检通过，系统就绪" if all_pass else "部分自检未通过，请检查后重试"
         return PreflightResult(all_pass=all_pass, steps=steps, message=message)
@@ -1067,9 +2306,11 @@ class MemoryStore:
             "alerts": self.alerts[-20:],
             "events": self.incident_events[-30:],
             "commands": self.commands[-20:],
+            "part_queue": self.part_queue_snapshot(),
             "ai_shortcuts": self.ai_shortcuts,
             "simulation": self.simulation_state(),
             "integrations": integrations,
+            "persistence": self.persistence_status(),
         }
 
     # ------------------------------------------------------------------

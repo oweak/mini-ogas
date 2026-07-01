@@ -27,21 +27,21 @@ machining factory with turning, milling, and grinding workshops.
 
 ```text
 central-control
-├─ dashboard
-├─ central-api
-├─ ai-dispatcher
-├─ market-simulator
-├─ production-planner
-├─ postgres
-├─ redis
-└─ nats
+|-- dashboard
+|-- central-api
+|-- ai-dispatcher
+|-- market-simulator
+|-- production-planner
+|-- postgres
+|-- redis
+`-- nats
 
 workshop-node
-├─ node-agent
-├─ local sqlite database
-├─ metrics collector
-├─ production simulator
-└─ script fix engine
+|-- node-agent
+|-- local sqlite database
+|-- metrics collector
+|-- production simulator
+`-- script fix engine
 ```
 
 ## First Version Scope
@@ -57,107 +57,22 @@ workshop-node
 9. Production report generator.
 10. Permission and audit demonstration.
 
-## Current Code Skeleton
-
-The repository now contains minimal runnable service skeletons:
-
-- `services/central-api`: FastAPI central control API.
-- `services/ai-dispatcher`: FastAPI DeepSeek diagnosis gateway with local fallback.
-- `services/market-simulator`: FastAPI virtual market signal generator.
-- `services/production-planner`: FastAPI rule-based production planner.
-- `services/node-agent`: Go workshop node agent.
-- `services/dashboard`: Vue 3 dashboard.
-
-## Local Development
-
-Recommended one-command workflow from the project root:
-
-```powershell
-.\scripts\setup-dev.ps1
-.\scripts\verify-dev.ps1
-.\scripts\start-all.ps1
-```
-
-See `docs/development-environment.md` for the local D-drive tool layout.
-See `docs/project-structure.md` for file ownership and future coding rules.
-Open the prepared VS Code workspace:
-
-```powershell
-.\scripts\open-vscode.ps1
-```
-
-Central API:
-
-```powershell
-cd services/central-api
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8080
-```
-
-Dashboard:
-
-```powershell
-cd services/dashboard
-npm install
-npm run dev
-```
-
-Node agent:
-
-```powershell
-cd services/node-agent
-$env:NODE_CODE="turning-workshop-01"
-$env:CENTRAL_API_URL="http://localhost:8080"
-go run ./cmd/node-agent
-```
-
-Docker Compose central stack:
-
-```powershell
-docker compose -f deploy/docker-compose.central.yml up --build
-```
-
-## Demo Mode
-
-For a quick interview demo without databases or cloud servers:
-
-```powershell
-.\scripts\start-central-api.ps1
-```
-
-Open another terminal:
-
-```powershell
-.\scripts\start-dashboard.ps1
-```
-
-Then visit:
-
-```text
-http://127.0.0.1:5173
-```
-
-The dashboard includes buttons for normal state, common fault, complex AI
-diagnosis, hostile attack isolation, and market demand shift.
-
 ## Repository Layout
 
 ```text
 mini-ogas/
-├─ services/
-│  ├─ central-api/
-│  ├─ ai-dispatcher/
-│  ├─ dashboard/
-│  ├─ market-simulator/
-│  ├─ node-agent/
-│  └─ production-planner/
-├─ scripts/
-├─ database/
-├─ deploy/
-├─ docs/
-└─ README.md
+|-- services/
+|   |-- central-api/
+|   |-- ai-dispatcher/
+|   |-- dashboard/
+|   |-- market-simulator/
+|   |-- node-agent/
+|   `-- production-planner/
+|-- scripts/
+|-- database/
+|-- deploy/
+|-- docs/
+`-- README.md
 ```
 
 ## Recommended Technology
@@ -171,3 +86,47 @@ mini-ogas/
 - Node database: SQLite.
 - Cache and short-lived state: Redis.
 - Deployment: Docker Compose.
+
+## Current Verification
+
+The current implementation is a Python FastAPI `central-api`, Vue 3 dashboard,
+Python `node-agent`, SimPy process-mode workshop nodes, and optional isolated
+Kali/VirtualBox red-team lab support. Start the local system through the v2.5
+supervisor entrypoint:
+
+```powershell
+.\scripts\start-miniogas.ps1
+```
+
+If a script-managed stack is already running and you intentionally want the Go
+supervisor to take ownership, run:
+
+```powershell
+.\scripts\start-miniogas.ps1 -ReplaceRunning
+```
+
+The legacy lightweight launcher remains available with:
+
+```powershell
+.\scripts\start-miniogas.ps1 -UseScriptLauncher
+```
+
+Use the verification script below as the current truth check:
+
+```powershell
+.\scripts\verify-miniogas.ps1
+```
+
+This runs API contract checks, central API tests, node-agent tests, dashboard
+tests, dashboard build, and a runtime check that verifies protected API access,
+live SimPy heartbeats, PostgreSQL persistence, AI runtime state, and dispatch
+alignment. Optional Kali/VirtualBox state is not used as production-node proof.
+
+AI model calls are only proven when the runtime check is run with:
+
+```powershell
+.\scripts\verify-miniogas.ps1 -RequireAiUnlocked
+```
+
+If that fails with `AI vault is present but locked`, the system is using rule
+fallback and must not be described as having live DeepSeek participation.

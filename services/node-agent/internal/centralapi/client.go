@@ -48,9 +48,6 @@ type CommandResult struct {
 
 func New(baseURL string, apiToken string, tracker *metrics.LatencyTracker) Client {
 	token := apiToken
-	if token == "" {
-		token = "mini-ogas-dev-token"
-	}
 	return Client{
 		baseURL:      strings.TrimRight(baseURL, "/"),
 		apiToken:     token,

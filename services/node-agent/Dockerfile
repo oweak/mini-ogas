@@ -1,14 +1,17 @@
-FROM golang:1.22-alpine AS build
+FROM python:3.13-slim
 
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY cmd/ ./cmd/
-COPY internal/ ./internal/
-RUN CGO_ENABLED=0 go build -o /out/node-agent ./cmd/node-agent
+WORKDIR /app
 
-FROM alpine:3.20
+RUN useradd -r -u 10001 nodeagent
 
-COPY --from=build /out/node-agent /usr/local/bin/node-agent
+COPY simulator.py ./simulator.py
 
-CMD ["/usr/local/bin/node-agent"]
+RUN pip install --no-cache-dir simpy==4.1.1
+
+RUN mkdir -p /data && chown -R nodeagent:nodeagent /data /app
+
+USER nodeagent
+
+ENV LOCAL_DB_PATH=/data/node.db
+
+CMD ["python", "simulator.py"]

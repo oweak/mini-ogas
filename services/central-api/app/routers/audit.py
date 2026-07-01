@@ -11,7 +11,14 @@ router = APIRouter(tags=["audit"])
 
 @router.get("/alerts")
 def list_alerts():
-    return store.alerts
+    rows = []
+    for alert in store.alerts:
+        if alert.status in {"closed", "resolved"}:
+            continue
+        item = alert.model_dump(mode="json")
+        item["issue_id"] = f"{alert.node_code}-{alert.alert_type}"
+        rows.append(item)
+    return rows
 
 
 @router.get("/commands")

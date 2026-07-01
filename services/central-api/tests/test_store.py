@@ -1,7 +1,11 @@
+from datetime import timedelta
+
 import pytest
 
-from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity
-from app.store import MemoryStore
+from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity, utc_now
+from app.core.config import settings
+import app.store as store_module
+from app.store import MemoryStore, canonical_product_code, product_name, product_route
 
 
 @pytest.fixture()
@@ -26,6 +30,277 @@ def test_record_metric_creates_new_node(store: MemoryStore) -> None:
 
     assert "quality-cloud-01" in store.nodes
     assert store.nodes["quality-cloud-01"].workshop_type == "cloud"
+
+
+def test_product_catalog_uses_shared_microservice_codes(store: MemoryStore) -> None:
+    assert list(store_module.PRODUCTS) == ["P1", "P2", "P3", "P4", "P5"]
+    assert canonical_product_code("A3") == "P3"
+    assert product_name("A3") == product_name("P3")
+    assert product_route("P3") == ["turning", "milling", "grinding"]
+    assert all(item.product_code.startswith("P") for item in store.market_signals)
+    assert all(item.product_code.startswith("P") for item in store.inventory)
+    assert store.allocation_orders[0].product_code == "P3"
+
+
+def test_refresh_market_via_service_consumes_signals(monkeypatch, store: MemoryStore) -> None:
+    monkeypatch.setattr(settings, "microservices_enabled", True)
+    monkeypatch.setattr(settings, "market_simulator_url", "http://market.test")
+
+    def fake_get_json(url: str, timeout: float | None = None):
+        assert url == "http://market.test/signals"
+        return True, [
+            {
+                "product_code": "P1",
+                "current_price": 121.5,
+                "competitor_price": 119.0,
+                "demand_index": 135.0,
+                "season_factor": 1.2,
+                "inventory_pressure": 77.0,
+            }
+        ]
+
+    monkeypatch.setattr(store_module, "get_json", fake_get_json)
+
+    store.refresh_market_via_service()
+
+    assert [signal.product_code for signal in store.market_signals] == ["P1"]
+    assert store.market_signals[0].demand_index == 135.0
+    assert next(item for item in store.inventory if item.product_code == "P1").pressure_score == 77.0
+    edge = next(edge for edge in store.topology_edges if edge.target == "market-simulator")
+    assert edge.status == "healthy"
+
+
+def test_generate_production_plan_uses_planner_service(monkeypatch, store: MemoryStore) -> None:
+    monkeypatch.setattr(settings, "microservices_enabled", True)
+    monkeypatch.setattr(settings, "market_simulator_url", "http://market.test")
+    monkeypatch.setattr(settings, "production_planner_url", "http://planner.test")
+
+    def fake_get_json(url: str, timeout: float | None = None):
+        return True, [
+            {
+                "product_code": "P2",
+                "current_price": 180.0,
+                "competitor_price": 176.0,
+                "demand_index": 122.0,
+                "season_factor": 1.1,
+                "inventory_pressure": 12.0,
+            }
+        ]
+
+    def fake_post_json(url: str, payload: dict, timeout: float | None = None):
+        assert url == "http://planner.test/plan"
+        assert payload["market_signals"][0]["product_code"] == "P2"
+        assert any(node["workshop_type"] == "turning" for node in payload["node_health"])
+        return True, [
+            {
+                "product_code": "P2",
+                "target_quantity": 88,
+                "priority": 2,
+                "route": ["turning", "milling"],
+                "reason": "pytest planner",
+            }
+        ]
+
+    monkeypatch.setattr(store_module, "get_json", fake_get_json)
+    monkeypatch.setattr(store_module, "post_json", fake_post_json)
+
+    plans = store.generate_production_plan()
+
+    assert len(plans) == 1
+    assert plans[0].product_code == "P2"
+    assert plans[0].target_quantity == 88
+    assert plans[0].reason == "pytest planner"
+    edge = next(edge for edge in store.topology_edges if edge.target == "production-planner")
+    assert edge.status == "healthy"
+
+
+def test_record_node_heartbeat_v2_updates_runtime_production_and_alerts(store: MemoryStore) -> None:
+    result = store.record_node_heartbeat_v2({
+        "node_code": "milling-workshop-01",
+        "status": "warning",
+        "schema_version": "2.2",
+        "runtime": {
+            "deployment_mode": "process",
+            "simulation_mode": "normal",
+            "simulation_engine": "simpy",
+            "run_id": "RUN-20260613-001",
+            "scenario_id": "SCN-MILLING-COOLANT-LOW-001",
+            "simulation_time": "2026-06-13T10:20:00+08:00",
+            "simulation_speed": 12,
+            "runtime_source": "node-agent",
+        },
+        "metrics": {
+            "cpu_usage": 42,
+            "memory_usage": 50,
+            "disk_usage": 61,
+            "network_latency_ms": 35,
+            "db_latency_ms": 12,
+        },
+        "production": {
+            "machine_code": "MILL-02",
+            "workshop_type": "milling",
+            "active_order": "WO-1",
+            "finished_quantity": 33,
+            "defect_quantity": 1,
+            "tool_wear_level": 28,
+            "spindle_temp": 66.5,
+            "wip_input": 8,
+            "wip_output": 5,
+            "target_rate": 1.0,
+            "actual_rate": 0.82,
+            "utilization": 0.76,
+            "defect_rate": 0.03,
+        },
+        "alarms": [{"type": "COOLANT_FLOW_LOW", "severity": "medium", "status": "open"}],
+        "sync": {"pending_records": 2},
+    })
+
+    assert result["accepted"] is True
+    assert result["schema_version"] == "2.2"
+    assert store.node_heartbeats_v2["milling-workshop-01"]["runtime"]["simulation_engine"] == "simpy"
+    assert store.latest_metrics()["milling-workshop-01"].finished_quantity == 33
+    assert any(machine.machine_code == "MILL-02" and machine.today_output == 33 for machine in store.machines)
+    assert any(alert.alert_type == "COOLANT_FLOW_LOW" for alert in store.alerts)
+
+
+def test_turning_heartbeat_creates_ready_parts_for_milling_claim(store: MemoryStore) -> None:
+    base_payload = {
+        "node_code": "turning-workshop-01",
+        "status": "running",
+        "runtime": {"simulation_engine": "simpy", "run_id": "RUN-PARTS", "scenario_id": "SCN-PARTS"},
+        "metrics": {"cpu_usage": 30, "memory_usage": 40, "disk_usage": 50},
+        "production": {
+            "machine_code": "LATHE-01",
+            "workshop_type": "turning",
+            "active_order": "WO-PARTS-001",
+            "product_code": "A3",
+            "finished_quantity": 10,
+            "target_rate": 1.0,
+            "actual_rate": 0.9,
+            "utilization": 0.7,
+        },
+    }
+    first = store.record_node_heartbeat_v2(base_payload)
+    second = store.record_node_heartbeat_v2({
+        **base_payload,
+        "production": {**base_payload["production"], "finished_quantity": 12},
+    })
+
+    first_claim = store.claim_next_part_for_node("milling-workshop-01")
+    second_claim = store.claim_next_part_for_node("milling-workshop-01")
+    third_claim = store.claim_next_part_for_node("milling-workshop-01")
+
+    assert first["parts_created"] == 0
+    assert second["parts_created"] == 2
+    assert first_claim["claimed"] is True
+    assert second_claim["claimed"] is True
+    assert third_claim == {"claimed": False, "part": None}
+    assert first_claim["part"].part_id != second_claim["part"].part_id
+
+
+def test_part_claim_completion_and_expiry_recovery(store: MemoryStore) -> None:
+    part = store.create_ready_part("WO-PARTS-EXPIRE", "A3")
+    claimed = store.claim_next_part_for_node("milling-workshop-01")
+    claimed_part = claimed["part"]
+    assert claimed_part.part_id == part.part_id
+    assert claimed_part.claim_token
+
+    with store._lock:
+        claimed_part.claim_expires_at = utc_now() - timedelta(seconds=1)
+    released = store.release_expired_part_claims()
+    reclaimed = store.claim_next_part_for_node("milling-workshop-01")
+    reclaimed_part = reclaimed["part"]
+    completed = store.complete_claimed_part(
+        "milling-workshop-01",
+        reclaimed_part.part_id,
+        reclaimed_part.claim_token,
+    )
+
+    assert released == 1
+    assert reclaimed["claimed"] is True
+    assert reclaimed_part.part_id == part.part_id
+    assert completed["accepted"] is True
+    assert completed["part"].status == "completed"
+    snapshot = store.part_queue_snapshot()
+    assert snapshot["counts"]["completed"] == 1
+
+
+def test_milling_completion_creates_grinding_downstream_part(store: MemoryStore) -> None:
+    source = store.create_ready_part("WO-PARTS-GRIND", "A3")
+    milling_claim = store.claim_next_part_for_node("milling-workshop-01")
+    milling_part = milling_claim["part"]
+
+    milling_done = store.complete_claimed_part(
+        "milling-workshop-01",
+        milling_part.part_id,
+        milling_part.claim_token,
+    )
+    grinding_claim = store.claim_next_part_for_node("grinding-workshop-01")
+    grinding_claim_again = store.claim_next_part_for_node("grinding-workshop-01")
+    grinding_part = grinding_claim["part"]
+    grinding_done = store.complete_claimed_part(
+        "grinding-workshop-01",
+        grinding_part.part_id,
+        grinding_part.claim_token,
+    )
+
+    assert milling_done["accepted"] is True
+    assert milling_done["part"].part_id == source.part_id
+    assert milling_done["downstream_part"].parent_part_id == source.part_id
+    assert milling_done["downstream_part"].current_step == "grinding"
+    assert milling_done["downstream_part"].target_node == "grinding-workshop-01"
+    assert grinding_claim["claimed"] is True
+    assert grinding_claim_again == {"claimed": False, "part": None}
+    assert grinding_done["accepted"] is True
+    assert grinding_done["part"].status == "completed"
+    assert grinding_done["downstream_part"] is None
+    assert store.part_queue_snapshot()["counts"]["completed"] == 2
+
+
+def test_shadow_persistence_restores_part_queue_and_commands(tmp_path) -> None:
+    original_enabled = settings.persist_enabled
+    original_path = settings.central_db_path
+    settings.persist_enabled = True
+    settings.central_db_path = str(tmp_path / "central-shadow.db")
+    try:
+        first = MemoryStore()
+        part = first.create_ready_part("WO-SHADOW", "A3")
+        claimed = first.claim_next_part_for_node("milling-workshop-01")
+        claimed_part = claimed["part"]
+        first.complete_claimed_part("milling-workshop-01", claimed_part.part_id, claimed_part.claim_token)
+
+        command = first.add_command(
+            "milling-workshop-01",
+            "set_target_rate",
+            "low",
+            "pending",
+            "pytest",
+            parameters={"target_rate": 0.81},
+        )
+        first.claim_pending_commands_for_node("milling-workshop-01", "pytest-agent")
+        first.record_command_result("milling-workshop-01", command.id, "executed", "applied")
+        first_status = first.persistence_status()
+
+        second = MemoryStore()
+        second_status = second.persistence_status()
+    finally:
+        settings.persist_enabled = original_enabled
+        settings.central_db_path = original_path
+
+    assert first_status["status"] == "ok"
+    assert second_status["status"] == "ok"
+    assert first_status["counts"]["part_queue_shadow"] >= 2
+    assert first_status["counts"]["command_shadow"] >= 1
+    restored_part = next(item for item in second.part_queue if item.part_id == part.part_id)
+    restored_downstream = next(item for item in second.part_queue if item.parent_part_id == part.part_id)
+    restored_command = next(item for item in second.commands if item.id == command.id)
+    assert restored_part.status == "completed"
+    assert restored_downstream.current_step == "grinding"
+    assert restored_downstream.status == "ready"
+    assert restored_command.status == "executed"
+    assert restored_command.claimed_by == "pytest-agent"
+    assert restored_command.parameters["target_rate"] == 0.81
+    assert restored_command.result_message == "applied"
 
 
 def test_record_metric_disk_90_generates_alert(store: MemoryStore) -> None:
@@ -81,6 +356,24 @@ def test_record_metric_network_100m_isolates_node(store: MemoryStore) -> None:
 
     assert any(alert.severity == Severity.high for alert in alerts)
     assert store.nodes["grinding-workshop-01"].status == NodeStatus.isolated
+
+
+def test_heartbeat_timeout_ignores_control_plane_placeholders(store: MemoryStore) -> None:
+    cutoff = utc_now() - timedelta(seconds=settings.heartbeat_timeout_seconds + 5)
+    store.nodes["cloud-workshop-01"].last_heartbeat = cutoff
+    store.nodes["cloud-db-01"].last_heartbeat = cutoff
+    store.nodes["turning-workshop-01"].last_heartbeat = cutoff
+
+    expired = store.check_heartbeat_timeout()
+
+    assert expired == 1
+    assert store.nodes["turning-workshop-01"].status == NodeStatus.offline
+    assert store.nodes["cloud-workshop-01"].status == NodeStatus.online
+    assert store.nodes["cloud-db-01"].status == NodeStatus.online
+    assert not any(
+        event.stage == "heartbeat-timeout" and event.node_code in {"cloud-workshop-01", "cloud-db-01"}
+        for event in store.incident_events
+    )
 
 
 def test_isolate_node_changes_topology_edges(store: MemoryStore) -> None:
@@ -184,8 +477,10 @@ def test_management_snapshot_includes_all_sections(store: MemoryStore) -> None:
         "ai_shortcuts",
         "simulation",
         "integrations",
+        "persistence",
     ):
         assert key in snapshot
+    assert snapshot["persistence"]["status"] == "disabled"
 
 
 def test_simulation_step_increments_tick(store: MemoryStore) -> None:

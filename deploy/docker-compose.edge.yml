@@ -1,0 +1,17 @@
+services:
+  node-agent:
+    build:
+      context: ../services/node-agent
+    env_file:
+      - ./.env.edge
+    volumes:
+      - node_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sqlite3, os; sqlite3.connect(os.environ.get('LOCAL_DB_PATH', '/data/node.db')).execute('select 1')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  node_data:

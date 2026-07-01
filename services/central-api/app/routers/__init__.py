@@ -15,6 +15,7 @@ from . import (
     ops,
     preflight,
     production,
+    reports,
     simulation,
     transfer,
 )
@@ -29,6 +30,7 @@ api_router.include_router(nodes.router)
 api_router.include_router(dispatch.router)
 api_router.include_router(market.router)
 api_router.include_router(production.router)
+api_router.include_router(reports.router)
 api_router.include_router(ai.router)
 api_router.include_router(audit.router)
 api_router.include_router(simulation.router)

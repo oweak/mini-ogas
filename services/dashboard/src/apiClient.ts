@@ -2,20 +2,28 @@ export const API_BASE = import.meta.env.VITE_OGAS_API_BASE ?? 'http://127.0.0.1:
 
 const tokenFromStorage = () => {
   try {
-    return window.localStorage.getItem('miniogas_token') || ''
+    return window.localStorage.getItem('miniogas_access_token') || ''
   } catch {
     return ''
   }
 }
 
-export function getApiToken() {
-  return import.meta.env.VITE_OGAS_TOKEN ?? tokenFromStorage() ?? ''
+export function getAccessToken() {
+  return tokenFromStorage() ?? ''
+}
+
+export function clearAccessToken() {
+  try {
+    window.localStorage.removeItem('miniogas_access_token')
+  } catch {
+    // Ignore storage errors; the visible session will still be locked by the event below.
+  }
 }
 
 export function apiHeaders(extra?: HeadersInit): Headers {
-  const token = getApiToken()
+  const token = getAccessToken()
   const headers = new Headers(extra)
-  if (token) headers.set('X-OGAS-Token', token)
+  if (token) headers.set('Authorization', `Bearer ${token}`)
   if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
   return headers
 }
@@ -24,9 +32,14 @@ export function apiUrl(path: string) {
   return `${API_BASE}${path.startsWith('/') ? path : `/${path}`}`
 }
 
-export function apiFetch(path: string, init: RequestInit = {}) {
-  return fetch(apiUrl(path), {
+export async function apiFetch(path: string, init: RequestInit = {}) {
+  const response = await fetch(apiUrl(path), {
     ...init,
     headers: apiHeaders(init.headers)
   })
+  if (response.status === 401) {
+    clearAccessToken()
+    window.dispatchEvent(new CustomEvent('miniogas-auth-expired', { detail: { path } }))
+  }
+  return response
 }

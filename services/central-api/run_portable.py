@@ -20,7 +20,7 @@ def main() -> None:
     os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
 
     import uvicorn
-    import main as app_module
+    from app.main import app
 
     host = os.getenv("CENTRAL_API_HOST", "0.0.0.0")
     port = int(os.getenv("CENTRAL_API_PORT", "8080"))
@@ -30,7 +30,7 @@ def main() -> None:
     print(f"[portable] Dashboard: http://{host}:{port}")
 
     uvicorn.run(
-        app_module.app,
+        app,
         host=host,
         port=port,
         log_level=os.getenv("LOG_LEVEL", "info").lower(),

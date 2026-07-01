@@ -1,6 +1,7 @@
 import os
 import secrets
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import APIKeyHeader
@@ -18,7 +19,9 @@ def _session_token() -> str:
 app = FastAPI(title="Mini-OGAS Production Planner", version="0.1.0")
 
 _token_scheme = APIKeyHeader(name="X-OGAS-Token", auto_error=False)
-_expected_token = os.getenv("API_ACCESS_TOKEN", "mini-ogas-dev-token")
+_expected_token = os.getenv("API_ACCESS_TOKEN", "")
+PROCESS_ID = os.getpid()
+PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 
 def _verify_token(token: str | None = Depends(_token_scheme)) -> None:
@@ -62,8 +65,11 @@ ROUTES = {
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
-    return {"status": "ok", "service": "production-planner", "session_token": _session_token()}
+def health() -> dict[str, str | int]:
+    return {
+        "status": "ok", "service": "production-planner", "session_token": _session_token(),
+        "process_id": PROCESS_ID, "process_started_at": PROCESS_STARTED_AT,
+    }
 
 
 @app.post("/plan", response_model=list[PlanItem])
@@ -94,4 +100,3 @@ def plan(req: PlanningRequest, _: None = Depends(_verify_token)) -> list[PlanIte
             )
         )
     return sorted(plans, key=lambda item: item.priority)
-

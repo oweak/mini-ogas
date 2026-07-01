@@ -8,6 +8,11 @@ preflight can distinguish "port is alive" from "port is alive and belongs to
 
 import os
 import uuid
+from datetime import datetime, timezone
+
+
+PROCESS_ID = os.getpid()
+PROCESS_STARTED_AT = datetime.now(timezone.utc).isoformat()
 
 
 def get_session_token() -> str:
@@ -22,3 +27,11 @@ def get_session_token() -> str:
         token = str(uuid.uuid4())
         os.environ["OGAS_SESSION_TOKEN"] = token
     return token
+
+
+def get_process_identity() -> dict[str, str | int]:
+    """Stable identity of this Python process for freshness verification."""
+    return {
+        "process_id": PROCESS_ID,
+        "process_started_at": PROCESS_STARTED_AT,
+    }

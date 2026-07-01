@@ -1,14 +1,40 @@
+services/central-api/secrets/*.json
+!services/central-api/secrets/.gitkeep
+
+# Runtime-generated deployment secrets. Examples stay committed under
+# deploy/env.*.example; actual node/edge env files and generated tokens do not.
 .env
-.venv/
-__pycache__/
-*.pyc
+.env.*
+!.env.example
+*.env.local
+*.env.secret
+.env.node
+.env.edge
+**/.env.node
+**/.env.edge
+miniogas-token.txt
+**/miniogas-token.txt
+
+# Local dependencies, runtime state, and browser-test artifacts.
 node_modules/
-dist/
-build/
+.runtime/
+.playwright-mcp/
+*.out.log
+*.err.log
+
+# Python local environments and test/runtime caches.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local databases and generated frontend builds.
 *.db
 *.sqlite
-*.log
-.DS_Store
-.runtime/
-.pytest_cache/
-.playwright-mcp/
+*.sqlite3
+dist/
+*.tsbuildinfo
+
+# Local Superpowers brainstorming/session artifacts.
+.superpowers/

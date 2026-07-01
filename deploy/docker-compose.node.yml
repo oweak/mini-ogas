@@ -3,24 +3,10 @@ services:
     build: ../services/node-agent
     env_file:
       - ./env.node.example
-    environment:
-      - OGAS_SESSION_TOKEN=${OGAS_SESSION_TOKEN:-}
     volumes:
       - node_data:/data
       - ../scripts:/opt/mini-ogas/scripts:ro
-    networks:
-      - mini-ogas-net
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f node-agent || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 10s
 
 volumes:
   node_data:
-
-networks:
-  mini-ogas-net:
-    external: true

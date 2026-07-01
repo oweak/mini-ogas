@@ -21,7 +21,7 @@ func Load() Config {
 		NodeCode:      env("NODE_CODE", "turning-workshop-01"),
 		WorkshopType:  env("WORKSHOP_TYPE", "turning"),
 		CentralAPIURL: env("CENTRAL_API_URL", "http://localhost:8080"),
-		APIToken:      env("CENTRAL_API_TOKEN", "mini-ogas-dev-token"), // WARNING: override in production
+		APIToken:      env("CENTRAL_API_TOKEN", ""),
 		LocalDBPath:   env("LOCAL_DB_PATH", "/var/lib/mini-ogas/node.db"),
 		SessionToken:  env("OGAS_SESSION_TOKEN", ""),
 		Interval:      intervalFromEnv("COLLECT_INTERVAL_SECONDS", 5*time.Second),

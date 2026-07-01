@@ -1,17 +1,18 @@
 from fastapi import APIRouter
 
-from ..core.session import get_session_token
+from ..core.session import get_process_identity, get_session_token
 from ..store import store
 
 router = APIRouter(tags=["health"])
 
 
 @router.get("/health")
-def health() -> dict[str, str]:
+def health() -> dict[str, str | int]:
     return {
         "status": "ok",
         "service": "central-api",
         "session_token": get_session_token(),
+        **get_process_identity(),
     }
 
 

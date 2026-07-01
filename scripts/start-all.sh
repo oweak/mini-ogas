@@ -5,7 +5,17 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-API_TOKEN="${API_ACCESS_TOKEN:-mini-ogas-dev-token}"
+API_TOKEN="${API_ACCESS_TOKEN:-${OGAS_API_TOKEN:-}}"
+if [ -z "$API_TOKEN" ] && [ -f "/d/MiniOGAS-VMs/miniogas-token.txt" ]; then
+    API_TOKEN="$(tr -d '\r\n' < /d/MiniOGAS-VMs/miniogas-token.txt)"
+fi
+if [ -z "$API_TOKEN" ] && [ -f "D:/MiniOGAS-VMs/miniogas-token.txt" ]; then
+    API_TOKEN="$(tr -d '\r\n' < D:/MiniOGAS-VMs/miniogas-token.txt)"
+fi
+if [ -z "$API_TOKEN" ]; then
+    echo "FATAL: API token missing. Set API_ACCESS_TOKEN/OGAS_API_TOKEN or create D:/MiniOGAS-VMs/miniogas-token.txt."
+    exit 1
+fi
 export MICROSERVICES_ENABLED=true
 export RATE_LIMIT_PER_MINUTE=600
 

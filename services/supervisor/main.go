@@ -51,7 +51,7 @@ func main() {
 
 	fmt.Printf("\nsupervisor running — session %s — %d processes\n", sessionID, len(cfg.Processes))
 	fmt.Printf("  API: http://127.0.0.1:%d/supervisor/status\n", cfg.APIPort)
-	fmt.Println("  Press Ctrl+C to stop all services\n")
+	fmt.Println("  Press Ctrl+C to stop all services")
 
 	// Wait for shutdown signal
 	sig := make(chan os.Signal, 1)

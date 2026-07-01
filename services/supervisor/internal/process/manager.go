@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"os"
@@ -16,11 +17,11 @@ import (
 type State int
 
 const (
-	StateStopped  State = iota
-	StateStarting State = iota
-	StateRunning  State = iota
-	StateHealthy  State = iota
-	StateCrashed  State = iota
+	StateStopped State = iota
+	StateStarting
+	StateRunning
+	StateHealthy
+	StateCrashed
 )
 
 func (s State) String() string {
@@ -54,6 +55,7 @@ type ManagedProcess struct {
 	StartedAt  time.Time
 	CrashCount int
 	Backoff    time.Duration
+	Generation uint64
 	mu         sync.Mutex
 	cancel     context.CancelFunc
 }
@@ -78,10 +80,7 @@ func (m *Manager) Register(cfg config.Config) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, spec := range cfg.Processes {
-		m.processes[spec.Name] = &ManagedProcess{
-			Spec:  spec,
-			State: StateStopped,
-		}
+		m.processes[spec.Name] = &ManagedProcess{Spec: spec, State: StateStopped}
 	}
 }
 
@@ -99,8 +98,8 @@ func (m *Manager) StartAll() error {
 				continue
 			}
 			depsMet := true
-			for _, dep := range proc.Spec.DependsOn {
-				if !started[dep] {
+			for _, dependency := range proc.Spec.DependsOn {
+				if !started[dependency] {
 					depsMet = false
 					break
 				}
@@ -112,13 +111,11 @@ func (m *Manager) StartAll() error {
 		m.mu.RUnlock()
 
 		if len(ready) == 0 {
-			log.Printf("supervisor: WARNING dependency deadlock — %d processes remain", total-len(started))
-			break
+			return fmt.Errorf("dependency deadlock: %d processes remain", total-len(started))
 		}
-
 		for _, name := range ready {
 			if err := m.startOne(name); err != nil {
-				log.Printf("supervisor: ERROR starting %s: %v", name, err)
+				return err
 			}
 			started[name] = true
 		}
@@ -133,23 +130,23 @@ func (m *Manager) startOne(name string) error {
 	proc, ok := m.processes[name]
 	m.mu.RUnlock()
 	if !ok {
-		log.Printf("supervisor: unknown process %q", name)
-		return nil
+		return fmt.Errorf("unknown process %q", name)
 	}
 
 	proc.mu.Lock()
+	proc.Generation++
+	generation := proc.Generation
 	proc.State = StateStarting
 	if proc.Backoff == 0 {
-		proc.Backoff = 1 * time.Second
+		proc.Backoff = time.Second
 	}
 	proc.mu.Unlock()
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	env := os.Environ()
+	env := append([]string{}, os.Environ()...)
 	env = append(env, "OGAS_SESSION_TOKEN="+m.sessionID)
-	for k, v := range proc.Spec.Env {
-		env = append(env, k+"="+v)
+	for key, value := range proc.Spec.Env {
+		env = append(env, key+"="+value)
 	}
 
 	cmd := exec.CommandContext(ctx, proc.Spec.Command, proc.Spec.Args...)
@@ -162,108 +159,157 @@ func (m *Manager) startOne(name string) error {
 	if err := cmd.Start(); err != nil {
 		cancel()
 		proc.mu.Lock()
-		proc.State = StateCrashed
+		if proc.Generation == generation {
+			proc.State = StateCrashed
+		}
 		proc.mu.Unlock()
-		log.Printf("supervisor: %s failed to start: %v", name, err)
-		return nil
+		return fmt.Errorf("start %s: %w", name, err)
 	}
 
 	proc.mu.Lock()
-	proc.PID = cmd.Process.Pid
-	proc.StartedAt = time.Now()
-	proc.State = StateRunning
-	proc.cancel = cancel
+	if proc.Generation == generation {
+		proc.PID = cmd.Process.Pid
+		proc.StartedAt = time.Now()
+		proc.State = StateRunning
+		proc.cancel = cancel
+	}
 	proc.mu.Unlock()
 
-	// Goroutine: wait for exit + health polling
-	go m.monitor(name, cmd, ctx)
-
+	go m.monitor(name, proc, cmd, ctx, generation)
 	return nil
 }
 
-func (m *Manager) monitor(name string, cmd *exec.Cmd, ctx context.Context) {
-	proc := m.processes[name]
-	spec := proc.Spec
-	timeout := time.Duration(spec.Health.Timeout) * time.Second
-	interval := time.Duration(spec.Health.Interval) * time.Second
-
-	// Wait for port binding
-	time.Sleep(2 * time.Second)
-
-	consecutiveFails := 0
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	// Channel to detect process exit
+func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx context.Context, generation uint64) {
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
+
+	if proc.Spec.Health.Type == "process" {
+		m.markHealthy(proc, generation)
+		select {
+		case err := <-done:
+			log.Printf("supervisor: %s process exited: %v", name, err)
+			m.restartProcess(name, generation)
+		case <-ctx.Done():
+		}
+		return
+	}
+
+	// HTTP services need a short bind window before the first strict probe.
+	time.Sleep(2 * time.Second)
+	timeout := time.Duration(proc.Spec.Health.Timeout) * time.Second
+	interval := time.Duration(proc.Spec.Health.Interval) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	consecutiveFails := 0
 
 	for {
 		select {
 		case err := <-done:
 			log.Printf("supervisor: %s process exited: %v", name, err)
-			proc.mu.Lock()
-			proc.State = StateCrashed
-			proc.mu.Unlock()
-			m.restartProcess(name)
+			m.restartProcess(name, generation)
 			return
-
 		case <-ctx.Done():
 			return
-
 		case <-ticker.C:
-			result := m.checker.ProbeHTTP(spec.Health.Endpoint, timeout, m.sessionID)
+			result := m.checker.ProbeHTTP(proc.Spec.Health.Endpoint, timeout, m.sessionID)
 			if result.Healthy {
 				consecutiveFails = 0
-				proc.mu.Lock()
-				proc.State = StateHealthy
-				proc.CrashCount = 0
-				proc.Backoff = 1 * time.Second
-				proc.mu.Unlock()
-			} else {
-				consecutiveFails++
-				if consecutiveFails >= spec.Health.Retries {
-					log.Printf("supervisor: %s unhealthy after %d retries: %s", name, consecutiveFails, result.Detail)
-					proc.cancel() // kill the process
-					cmd.Wait()    // reap
-					proc.mu.Lock()
-					proc.State = StateCrashed
-					proc.mu.Unlock()
-					m.restartProcess(name)
-					return
-				}
+				m.markHealthy(proc, generation)
+				continue
 			}
+			consecutiveFails++
+			if consecutiveFails < proc.Spec.Health.Retries {
+				continue
+			}
+			log.Printf("supervisor: %s unhealthy after %d retries: %s", name, consecutiveFails, result.Detail)
+			proc.mu.Lock()
+			current := proc.Generation == generation
+			cancel := proc.cancel
+			proc.mu.Unlock()
+			if current && cancel != nil {
+				cancel()
+				<-done
+			}
+			m.restartProcess(name, generation)
+			return
 		}
 	}
 }
 
-func (m *Manager) restartProcess(name string) {
+func (m *Manager) markHealthy(proc *ManagedProcess, generation uint64) {
+	proc.mu.Lock()
+	defer proc.mu.Unlock()
+	if proc.Generation != generation || proc.State == StateStopped {
+		return
+	}
+	proc.State = StateHealthy
+	proc.CrashCount = 0
+	proc.Backoff = time.Second
+}
+
+func (m *Manager) restartProcess(name string, generation uint64) {
+	m.mu.RLock()
 	proc, ok := m.processes[name]
+	m.mu.RUnlock()
 	if !ok {
 		return
 	}
 
 	proc.mu.Lock()
+	if proc.Generation != generation || proc.State == StateStopped {
+		proc.mu.Unlock()
+		return
+	}
+	proc.State = StateCrashed
 	proc.CrashCount++
 	const maxBackoff = 30 * time.Second
-	d := time.Duration(int64(1)<<min(proc.CrashCount, 5)) * time.Second
-	if d > maxBackoff {
-		d = maxBackoff
+	delay := time.Duration(int64(1)<<min(proc.CrashCount, 5)) * time.Second
+	if delay > maxBackoff {
+		delay = maxBackoff
 	}
-	d += time.Duration(rand.Intn(1000)) * time.Millisecond
-	proc.Backoff = d
+	delay += time.Duration(rand.Intn(1000)) * time.Millisecond
+	proc.Backoff = delay
 	count := proc.CrashCount
 	proc.mu.Unlock()
 
-	log.Printf("supervisor: %s crashed (count=%d), restarting in %v", name, count, d)
-	time.Sleep(d)
-	m.startOne(name)
+	log.Printf("supervisor: %s crashed (count=%d), restarting in %v", name, count, delay)
+	time.Sleep(delay)
+	proc.mu.Lock()
+	current := proc.Generation == generation && proc.State == StateCrashed
+	proc.mu.Unlock()
+	if current {
+		if err := m.startOne(name); err != nil {
+			log.Printf("supervisor: %s restart failed: %v", name, err)
+		}
+	}
+}
+
+// Restart replaces one managed child. Incrementing Generation first makes a
+// retiring monitor harmless even if its process exits after the replacement.
+func (m *Manager) Restart(name string) error {
+	m.mu.RLock()
+	proc, ok := m.processes[name]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("unknown process %q", name)
+	}
+
+	proc.mu.Lock()
+	proc.Generation++
+	cancel := proc.cancel
+	proc.cancel = nil
+	proc.State = StateStopped
+	proc.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	return m.startOne(name)
 }
 
 func (m *Manager) Status() []StatusSnapshot {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	var result []StatusSnapshot
+	result := make([]StatusSnapshot, 0, len(m.processes))
 	for _, proc := range m.processes {
 		proc.mu.Lock()
 		uptime := ""
@@ -285,14 +331,16 @@ func (m *Manager) Status() []StatusSnapshot {
 func (m *Manager) StopAll() {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	for name := range m.processes {
-		proc := m.processes[name]
+	for name, proc := range m.processes {
 		proc.mu.Lock()
-		if proc.cancel != nil {
-			proc.cancel()
-		}
+		proc.Generation++
+		cancel := proc.cancel
+		proc.cancel = nil
 		proc.State = StateStopped
 		proc.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
 		log.Printf("supervisor: stopped %s", name)
 	}
 }

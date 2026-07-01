@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from ..store import store
+from .auth import initialize_auth_store
 from .config import settings
 
 logger = logging.getLogger("mini_ogas.central_api")
@@ -44,6 +45,7 @@ async def heartbeat_monitor() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    await asyncio.to_thread(initialize_auth_store)
     sim_task = asyncio.create_task(simulation_loop())
     hb_task = asyncio.create_task(heartbeat_monitor())
     try:

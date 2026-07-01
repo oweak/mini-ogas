@@ -1,0 +1,305 @@
+.login-overlay {
+  align-items: center;
+  background:
+    linear-gradient(rgba(205, 216, 225, 0.24) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(205, 216, 225, 0.24) 1px, transparent 1px),
+    #eef2f5;
+  background-size: 48px 48px;
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  position: fixed;
+  z-index: 100;
+}
+
+.login-overlay::before {
+  background: radial-gradient(circle at center, rgba(255, 255, 255, 0.72), rgba(238, 242, 245, 0.96) 64%);
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.login-card,
+.boot-card {
+  background: #ffffff;
+  border: 1px solid #c7d3de;
+  box-shadow: 0 22px 60px rgba(30, 44, 58, 0.22);
+  display: grid;
+  gap: 14px;
+  max-width: 560px;
+  padding: 24px;
+  position: relative;
+  width: min(560px, 100%);
+  z-index: 1;
+}
+
+.login-card h2,
+.login-card p,
+.boot-card h2,
+.boot-card p {
+  margin: 0;
+}
+
+.login-card p,
+.boot-card p {
+  color: #405266;
+  line-height: 1.55;
+}
+
+.boot-card {
+  background: #101923;
+  border-color: #31475a;
+  color: #d9edf2;
+  max-width: 680px;
+}
+
+.boot-card h2 {
+  color: #ffffff;
+}
+
+.boot-card p {
+  color: #a9c5cf;
+}
+
+.boot-header {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.boot-header strong,
+.boot-header small {
+  display: block;
+}
+
+.boot-header small {
+  color: #8fb6c2;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+.boot-screen {
+  background: #0a1118;
+  border: 1px solid #263947;
+  display: grid;
+  gap: 8px;
+  min-height: 342px;
+  padding: 14px;
+}
+
+.boot-line {
+  align-items: center;
+  animation: boot-line-in 220ms ease both;
+  border: 1px solid #21333f;
+  color: #9fb7c2;
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: 58px minmax(0, 1fr);
+  min-height: 54px;
+  padding: 9px 10px;
+}
+
+.boot-line > span {
+  border: 1px solid #31475a;
+  color: #8fb6c2;
+  font-size: 11px;
+  font-weight: 800;
+  grid-row: 1 / span 2;
+  padding: 4px 5px;
+  text-align: center;
+}
+
+.boot-line strong {
+  color: #eef7fa;
+}
+
+.boot-line small {
+  color: #8fa6b1;
+}
+
+.boot-line.ok > span {
+  border-color: #4f9d65;
+  color: #8ee2a0;
+}
+
+.boot-line.warning > span,
+.boot-line.locked > span {
+  border-color: #b8832c;
+  color: #ffd27a;
+}
+
+.boot-line.error > span {
+  border-color: #b94a42;
+  color: #ff9a90;
+}
+
+.boot-line.checking {
+  animation: boot-line-in 220ms ease both, boot-scan-row 1s ease-in-out infinite;
+  border-color: #4b8da1;
+}
+
+.boot-progress {
+  background: #0a1118;
+  border: 1px solid #263947;
+  height: 12px;
+  overflow: hidden;
+}
+
+.boot-progress span {
+  background: linear-gradient(90deg, #46a3b8, #9bd8e2);
+  display: block;
+  height: 100%;
+  transition: width 260ms ease;
+}
+
+.login-card label {
+  display: grid;
+  gap: 6px;
+}
+
+.login-card label span {
+  color: #405266;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.login-card input {
+  border: 1px solid #aebdcc;
+  font: inherit;
+  padding: 10px 12px;
+}
+
+.startup-checks {
+  display: grid;
+  gap: 8px;
+}
+
+.startup-check {
+  align-items: flex-start;
+  background: #f6f8fa;
+  border: 1px solid #d4dee7;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 48px minmax(0, 1fr);
+  padding: 10px;
+  position: relative;
+  overflow: hidden;
+}
+
+.startup-check.checking {
+  animation: check-breathe 1s ease-in-out infinite;
+  border-color: #4b8da1;
+}
+
+.startup-check.checking::after {
+  animation: check-scan 1.1s linear infinite;
+  background: linear-gradient(90deg, transparent, rgba(70, 163, 184, 0.22), transparent);
+  content: "";
+  inset: 0;
+  position: absolute;
+  transform: translateX(-100%);
+}
+
+.startup-check > span {
+  background: #edf1f5;
+  color: #405266;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 3px 5px;
+  text-align: center;
+}
+
+.startup-check.ok > span {
+  background: #e9f4ea;
+  color: #1f6b34;
+}
+
+.startup-check.warning > span,
+.startup-check.locked > span {
+  background: #fff4dc;
+  color: #8a4b09;
+}
+
+.startup-check.checking > span {
+  background: #e7f3f6;
+  color: #236b83;
+}
+
+.startup-check.error > span {
+  background: #fdeceb;
+  color: #9a2f28;
+}
+
+.startup-check strong,
+.startup-check small {
+  display: block;
+}
+
+.startup-check small {
+  color: #4a5568;
+  line-height: 1.45;
+  margin-top: 3px;
+}
+
+.startup-nodes {
+  background: #f8fafc;
+  border: 1px solid #d4dee7;
+  display: grid;
+  gap: 5px;
+  padding: 10px;
+}
+
+.startup-nodes strong,
+.startup-nodes span,
+.startup-note {
+  color: #405266;
+  font-size: 12px;
+}
+
+.login-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@keyframes check-breathe {
+  0%,
+  100% {
+    background: #f6f8fa;
+  }
+  50% {
+    background: #edf7f9;
+  }
+}
+
+@keyframes check-scan {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes boot-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes boot-scan-row {
+  0%,
+  100% {
+    background: #0a1118;
+  }
+  50% {
+    background: #102838;
+  }
+}

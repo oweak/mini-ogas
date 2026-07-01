@@ -69,16 +69,31 @@ class Settings(BaseModel):
     groq_model: str = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
     # WARNING: Default tokens below are for local dev only.
     # Override API_ACCESS_TOKEN and NODE_INGEST_TOKEN in production.
-    api_access_token: str = os.getenv("API_ACCESS_TOKEN", "mini-ogas-dev-token")
-    node_ingest_token: str = os.getenv("NODE_INGEST_TOKEN", os.getenv("API_ACCESS_TOKEN", "mini-ogas-dev-token"))
-    rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "180"))
-    microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    api_access_token: str = os.getenv("API_ACCESS_TOKEN", "")
+    node_ingest_token: str = os.getenv("NODE_INGEST_TOKEN", os.getenv("API_ACCESS_TOKEN", ""))
+    auth_jwt_secret: str = os.getenv("JWT_SECRET", "mini-ogas-local-development-jwt-secret")
+    auth_jwt_ttl_seconds: int = int(os.getenv("JWT_TTL_SECONDS", "28800"))
+    auth_bootstrap_username: str = os.getenv("AUTH_BOOTSTRAP_USERNAME", "admin")
+    auth_bootstrap_display_name: str = os.getenv("AUTH_BOOTSTRAP_DISPLAY_NAME", "车间主管")
+    # Used only to create the first local administrator. Subsequent logins are
+    # verified against the salted password hash stored in PostgreSQL/SQLite.
+    auth_bootstrap_password: str = os.getenv("AUTH_BOOTSTRAP_PASSWORD", os.getenv("MINIOGAS_ADMIN_PASSWORD", ""))
+    allow_legacy_api_token_auth: bool = os.getenv("ALLOW_LEGACY_API_TOKEN_AUTH", "false").lower() in {"1", "true", "yes", "on"}
+    rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "1200"))
+    microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     persist_enabled: bool = os.getenv("PERSIST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    persist_backend: str = os.getenv("PERSIST_BACKEND", "auto").strip().lower()
+    postgres_dsn: str = os.getenv("POSTGRES_DSN", os.getenv("DATABASE_URL", "")).strip()
     central_db_path: str = os.getenv("CENTRAL_DB_PATH", str(PROJECT_ROOT / ".runtime" / "central.db"))
+    heartbeat_shadow_retention_per_node: int = int(os.getenv("HEARTBEAT_SHADOW_RETENTION_PER_NODE", "2000"))
     ai_dispatcher_url: str = os.getenv("AI_DISPATCHER_URL", "http://127.0.0.1:8081")
     market_simulator_url: str = os.getenv("MARKET_SIMULATOR_URL", "http://127.0.0.1:8082")
     production_planner_url: str = os.getenv("PRODUCTION_PLANNER_URL", "http://127.0.0.1:8083")
     service_probe_timeout_seconds: float = float(os.getenv("SERVICE_PROBE_TIMEOUT_SECONDS", "5"))
+    expected_production_nodes: list[str] = _csv_env(
+        "EXPECTED_PRODUCTION_NODES",
+        "turning-workshop-01,milling-workshop-01,grinding-workshop-01",
+    )
     cors_origins: list[str] = _csv_env(
         "CORS_ORIGINS",
         "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173",

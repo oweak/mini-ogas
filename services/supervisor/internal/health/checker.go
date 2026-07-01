@@ -1,8 +1,11 @@
 package health
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,14 +18,19 @@ type Status struct {
 	Detail  string
 }
 
-func NewChecker() *Checker {
-	return &Checker{
-		httpClient: &http.Client{Timeout: 3 * time.Second},
-	}
+type healthPayload struct {
+	Status           string `json:"status"`
+	SessionToken     string `json:"session_token"`
+	ProcessID        int    `json:"process_id"`
+	ProcessStartedAt string `json:"process_started_at"`
 }
 
-// ProbeHTTP calls GET <endpoint> and checks for 200 OK.
-// It also optionally checks the session_token field if expectedToken is non-empty.
+func NewChecker() *Checker {
+	return &Checker{httpClient: &http.Client{Timeout: 3 * time.Second}}
+}
+
+// ProbeHTTP validates the Mini-OGAS HTTP health proof. A session-aware probe
+// also requires process identity fields to reject a listener from an old run.
 func (c *Checker) ProbeHTTP(endpoint string, timeout time.Duration, expectedToken string) Status {
 	client := *c.httpClient
 	client.Timeout = timeout
@@ -33,32 +41,30 @@ func (c *Checker) ProbeHTTP(endpoint string, timeout time.Duration, expectedToke
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		return Status{Healthy: false, Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
 	}
 
-	// Session token check is optional — only if we have a token to verify
-	if expectedToken != "" {
-		// Read enough of the body to extract the session_token field
-		// This is a lightweight check — we don't need a full JSON parse
-		buf := make([]byte, 4096)
-		n, _ := resp.Body.Read(buf)
-		body := string(buf[:n])
-		// Simple substring match for the session token in the JSON
-		if !containsToken(body, expectedToken) {
-			return Status{Healthy: false, Detail: "session_token mismatch (stale process)"}
-		}
+	var payload healthPayload
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 64*1024))
+	if err := decoder.Decode(&payload); err != nil {
+		return Status{Healthy: false, Detail: fmt.Sprintf("invalid health JSON: %v", err)}
+	}
+	if strings.ToLower(payload.Status) != "ok" {
+		return Status{Healthy: false, Detail: "health status is not ok"}
+	}
+	if expectedToken == "" {
+		return Status{Healthy: true, Detail: "ok"}
+	}
+	if payload.SessionToken != expectedToken {
+		return Status{Healthy: false, Detail: "session_token mismatch (stale process)"}
+	}
+	if payload.ProcessID <= 0 {
+		return Status{Healthy: false, Detail: "missing process_id in health proof"}
+	}
+	if _, err := time.Parse(time.RFC3339, payload.ProcessStartedAt); err != nil {
+		return Status{Healthy: false, Detail: "missing or invalid process_started_at in health proof"}
 	}
 
 	return Status{Healthy: true, Detail: "ok"}
-}
-
-func containsToken(body, token string) bool {
-	// Fast path: the token appears literally in the JSON body
-	for i := 0; i < len(body)-len(token); i++ {
-		if body[i:i+len(token)] == token {
-			return true
-		}
-	}
-	return false
 }

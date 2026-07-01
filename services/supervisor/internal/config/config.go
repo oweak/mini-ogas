@@ -1,29 +1,31 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
 )
 
 type HealthCheckConfig struct {
-	Type     string `toml:"type"` // "http" or "process"
+	Type     string `toml:"type"`
 	Endpoint string `toml:"endpoint"`
-	Interval int    `toml:"interval"` // seconds
-	Timeout  int    `toml:"timeout"`  // seconds
+	Interval int    `toml:"interval"`
+	Timeout  int    `toml:"timeout"`
 	Retries  int    `toml:"retries"`
 }
 
 type ProcessSpec struct {
-	Name       string            `toml:"name"`
-	Command    string            `toml:"command"`
-	Args       []string          `toml:"args"`
-	Dir        string            `toml:"dir"`
-	Env        map[string]string `toml:"env"`
-	DependsOn  []string          `toml:"depends_on"`
-	Health     HealthCheckConfig `toml:"health"`
+	Name      string            `toml:"name"`
+	Command   string            `toml:"command"`
+	Args      []string          `toml:"args"`
+	Dir       string            `toml:"dir"`
+	Env       map[string]string `toml:"env"`
+	DependsOn []string          `toml:"depends_on"`
+	Health    HealthCheckConfig `toml:"health"`
 }
 
 type Config struct {
@@ -33,25 +35,34 @@ type Config struct {
 }
 
 func Load(path string) (Config, error) {
-	cfg := Config{
-		SessionTokenAuto: true,
-		APIPort:          9099,
-	}
-
+	cfg := Config{SessionTokenAuto: true, APIPort: 9099}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, err
 	}
-
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return cfg, err
 	}
 
-	// Apply defaults
 	for i := range cfg.Processes {
 		p := &cfg.Processes[i]
+		p.Name = strings.TrimSpace(p.Name)
+		p.Command = os.ExpandEnv(strings.TrimSpace(p.Command))
+		p.Dir = os.ExpandEnv(strings.TrimSpace(p.Dir))
+		for index, arg := range p.Args {
+			p.Args[index] = os.ExpandEnv(arg)
+		}
+		for key, value := range p.Env {
+			p.Env[key] = os.ExpandEnv(value)
+		}
+		p.Health.Endpoint = os.ExpandEnv(strings.TrimSpace(p.Health.Endpoint))
+		p.Health.Type = strings.ToLower(strings.TrimSpace(p.Health.Type))
 		if p.Health.Type == "" {
-			p.Health.Type = "http"
+			if p.Health.Endpoint == "" {
+				p.Health.Type = "process"
+			} else {
+				p.Health.Type = "http"
+			}
 		}
 		if p.Health.Interval == 0 {
 			p.Health.Interval = 5
@@ -64,10 +75,45 @@ func Load(path string) (Config, error) {
 		}
 	}
 
+	if err := validate(cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
 }
 
-// env helper used by callers
+func validate(cfg Config) error {
+	known := make(map[string]struct{}, len(cfg.Processes))
+	for _, process := range cfg.Processes {
+		if process.Name == "" {
+			return fmt.Errorf("process name is required")
+		}
+		if process.Command == "" {
+			return fmt.Errorf("process %q command is required", process.Name)
+		}
+		if _, exists := known[process.Name]; exists {
+			return fmt.Errorf("duplicate process name %q", process.Name)
+		}
+		known[process.Name] = struct{}{}
+		if process.Health.Type != "http" && process.Health.Type != "process" {
+			return fmt.Errorf("process %q has unsupported health type %q", process.Name, process.Health.Type)
+		}
+		if process.Health.Type == "http" && process.Health.Endpoint == "" {
+			return fmt.Errorf("process %q HTTP health check requires an endpoint", process.Name)
+		}
+		if process.Health.Interval <= 0 || process.Health.Timeout <= 0 || process.Health.Retries <= 0 {
+			return fmt.Errorf("process %q health interval, timeout, and retries must be positive", process.Name)
+		}
+	}
+	for _, process := range cfg.Processes {
+		for _, dependency := range process.DependsOn {
+			if _, exists := known[dependency]; !exists {
+				return fmt.Errorf("process %q depends on unknown process %q", process.Name, dependency)
+			}
+		}
+	}
+	return nil
+}
+
 func EnvDefault(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
 		return value

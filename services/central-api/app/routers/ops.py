@@ -40,7 +40,24 @@ def reject_command(command_id: int, reason: str = Query(default=""), actor: Acto
 
 @router.get("/escalations")
 def list_escalations():
-    return store.pending_escalations()
+    rows = []
+    for event in store.pending_escalations():
+        alert = next(
+            (
+                item for item in reversed(store.alerts)
+                if item.node_code == event.node_code
+                and item.status not in {"closed", "resolved"}
+                and f"{item.alert_type}:" in event.message
+            ),
+            None,
+        )
+        item = event.model_dump(mode="json")
+        if alert is not None:
+            item["issue_id"] = f"{alert.node_code}-{alert.alert_type}"
+            item["alert_type"] = alert.alert_type
+            item["status"] = "waiting_human"
+        rows.append(item)
+    return rows
 
 
 @router.post("/escalate")

@@ -6,7 +6,16 @@ name = "central-api"
 command = "python"
 args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8080", "--log-level", "warning"]
 dir = "services/central-api"
-
+[process.env]
+OGAS_API_TOKEN = "${OGAS_API_TOKEN}"
+API_ACCESS_TOKEN = "${API_ACCESS_TOKEN}"
+NODE_INGEST_TOKEN = "${NODE_INGEST_TOKEN}"
+PERSIST_ENABLED = "true"
+PERSIST_BACKEND = "postgres"
+POSTGRES_DSN = "${POSTGRES_DSN}"
+MICROSERVICES_ENABLED = "true"
+JWT_SECRET = "${JWT_SECRET}"
+AUTH_BOOTSTRAP_PASSWORD = "${AUTH_BOOTSTRAP_PASSWORD}"
 [process.health]
 type = "http"
 endpoint = "http://127.0.0.1:8080/health"
@@ -20,9 +29,14 @@ command = "python"
 args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8081", "--log-level", "warning"]
 dir = "services/ai-dispatcher"
 depends_on = ["central-api"]
-
+[process.env]
+API_ACCESS_TOKEN = "${API_ACCESS_TOKEN}"
 [process.health]
+type = "http"
 endpoint = "http://127.0.0.1:8081/health"
+interval = 5
+timeout = 3
+retries = 5
 
 [[process]]
 name = "market-simulator"
@@ -30,9 +44,12 @@ command = "python"
 args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8082", "--log-level", "warning"]
 dir = "services/market-simulator"
 depends_on = ["central-api"]
-
 [process.health]
+type = "http"
 endpoint = "http://127.0.0.1:8082/health"
+interval = 5
+timeout = 3
+retries = 5
 
 [[process]]
 name = "production-planner"
@@ -40,18 +57,19 @@ command = "python"
 args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8083", "--log-level", "warning"]
 dir = "services/production-planner"
 depends_on = ["central-api"]
-
 [process.health]
+type = "http"
 endpoint = "http://127.0.0.1:8083/health"
+interval = 5
+timeout = 3
+retries = 5
 
-# Node agents — each simulates one workshop
 [[process]]
-name = "turning-agent"
-command = "python"
-args = ["-u", "services/node-agent/agent.py", "--node-code", "turning-workshop-01", "--workshop-type", "turning", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
-dir = "."
+name = "dashboard"
+command = "npm.cmd"
+args = ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"]
+dir = "services/dashboard"
 depends_on = ["central-api"]
-
 [process.health]
 type = "process"
 interval = 10
@@ -59,41 +77,82 @@ timeout = 5
 retries = 3
 
 [[process]]
-name = "milling-agent"
+name = "turning-simpy-node"
 command = "python"
-args = ["-u", "services/node-agent/agent.py", "--node-code", "milling-workshop-01", "--workshop-type", "milling", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+args = ["services/node-agent/simulator.py"]
 dir = "."
 depends_on = ["central-api"]
-
+[process.env]
+NODE_CODE = "turning-workshop-01"
+WORKSHOP_TYPE = "turning"
+CENTRAL_API_URL = "http://127.0.0.1:8080"
+OGAS_API_TOKEN = "${OGAS_API_TOKEN}"
+LOCAL_DB_PATH = 'D:\MiniOGAS-VMs\vm-turning-workshop-01\node.db'
+HEARTBEAT_SEC = "5"
+EMERGENCY_AFTER_TICKS = "18"
+SIMULATION_MODE = "normal"
+SIMULATION_ENGINE = "simpy"
+SIMULATION_SPEED = "1"
+SIMULATION_RANDOM_SEED = "20260611"
+OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SCENARIO_ID = "SCN-TURNING-SIMPY-FLOW-001"
+NODE_DEPLOYMENT_MODE = "process"
 [process.health]
 type = "process"
+interval = 10
+timeout = 5
+retries = 3
 
 [[process]]
-name = "grinding-agent"
+name = "milling-simpy-node"
 command = "python"
-args = ["-u", "services/node-agent/agent.py", "--node-code", "grinding-workshop-01", "--workshop-type", "grinding", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+args = ["services/node-agent/simulator.py"]
 dir = "."
 depends_on = ["central-api"]
-
+[process.env]
+NODE_CODE = "milling-workshop-01"
+WORKSHOP_TYPE = "milling"
+CENTRAL_API_URL = "http://127.0.0.1:8080"
+OGAS_API_TOKEN = "${OGAS_API_TOKEN}"
+LOCAL_DB_PATH = 'D:\MiniOGAS-VMs\vm-milling-workshop-01\node.db'
+HEARTBEAT_SEC = "5"
+EMERGENCY_AFTER_TICKS = "18"
+SIMULATION_MODE = "normal"
+SIMULATION_ENGINE = "simpy"
+SIMULATION_SPEED = "1"
+SIMULATION_RANDOM_SEED = "20260613"
+OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SCENARIO_ID = "SCN-MILLING-SIMPY-SINGLE-001"
+NODE_DEPLOYMENT_MODE = "process"
 [process.health]
 type = "process"
+interval = 10
+timeout = 5
+retries = 3
 
 [[process]]
-name = "cloud-agent"
+name = "grinding-simpy-node"
 command = "python"
-args = ["-u", "services/node-agent/agent.py", "--node-code", "cloud-workshop-01", "--workshop-type", "cloud", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
+args = ["services/node-agent/simulator.py"]
 dir = "."
 depends_on = ["central-api"]
-
+[process.env]
+NODE_CODE = "grinding-workshop-01"
+WORKSHOP_TYPE = "grinding"
+CENTRAL_API_URL = "http://127.0.0.1:8080"
+OGAS_API_TOKEN = "${OGAS_API_TOKEN}"
+LOCAL_DB_PATH = 'D:\MiniOGAS-VMs\vm-grinding-workshop-01\node.db'
+HEARTBEAT_SEC = "5"
+EMERGENCY_AFTER_TICKS = "18"
+SIMULATION_MODE = "normal"
+SIMULATION_ENGINE = "simpy"
+SIMULATION_SPEED = "1"
+SIMULATION_RANDOM_SEED = "20260615"
+OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SCENARIO_ID = "SCN-GRINDING-SIMPY-FLOW-001"
+NODE_DEPLOYMENT_MODE = "process"
 [process.health]
 type = "process"
-
-[[process]]
-name = "cloud-db-agent"
-command = "python"
-args = ["-u", "services/node-agent/agent.py", "--node-code", "cloud-db-01", "--workshop-type", "database", "--interval", "3", "--api-url", "http://127.0.0.1:8080", "--token", "mini-ogas-dev-token"]
-dir = "."
-depends_on = ["central-api"]
-
-[process.health]
-type = "process"
+interval = 10
+timeout = 5
+retries = 3

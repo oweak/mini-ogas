@@ -49,11 +49,11 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing process name", 400)
 		return
 	}
-	// Restart is triggered by killing the current process; the manager's
-	// crash detection will auto-restart it.
-	// For immediate restart we use the manager's internal restart mechanism.
-	// Simplified: return accepted
-	writeJSON(w, map[string]any{"restarted": name, "status": "accepted"})
+	if err := s.manager.Restart(name); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{"restarted": name, "status": "restarted"})
 }
 
 func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {

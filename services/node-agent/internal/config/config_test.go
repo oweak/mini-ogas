@@ -24,7 +24,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 	if cfg.CentralAPIURL != "http://localhost:8080" {
 		t.Fatalf("unexpected default central url: %s", cfg.CentralAPIURL)
 	}
-	if cfg.APIToken != "mini-ogas-dev-token" {
+	if cfg.APIToken != "" {
 		t.Fatalf("unexpected default token: %s", cfg.APIToken)
 	}
 	if cfg.LocalDBPath != "/var/lib/mini-ogas/node.db" {

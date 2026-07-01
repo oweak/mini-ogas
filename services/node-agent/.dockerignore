@@ -1,10 +1,5 @@
-.pytest_cache/
-.venv/
-tests/
-tmp/
+__pycache__/
+*.pyc
 *.db
-*.sqlite
-*.log
-node-agent
-Dockerfile
-.dockerignore
+.env
+node.db

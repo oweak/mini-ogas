@@ -4,21 +4,32 @@ CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     username VARCHAR(64) NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
     display_name VARCHAR(128) NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'active',
+    active BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS roles (
-    id BIGSERIAL PRIMARY KEY,
-    code VARCHAR(64) NOT NULL UNIQUE,
-    name VARCHAR(128) NOT NULL
+    name VARCHAR(64) PRIMARY KEY,
+    description TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS permissions (
-    id BIGSERIAL PRIMARY KEY,
-    code VARCHAR(128) NOT NULL UNIQUE,
+    name VARCHAR(128) PRIMARY KEY,
     description TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    username VARCHAR(64) NOT NULL REFERENCES users(username) ON DELETE CASCADE,
+    role_name VARCHAR(64) NOT NULL REFERENCES roles(name) ON DELETE CASCADE,
+    PRIMARY KEY (username, role_name)
+);
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+    role_name VARCHAR(64) NOT NULL REFERENCES roles(name) ON DELETE CASCADE,
+    permission_name VARCHAR(128) NOT NULL REFERENCES permissions(name) ON DELETE CASCADE,
+    PRIMARY KEY (role_name, permission_name)
 );
 
 CREATE TABLE IF NOT EXISTS nodes (
@@ -59,12 +70,14 @@ CREATE TABLE IF NOT EXISTS alerts (
 CREATE TABLE IF NOT EXISTS ai_diagnosis (
     id BIGSERIAL PRIMARY KEY,
     alert_id BIGINT,
-    severity VARCHAR(32) NOT NULL,
+    severity VARCHAR(32) NOT NULL DEFAULT 'medium',
+    node_code VARCHAR(64),
     root_cause TEXT NOT NULL,
     recommended_action TEXT NOT NULL,
+    confidence NUMERIC(6, 4) NOT NULL DEFAULT 0.0,
     need_isolation BOOLEAN NOT NULL DEFAULT false,
     model_name VARCHAR(64) NOT NULL DEFAULT 'deepseek',
-    raw_response JSONB,
+    raw_response TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -124,7 +137,49 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     resource_type VARCHAR(64) NOT NULL,
     resource_id VARCHAR(128) NOT NULL,
     result VARCHAR(32) NOT NULL,
-    detail JSONB,
+    detail TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS part_queue_shadow (
+    part_id TEXT PRIMARY KEY,
+    parent_part_id TEXT NOT NULL DEFAULT '',
+    order_id TEXT NOT NULL,
+    product_code TEXT NOT NULL DEFAULT '',
+    current_step TEXT NOT NULL,
+    status TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    target_node TEXT NOT NULL,
+    claimed_by TEXT NOT NULL DEFAULT '',
+    claim_token TEXT NOT NULL DEFAULT '',
+    claim_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS command_shadow (
+    command_id BIGINT PRIMARY KEY,
+    node_code TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    status TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    parameters_json TEXT NOT NULL DEFAULT '{}',
+    claimed_by TEXT NOT NULL DEFAULT '',
+    result_message TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS heartbeat_shadow (
+    id BIGSERIAL PRIMARY KEY,
+    node_code TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    scenario_id TEXT NOT NULL DEFAULT '',
+    simulation_time TIMESTAMPTZ,
+    payload_json TEXT NOT NULL,
+    received_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
+    ON heartbeat_shadow(node_code, received_at);

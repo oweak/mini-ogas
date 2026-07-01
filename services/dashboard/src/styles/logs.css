@@ -1,0 +1,117 @@
+.logs-layout {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+
+.log-archive-panel table td {
+  vertical-align: top;
+}
+
+.log-archive-panel table strong,
+.log-archive-panel table small {
+  display: block;
+}
+
+.log-archive-panel table small {
+  color: #657789;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.log-archive-panel table .verification-line {
+  color: #166534;
+  font-weight: 700;
+}
+
+.log-metrics {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.log-metrics div {
+  background: #f8fafc;
+  border: 1px solid #d4dee7;
+  padding: 12px;
+}
+
+.log-metrics dt,
+.log-metrics dd {
+  margin: 0;
+}
+
+.log-metrics dt {
+  color: #53677a;
+  font-size: 12px;
+}
+
+.log-metrics dd {
+  font-size: 24px;
+  font-weight: 800;
+  margin-top: 4px;
+}
+
+.log-timeline {
+  display: grid;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.log-timeline li {
+  animation: card-rise 220ms ease both;
+  border-left: 3px solid #236b83;
+  padding-left: 10px;
+}
+
+.log-timeline time,
+.log-timeline strong,
+.log-timeline span {
+  display: block;
+}
+
+.log-timeline time,
+.log-timeline span {
+  color: #53677a;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.log-timeline strong {
+  margin: 2px 0;
+}
+
+.node-sync-archive {
+  border-top: 1px solid #d4dee7;
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+  padding-top: 14px;
+}
+
+.node-sync-archive h3 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.node-sync-archive article {
+  animation: card-rise 220ms ease both;
+  background: #f8fafc;
+  border: 1px solid #d4dee7;
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+}
+
+.node-sync-archive span,
+.node-sync-archive small {
+  color: #53677a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+@media (max-width: 1080px) {
+  .logs-layout {
+    grid-template-columns: 1fr;
+  }
+}

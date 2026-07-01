@@ -130,6 +130,22 @@ class DispatchTask(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class PartQueueItem(BaseModel):
+    part_id: str
+    parent_part_id: str = ""
+    order_id: str
+    product_code: str = ""
+    current_step: str = "milling"
+    status: str = "ready"
+    source_node: str = "turning-workshop-01"
+    target_node: str = "milling-workshop-01"
+    claimed_by: str = ""
+    claim_token: str = ""
+    claim_expires_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
 class ResourceAllocation(BaseModel):
     node_code: str
     workshop_type: str
@@ -197,6 +213,9 @@ class NodeCommand(BaseModel):
     risk_level: str
     status: str
     operator: str
+    parameters: dict[str, object] = Field(default_factory=dict)
+    claimed_by: str = ""
+    result_message: str = ""
     created_at: datetime = Field(default_factory=utc_now)
 
 

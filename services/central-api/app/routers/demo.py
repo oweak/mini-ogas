@@ -1,7 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query
 
-from ..models import DemoScenario, IncidentEvent, Alert
-from ..store import store
+from ..core.config import settings
+from ..models import DemoScenario, IncidentEvent, Alert, utc_now
+from ..rules import evaluate_snapshot_rules
+from ..store import store, product_name
 
 router = APIRouter(tags=["demo"])
 
@@ -38,13 +40,358 @@ def _event_to_log(event: IncidentEvent) -> str:
     return f"{ts} [{event.severity.value.upper()}] {event.node_code}: {event.message}"
 
 
-@router.get("/dashboard-state")
-def get_dashboard_state(mode: str = Query("normal")):
-    alerts = store.alerts[-10:]
+def _enrich_node(node, store) -> dict:
+    """Attach production, metrics, alarms, and sync data to a node dict."""
+    data = node.model_dump(mode="json")
+    heartbeat_v2 = store.node_heartbeats_v2.get(node.node_code, {})
+    heartbeat_production = heartbeat_v2.get("production") if isinstance(heartbeat_v2.get("production"), dict) else {}
+    heartbeat_metrics = heartbeat_v2.get("metrics") if isinstance(heartbeat_v2.get("metrics"), dict) else {}
+
+    # Latest metrics snapshot
+    lm = store.latest_metrics().get(node.node_code)
+    data["metrics"] = heartbeat_metrics or (lm.model_dump(mode="json") if lm else None)
+
+    # Production data derived from machines + dispatch tasks
+    node_machines = [m for m in store.machines if m.node_code == node.node_code]
+    first_machine = node_machines[0] if node_machines else None
+
+    # Find an active dispatch task for this node
+    active_task = None
+    for t in store.dispatch_tasks:
+        if t.assigned_node == node.node_code and t.status in ("scheduled", "queued", "in_progress"):
+            active_task = t
+            break
+
+    active_order = (
+        active_task.product_code if active_task
+        else (store.production_plans[0].product_code if store.production_plans else None)
+    )
+
+    production = {
+        "workshop_type": node.workshop_type,
+        "machine_code": first_machine.machine_code if first_machine else node.node_code,
+        "active_order": active_order,
+        "dispatch_policy": "FIFO",
+        "finished_quantity": lm.finished_quantity if lm else 0,
+        "defect_quantity": lm.defect_quantity if lm else 0,
+        "tool_wear_level": first_machine.tool_wear_level if first_machine else 0,
+    }
+    data["production"] = {**production, **heartbeat_production}
+    runtime = heartbeat_v2.get("runtime")
+    if isinstance(runtime, dict):
+        data["runtime"] = runtime
+        data["deployment_mode"] = runtime.get("deployment_mode", "unknown")
+        data["simulation_mode"] = runtime.get("simulation_mode", "unknown")
+
+    # Recent alarms scoped to this node
+    data["alarms"] = [
+        a.model_dump(mode="json")
+        for a in store.alerts
+        if a.node_code == node.node_code and a.status not in {"closed", "resolved"}
+    ][-5:]
+
+    # Sync status (Node model has no sync field; backends signal online via heartbeat)
+    heartbeat_sync = heartbeat_v2.get("sync") if isinstance(heartbeat_v2.get("sync"), dict) else {}
+    data["sync"] = {"pending_records": int(heartbeat_sync.get("pending_records") or 0)}
+
+    return data
+
+
+def _build_work_orders(store) -> list[dict]:
+    """Build frontend-compatible work orders from production plans and allocation orders."""
+    if store.dispatch_tasks:
+        return [
+            {
+                "id": f"DT-{task.id}",
+                "product": task.product_name,
+                "route": task.route,
+                "priority": f"P{min(3, max(1, task.priority // 3 + 1))}",
+                "quantity": task.quantity,
+                "completed": 0,
+                "due": "",
+                "assigned_node": task.assigned_node,
+                "assigned_machine": task.assigned_machine,
+                "status": task.status,
+                "reason": task.reason,
+            }
+            for task in store.dispatch_tasks
+        ]
+
+    orders: list[dict] = []
+    for plan in store.production_plans:
+        orders.append({
+            "id": plan.product_code,
+            "product": product_name(plan.product_code),
+            "route": plan.route,
+            "priority": f"P{min(3, max(1, plan.priority // 3 + 1))}",
+            "quantity": plan.target_quantity,
+            "completed": 0,
+            "due": "",
+            "status": "scheduled",
+        })
+    for ao in store.allocation_orders[-20:]:
+        orders.append({
+            "id": ao.order_id,
+            "product": ao.product_name,
+            "route": [],
+            "priority": f"P{min(3, max(1, ao.priority // 3 + 1))}",
+            "quantity": ao.required_quantity,
+            "completed": 0,
+            "due": "",
+            "status": "in_progress",
+        })
+    return orders
+
+
+def _safe_number(value, default=0):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default=0):
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _snapshot_data_source(nodes: list[dict]) -> str:
+    if not nodes:
+        return "fallback"
+    runtime_sources = [
+        node.get("runtime", {}).get("runtime_source")
+        for node in nodes
+        if isinstance(node.get("runtime"), dict)
+    ]
+    if any(source == "fixture" for source in runtime_sources):
+        return "fixture"
+    if any(source for source in runtime_sources):
+        return "live"
+    return "fallback"
+
+
+def _snapshot_run(nodes: list[dict]) -> dict:
+    runtime_candidates: list[dict] = []
+    for node in nodes:
+        runtime = node.get("runtime")
+        if not isinstance(runtime, dict):
+            continue
+        if runtime.get("run_id") or runtime.get("scenario_id") or runtime.get("simulation_time"):
+            runtime_candidates.append(runtime)
+    if runtime_candidates:
+        runtime = next(
+            (candidate for candidate in runtime_candidates if candidate.get("simulation_engine") == "simpy"),
+            runtime_candidates[0],
+        )
+        return {
+            "run_id": runtime.get("run_id") or "RUN-UNKNOWN",
+            "scenario_id": runtime.get("scenario_id") or "SCN-UNKNOWN",
+            "simulation_time": runtime.get("simulation_time"),
+            "simulation_speed": runtime.get("simulation_speed") or 1,
+            "simulation_engine": runtime.get("simulation_engine") or "simple",
+        }
+    return {
+        "run_id": "RUN-FALLBACK",
+        "scenario_id": "SCN-FALLBACK",
+        "simulation_time": utc_now().isoformat(),
+        "simulation_speed": 1,
+        "simulation_engine": "simple",
+    }
+
+
+def _snapshot_node(node: dict) -> dict:
+    production = node.get("production") if isinstance(node.get("production"), dict) else {}
+    metrics = node.get("metrics") if isinstance(node.get("metrics"), dict) else {}
+    runtime = node.get("runtime") if isinstance(node.get("runtime"), dict) else {}
+    alarms = node.get("alarms") if isinstance(node.get("alarms"), list) else []
+    active_order = production.get("active_order")
+    finished_quantity = _safe_int(production.get("finished_quantity"), _safe_int(metrics.get("finished_quantity")))
+    defect_quantity = _safe_int(production.get("defect_quantity"), _safe_int(metrics.get("defect_quantity")))
+    return {
+        "node_code": node.get("node_code"),
+        "node_name": node.get("node_name"),
+        "status": node.get("status"),
+        "workshop_type": node.get("workshop_type") or production.get("workshop_type"),
+        "machine_code": production.get("machine_code") or node.get("node_code"),
+        "active_order": active_order,
+        "runtime_source": runtime.get("runtime_source") or _snapshot_data_source([node]),
+        "runtime": runtime,
+        "deployment_mode": runtime.get("deployment_mode") or node.get("deployment_mode") or "unknown",
+        "simulation_mode": runtime.get("simulation_mode") or node.get("simulation_mode") or "unknown",
+        "production": {
+            "finished_quantity": finished_quantity,
+            "defect_quantity": defect_quantity,
+            "wip_input": _safe_int(production.get("wip_input")),
+            "wip_output": _safe_int(production.get("wip_output")),
+            "target_rate": _safe_number(production.get("target_rate")),
+            "actual_rate": _safe_number(production.get("actual_rate")),
+            "utilization": _safe_number(production.get("utilization")),
+            "defect_rate": _safe_number(production.get("defect_rate")),
+        },
+        "metrics": metrics,
+        "sync": node.get("sync") or {"pending_records": 0},
+        "alarms": alarms,
+    }
+
+
+def _snapshot_alert(issue: dict) -> dict:
+    return {
+        "id": issue.get("id"),
+        "severity": issue.get("severity"),
+        "title": issue.get("title"),
+        "detail": issue.get("detail"),
+        "status": issue.get("status"),
+        "actions": issue.get("actions", []),
+    }
+
+
+def _snapshot_dispatch_plan(work_orders: list[dict]) -> dict:
+    blocked = [order for order in work_orders if order.get("status") == "blocked"]
+    rerouted = [order for order in work_orders if order.get("status") in {"approved", "approved_executed"}]
+    status = "waiting_approval" if blocked else "no_action"
+    if rerouted and not blocked:
+        status = "approved_executed"
+    summary = (
+        f"{len(blocked)} blocked dispatch tasks require supervisor approval."
+        if blocked else
+        "Current dispatch plan has no blocking constraint."
+    )
+    source = blocked[0] if blocked else (rerouted[0] if rerouted else (work_orders[0] if work_orders else {}))
+    return {
+        "id": "DP-CURRENT",
+        "status": status,
+        "summary": summary,
+        "source_order": str(source.get("id", "")),
+        "from_node": str(source.get("assigned_node") or source.get("assigned_machine") or "current-route"),
+        "to_node": "available-capacity" if blocked else str(source.get("assigned_node") or "current-route"),
+        "risk": "medium" if blocked else "low",
+        "steps": [
+            "Review blocked dispatch tasks.",
+            "Approve supervisor reroute with confirmation code.",
+            "Archive the result in the audit log.",
+        ] if blocked else ["Keep the current dispatch route."],
+        "confirmation_code_hint": "CONFIRM" if blocked else "",
+        "result": "Supervisor approval is required." if blocked else "No dispatch approval is waiting.",
+        "work_order_count": len(work_orders),
+        "blocked_count": len(blocked),
+    }
+
+
+def _apply_rule_demo_mode(mode: str, nodes: list[dict]) -> list[dict]:
+    if mode not in {"milling_bottleneck", "grinding_starvation"}:
+        return nodes
+    adjusted: list[dict] = []
+    for node in nodes:
+        item = {**node}
+        production = dict(item.get("production") or {})
+        if mode == "milling_bottleneck" and item.get("node_code") == "milling-workshop-01":
+            item["status"] = "warning"
+            production.update({
+                "wip_input": 22,
+                "wip_output": 6,
+                "target_rate": 1.0,
+                "actual_rate": 0.52,
+                "utilization": 0.88,
+            })
+        if mode == "grinding_starvation" and item.get("node_code") == "grinding-workshop-01":
+            item["status"] = "warning"
+            production.update({
+                "wip_input": 0,
+                "wip_output": 0,
+                "target_rate": 0.8,
+                "actual_rate": 0.08,
+                "utilization": 0.18,
+            })
+        item["production"] = production
+        adjusted.append(item)
+    return adjusted
+
+
+def _build_dashboard_snapshot(mode: str = "normal") -> dict:
+    state = _build_legacy_dashboard_state(mode)
+    expected_node_codes = set(settings.expected_production_nodes)
+    nodes = [
+        node for node in state.get("nodes", [])
+        if str(node.get("node_code", "")) in expected_node_codes
+    ]
+    node_codes = {str(node.get("node_code")) for node in nodes}
+    work_orders = state.get("work_orders", [])
+    connected = sum(1 for node in nodes if node.get("status") not in {"offline", "isolated"})
+    try:
+        from .compat import _ai_runtime
+        ai_runtime = _ai_runtime()
+    except Exception:
+        ai_runtime = {"status": "unknown", "provider": "unknown", "model": "unknown"}
+    snapshot_nodes = _apply_rule_demo_mode(mode, [_snapshot_node(node) for node in nodes])
+    snapshot = {
+        "schema_version": "2.2",
+        "generated_at": utc_now().isoformat(),
+        "data_source": _snapshot_data_source(nodes),
+        "run": _snapshot_run(nodes),
+        "system": {
+            "status": "ok" if connected == len(expected_node_codes) and nodes else "degraded",
+            "nodes_connected": connected,
+            "nodes_expected": len(expected_node_codes),
+            "logical_nodes_registered": len(state.get("nodes", [])),
+            "ai_runtime": ai_runtime,
+        },
+        "nodes": snapshot_nodes,
+        "work_orders": work_orders,
+        "part_queue": store.part_queue_snapshot(),
+        "alerts": [
+            _snapshot_alert(issue)
+            for issue in state.get("issues", [])
+            if any(node_code and node_code in str(issue.get("title", "")) for node_code in node_codes)
+        ],
+        "notifications": state.get("notifications", []),
+        "dispatch_plan": _snapshot_dispatch_plan(work_orders),
+        "audit": {
+            "recent_events": [
+                event.model_dump(mode="json")
+                for event in store.incident_events[-20:]
+            ],
+        },
+        "timeline": {
+            "recent_logs": state.get("logs", [])[-20:],
+        },
+    }
+    snapshot["rule_conclusions"] = evaluate_snapshot_rules(snapshot)
+    return snapshot
+
+
+def _build_legacy_dashboard_state(mode: str = "normal") -> dict:
+    alerts = [a for a in store.alerts if a.status not in {"closed", "resolved"}][-10:]
     issues = [_alert_to_issue(a) for a in alerts if a.handled_by != "system"]
 
     events = store.incident_events[-30:]
     logs = [_event_to_log(e) for e in events]
+    acknowledged_notifications = {
+        token
+        for event in store.incident_events
+        if event.stage == "notification-acknowledged"
+        for token in event.message.split()
+        if token.startswith("HUMAN-")
+    }
+    notifications = [
+        {
+            "id": f"HUMAN-{event.id}",
+            "source_node": event.node_code,
+            "severity": event.severity.value,
+            "title": "人工处置完成",
+            "detail": event.message,
+            "message": event.message,
+            "actions": ["关闭结果通知"],
+            "status": "unacknowledged",
+        }
+        for event in events
+        if event.stage == "human-escalation" and f"HUMAN-{event.id}" not in acknowledged_notifications
+    ]
 
     # In emergency mode, inject a critical spindle temp issue if one isn't already present
     if mode == "emergency":
@@ -61,6 +408,44 @@ def get_dashboard_state(mode: str = Query("normal")):
 
     return {
         "issues": issues,
+        "notifications": notifications,
         "logs": logs,
-        "nodes": [n.model_dump(mode="json") for n in store.nodes.values()],
+        "nodes": [_enrich_node(n, store) for n in store.nodes.values()],
+        "work_orders": _build_work_orders(store),
+    }
+
+
+def _dashboard_state_from_snapshot(snapshot: dict) -> dict:
+    """Legacy dashboard-state wrapper backed by the v2.2 snapshot contract."""
+    timeline = snapshot.get("timeline") if isinstance(snapshot.get("timeline"), dict) else {}
+    return {
+        "issues": snapshot.get("alerts", []),
+        "notifications": snapshot.get("notifications", []),
+        "logs": timeline.get("recent_logs", []),
+        "nodes": snapshot.get("nodes", []),
+        "work_orders": snapshot.get("work_orders", []),
+        "dispatch_plan": snapshot.get("dispatch_plan"),
+        "snapshot": snapshot,
+    }
+
+
+@router.get("/dashboard-state")
+def get_dashboard_state(mode: str = Query("normal")):
+    return _dashboard_state_from_snapshot(_build_dashboard_snapshot(mode))
+
+
+@router.get("/dashboard/snapshot")
+def get_dashboard_snapshot(mode: str = Query("normal")):
+    return _build_dashboard_snapshot(mode)
+
+
+@router.get("/rules/conclusions")
+def get_rule_conclusions(mode: str = Query("normal")):
+    snapshot = _build_dashboard_snapshot(mode)
+    return {
+        "schema_version": "2.2",
+        "generated_at": snapshot["generated_at"],
+        "data_source": snapshot["data_source"],
+        "run": snapshot["run"],
+        "conclusions": snapshot["rule_conclusions"],
     }

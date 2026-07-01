@@ -8,6 +8,7 @@
     "golang.go",
     "ms-vscode.powershell",
     "redhat.vscode-yaml",
-    "eamodio.gitlens"
+    "eamodio.gitlens",
+    "anthropic.claude-code"
   ]
 }

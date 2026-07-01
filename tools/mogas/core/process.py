@@ -25,6 +25,17 @@ SESSION_TOKEN = os.environ.get(
 os.environ["OGAS_SESSION_TOKEN"] = SESSION_TOKEN
 
 
+def _runtime_token() -> str:
+    for key in ("OGAS_API_TOKEN", "API_ACCESS_TOKEN", "CENTRAL_API_TOKEN"):
+        value = os.environ.get(key, "").strip()
+        if value:
+            return value
+    token_path = PROJ_ROOT.parent.parent / "MiniOGAS-VMs" / "miniogas-token.txt"
+    if token_path.exists():
+        return token_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 class ProcessError(Exception):
     """Raised when a process fails to start or respond to health checks."""
 
@@ -81,6 +92,11 @@ class ProcessManager:
 
         env = os.environ.copy()
         env.setdefault("OGAS_SESSION_TOKEN", SESSION_TOKEN)
+        token = _runtime_token()
+        if token:
+            env.setdefault("API_ACCESS_TOKEN", token)
+            env.setdefault("OGAS_API_TOKEN", token)
+            env.setdefault("CENTRAL_API_TOKEN", token)
 
         logger.info("starting %s  cwd=%s", svc.name, svc.workdir)
         try:

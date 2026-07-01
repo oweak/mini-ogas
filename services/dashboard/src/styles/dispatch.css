@@ -1,0 +1,60 @@
+.order-layout {
+  grid-template-columns: minmax(0, 1fr) 340px;
+}
+
+.route {
+  color: #35495c;
+}
+
+.priority {
+  background: #eef4f8;
+}
+
+.progress-cell {
+  display: grid;
+  gap: 5px;
+}
+
+meter {
+  height: 8px;
+  width: 130px;
+}
+
+.dispatch-panel p {
+  color: #4a5c6e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.decision-stack {
+  display: grid;
+  gap: 8px;
+  margin: 18px 0;
+}
+
+.decision-stack span {
+  background: #f3f6f8;
+  border: 1px solid #d3dce5;
+  color: #405266;
+  font-size: 12px;
+  padding: 9px;
+}
+
+.dispatch-steps {
+  display: grid;
+  gap: 7px;
+  margin: 0 0 14px;
+  padding-left: 18px;
+}
+
+.dispatch-steps li {
+  color: #3d4f61;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 1080px) {
+  .order-layout {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,8 +1,6 @@
-import secrets
-
 from fastapi import APIRouter, HTTPException
 
-from ..core.config import settings
+from ..core.auth import authenticate_user
 from ..models import LoginRequest, LoginResponse, PreflightResult
 from ..store import store
 
@@ -14,10 +12,16 @@ def run_preflight() -> PreflightResult:
     return store.run_preflight()
 
 
+@router.get("/persistence/status")
+def persistence_status() -> dict[str, object]:
+    return store.persistence_status()
+
+
 @router.post("/auth/verify", response_model=LoginResponse)
 def verify_admin(payload: LoginRequest) -> LoginResponse:
-    """Pre-dashboard admin verification. Accepts the API_ACCESS_TOKEN as password."""
-    expected = settings.api_access_token
-    if not payload.password or not secrets.compare_digest(payload.password, expected):
+    """Verify a persisted account without exposing the machine credential."""
+    user = authenticate_user(payload.username, payload.password)
+    if user is None:
         raise HTTPException(status_code=401, detail="密码错误")
-    return LoginResponse(ok=True, role="system_admin", message="验证通过，欢迎进入 Mini-OGAS 控制台")
+    role = user["roles"][0] if user["roles"] else "viewer"
+    return LoginResponse(ok=True, role=role, message="验证通过，欢迎进入 Mini-OGAS 控制台")

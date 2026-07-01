@@ -22,6 +22,7 @@ class ProviderRegistry:
 
     def __init__(self) -> None:
         self._providers: list[AIProvider] = []
+        self._verified_provider: str | None = None
         self._build_chain()
 
     # ------------------------------------------------------------------
@@ -36,6 +37,12 @@ class ProviderRegistry:
                 self._providers.append(provider)
         # Rule fallback is always the absolute last resort
         self._providers.append(RuleFallbackProvider())
+
+    def reload(self) -> None:
+        """Rebuild providers after runtime config changes, such as vault unlock."""
+        self._providers = []
+        self._verified_provider = None
+        self._build_chain()
 
     def _create_provider(self, name: str) -> Optional[AIProvider]:
         if name == "deepseek":
@@ -92,17 +99,29 @@ class ProviderRegistry:
             raw_text="total failure",
         )
 
-    def chat(self, messages: list[dict[str, str]], timeout: float | None = None) -> str:
-        """Try each provider in chain order; return first success."""
+    def chat_with_provenance(
+        self, messages: list[dict[str, str]], timeout: float | None = None
+    ) -> tuple[str, str, list[str]]:
+        """Return chat output with the provider that actually served it."""
+        errors: list[str] = []
         for provider in self._providers:
-            if not provider.is_available():
+            if provider.name == "rule_fallback" or not provider.is_available():
                 continue
             try:
-                return provider.chat(messages, timeout=timeout)
+                answer = provider.chat(messages, timeout=timeout)
+                self._verified_provider = provider.name
+                return answer, provider.name, errors
             except Exception as exc:
+                errors.append(f"{provider.name}: {exc}")
                 logger.warning("AI chat provider %s failed: %s", provider.name, exc)
-        return "所有 AI 后端当前不可用，已进入规则回退模式。请检查 /api/ai/status 了解详情。"
+        self._verified_provider = None
+        fallback = next(provider for provider in self._providers if provider.name == "rule_fallback")
+        return fallback.chat(messages, timeout=timeout), "rule_fallback", errors
 
+    def chat(self, messages: list[dict[str, str]], timeout: float | None = None) -> str:
+        """Try each provider in chain order; return the resulting answer."""
+        answer, _, _ = self.chat_with_provenance(messages, timeout=timeout)
+        return answer
     # ------------------------------------------------------------------
     # Status / introspection
     # ------------------------------------------------------------------
@@ -115,6 +134,9 @@ class ProviderRegistry:
             if p.is_available():
                 return p
         return None
+
+    def verified_provider(self) -> Optional[str]:
+        return self._verified_provider
 
     def status_list(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []

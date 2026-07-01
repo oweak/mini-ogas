@@ -56,8 +56,7 @@ def _agent(node_code: str, workshop: str) -> list[str]:
     script = PROJ_ROOT / "services" / "node-agent" / "agent.py"
     return [_python(), "-u", str(script),
             "--node-code", node_code, "--workshop-type", workshop,
-            "--interval", "3", "--api-url", "http://127.0.0.1:8080",
-            "--token", "mini-ogas-dev-token"]
+            "--interval", "3", "--api-url", "http://127.0.0.1:8080"]
 
 
 # ---------------------------------------------------------------------------

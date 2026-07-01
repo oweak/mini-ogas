@@ -23,6 +23,7 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from pathlib import Path
 
 try:
     import psutil
@@ -34,7 +35,7 @@ except ImportError:
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_API_URL = os.getenv("OGAS_CENTRAL_URL", "http://127.0.0.1:8080")
-DEFAULT_TOKEN = os.getenv("OGAS_NODE_TOKEN", os.getenv("API_ACCESS_TOKEN", "mini-ogas-dev-token"))
+DEFAULT_TOKEN = os.getenv("OGAS_NODE_TOKEN", os.getenv("API_ACCESS_TOKEN", ""))
 
 # Workshop-type → baseline ranges to simulate realistic per-workshop differences
 BASELINES: dict[str, dict[str, tuple[float, float]]] = {
@@ -47,7 +48,7 @@ BASELINES: dict[str, dict[str, tuple[float, float]]] = {
 
 AGENT_VERSION = "0.2.0"
 # Approximate db file size per workshop — simulates local SQLite storage
-DB_SIZE_PER_NODE: dict[str, int] = {
+DB_SIZE_BASELINE_PER_NODE: dict[str, int] = {
     "turning": 38_000_000, "milling": 42_000_000, "grinding": 35_000_000,
     "cloud": 28_000_000, "database": 320_000_000,
 }
@@ -92,6 +93,20 @@ def _api_request(url: str, data: dict | None = None, token: str = "", method: st
         return {"error": "connection", "detail": str(exc.reason)}
 
 
+def _local_db_size(ws_type: str, rng: random.Random) -> tuple[int, str]:
+    """Return local DB size plus source: local_file or estimated."""
+    configured_path = os.getenv("LOCAL_DB_PATH", "").strip()
+    candidates = [Path(configured_path)] if configured_path else [Path("node.db")]
+    for path in candidates:
+        try:
+            if path.exists() and path.is_file():
+                return path.stat().st_size, "local_file"
+        except OSError:
+            continue
+    baseline = DB_SIZE_BASELINE_PER_NODE.get(ws_type, 30_000_000)
+    return baseline + rng.randint(-500_000, 1_500_000), "estimated"
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -111,11 +126,13 @@ def run_agent(node_code: str, api_url: str, token: str, interval: float,
         print(f"\n[agent:{node_code}] signal={signum} — shutting down")
         running = False
         # Send final shutting_down heartbeat
+        db_size, db_size_source = _local_db_size(ws_type, rng)
         _api_request(
             f"{api_url}/nodes/{node_code}/heartbeat",
             data={"node_code": node_code, "agent_version": AGENT_VERSION,
                   "uptime_seconds": int(time.time() - start_time),
-                  "local_db_size_bytes": DB_SIZE_PER_NODE.get(ws_type, 30_000_000),
+                  "local_db_size_bytes": db_size,
+                  "db_size_source": db_size_source,
                   "status": "shutting_down",
                   "session_token": os.environ.get("OGAS_SESSION_TOKEN", "")},
             token=token, method="PUT",
@@ -130,7 +147,7 @@ def run_agent(node_code: str, api_url: str, token: str, interval: float,
     while running:
         metrics_snapshot = _real_or_synthetic(rng, ws_type)
         uptime = int(time.time() - start_time)
-        db_size = DB_SIZE_PER_NODE.get(ws_type, 30_000_000) + rng.randint(-500_000, 1_500_000)
+        db_size, db_size_source = _local_db_size(ws_type, rng)
 
         # Network jitter — simulate varying traffic
         net_in = base_net + rng.randint(-2_000_000, 5_000_000)
@@ -150,6 +167,7 @@ def run_agent(node_code: str, api_url: str, token: str, interval: float,
                 "agent_version": AGENT_VERSION,
                 "uptime_seconds": uptime,
                 "local_db_size_bytes": db_size,
+                "db_size_source": db_size_source,
                 "status": "online",
                 "session_token": os.environ.get("OGAS_SESSION_TOKEN", ""),
             },
