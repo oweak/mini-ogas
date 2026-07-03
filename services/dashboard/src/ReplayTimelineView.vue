@@ -15,6 +15,12 @@ const selectedRun = computed(() => runs.value.find((run) => run.run_id === selec
 const timeline = computed(() => detail.value?.timeline ?? [])
 const latestEvents = computed(() => timeline.value.slice(-120).reverse())
 const hasRuns = computed(() => runs.value.length > 0)
+const samplingText = computed(() => {
+  if (!detail.value?.sampling) return ''
+  const sampling = detail.value.sampling
+  if (!sampling.heartbeats_truncated) return `已载入 ${sampling.heartbeat_rows} 条心跳`
+  return `显示最近 ${sampling.heartbeat_rows} / ${sampling.heartbeat_total} 条心跳`
+})
 
 function formatTime(value?: string | null) {
   if (!value) return '-'
@@ -197,6 +203,10 @@ onMounted(() => {
           <div>
             <dt>持久化</dt>
             <dd>{{ detail.backend || '-' }}</dd>
+          </div>
+          <div>
+            <dt>样本</dt>
+            <dd>{{ samplingText || '-' }}</dd>
           </div>
         </dl>
       </section>

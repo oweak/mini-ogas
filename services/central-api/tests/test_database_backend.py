@@ -359,3 +359,60 @@ def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch
     assert {"heartbeat", "command", "part_queue", "audit", "alert", "ai_diagnosis"}.issubset(
         {item["kind"] for item in payload["timeline"]}
     )
+
+
+def test_replay_run_uses_full_bounds_and_latest_heartbeat_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
+
+    run_id = "RUN-BOUNDS-001"
+    for index in range(4):
+        payload = {
+            "node_code": "turning-workshop-01",
+            "status": "running",
+            "runtime": {
+                "run_id": run_id,
+                "scenario_id": "SCN-BOUNDS",
+                "simulation_engine": "simpy",
+            },
+            "production": {
+                "machine_code": f"LATHE-{index}",
+                "active_order": "P1",
+                "utilization": 0.6 + index / 100,
+            },
+        }
+        with database.get_db() as db:
+            db.execute(
+                """INSERT INTO heartbeat_shadow (
+                   node_code, run_id, scenario_id, simulation_time, payload_json, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    "turning-workshop-01",
+                    run_id,
+                    "SCN-BOUNDS",
+                    None,
+                    json.dumps(payload),
+                    f"2026-07-03T10:0{index}:00+00:00",
+                ),
+            )
+
+    replay_store = MemoryStore()
+    runs = replay_store.replay_runs()
+    result = replay_store.replay_run(run_id, max_rows=2)
+    run_summary = next(item for item in runs["runs"] if item["run_id"] == run_id)
+
+    assert run_summary["started_at"] == "2026-07-03T10:00:00+00:00"
+    assert run_summary["ended_at"] == "2026-07-03T10:03:00+00:00"
+    assert run_summary["heartbeat_count"] == 4
+    assert result["status"] == "ok"
+    assert result["started_at"] == "2026-07-03T10:00:00+00:00"
+    assert result["ended_at"] == "2026-07-03T10:03:00+00:00"
+    assert result["counts"]["heartbeats"] == 4
+    assert result["sampling"]["heartbeat_rows"] == 2
+    assert result["sampling"]["heartbeats_truncated"] is True
+    assert [item["machine_code"] for item in result["heartbeats"]] == ["LATHE-2", "LATHE-3"]

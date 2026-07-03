@@ -453,6 +453,13 @@ export type ReplayRunDetail = {
     ai_diagnoses: number
     timeline: number
   }
+  sampling?: {
+    max_rows: number
+    heartbeat_rows: number
+    heartbeat_total: number
+    heartbeats_truncated: boolean
+    timeline_rows: number
+  }
   heartbeats: Array<Record<string, unknown>>
   commands: Array<Record<string, unknown>>
   part_queue: Array<Record<string, unknown>>

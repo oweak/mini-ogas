@@ -104,7 +104,7 @@
   border-top: 1px solid #d9e1e9;
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin: 0;
   padding-top: 12px;
 }

@@ -2047,65 +2047,72 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
-                    SELECT run_id, node_code, scenario_id, simulation_time, received_at
+                    SELECT run_id,
+                           COUNT(*) AS heartbeat_count,
+                           MIN(received_at) AS started_at,
+                           MAX(received_at) AS ended_at,
+                           MAX(simulation_time) AS latest_simulation_time
                     FROM heartbeat_shadow
                     WHERE run_id <> ''
-                    ORDER BY received_at DESC
+                    GROUP BY run_id
+                    ORDER BY MAX(received_at) DESC
                     LIMIT ?
                     """,
-                    (max(1, max_rows),),
+                    (max(1, min(limit, max_rows)),),
                 ).fetchall()
+                identity_by_run: dict[str, dict[str, set[str]]] = {}
+                for row in rows:
+                    run_id = str(dict(row).get("run_id") or "")
+                    if not run_id:
+                        continue
+                    identity_rows = db.execute(
+                        """
+                        SELECT DISTINCT node_code, scenario_id
+                        FROM heartbeat_shadow
+                        WHERE run_id = ?
+                        """,
+                        (run_id,),
+                    ).fetchall()
+                    identity_by_run[run_id] = {"node_codes": set(), "scenario_ids": set()}
+                    for identity_row in identity_rows:
+                        identity = dict(identity_row)
+                        node_code = str(identity.get("node_code") or "")
+                        scenario_id = str(identity.get("scenario_id") or "")
+                        if node_code:
+                            identity_by_run[run_id]["node_codes"].add(node_code)
+                        if scenario_id:
+                            identity_by_run[run_id]["scenario_ids"].add(scenario_id)
         except Exception as exc:  # pragma: no cover - depends on external backend
             return {"status": "degraded", "error": str(exc), "runs": []}
 
-        grouped: dict[str, dict[str, object]] = {}
+        total_heartbeat_rows = 0
+        runs: list[dict[str, object]] = []
         for row in rows:
             data = dict(row)
             run_id = str(data.get("run_id") or "")
             if not run_id:
                 continue
-            item = grouped.setdefault(
-                run_id,
-                {
-                    "run_id": run_id,
-                    "scenario_ids": set(),
-                    "node_codes": set(),
-                    "heartbeat_count": 0,
-                    "started_at": "",
-                    "ended_at": "",
-                    "latest_simulation_time": None,
-                },
-            )
-            scenario_id = str(data.get("scenario_id") or "")
-            node_code = str(data.get("node_code") or "")
-            received_at = str(data.get("received_at") or "")
-            if scenario_id:
-                item["scenario_ids"].add(scenario_id)  # type: ignore[union-attr]
-            if node_code:
-                item["node_codes"].add(node_code)  # type: ignore[union-attr]
-            item["heartbeat_count"] = int(item["heartbeat_count"]) + 1
-            if not item["ended_at"] or received_at > str(item["ended_at"]):
-                item["ended_at"] = received_at
-                item["latest_simulation_time"] = data.get("simulation_time")
-            if not item["started_at"] or received_at < str(item["started_at"]):
-                item["started_at"] = received_at
-
-        runs: list[dict[str, object]] = []
-        for item in grouped.values():
-            node_codes = sorted(str(value) for value in item["node_codes"])  # type: ignore[index]
-            scenario_ids = sorted(str(value) for value in item["scenario_ids"])  # type: ignore[index]
+            heartbeat_count = int(data.get("heartbeat_count") or 0)
+            total_heartbeat_rows += heartbeat_count
+            identity = identity_by_run.get(run_id, {"node_codes": set(), "scenario_ids": set()})
+            node_codes = sorted(identity["node_codes"])
+            scenario_ids = sorted(identity["scenario_ids"])
             runs.append({
-                **item,
+                "run_id": run_id,
                 "scenario_ids": scenario_ids,
                 "node_codes": node_codes,
+                "heartbeat_count": heartbeat_count,
+                "started_at": str(data.get("started_at") or ""),
+                "ended_at": str(data.get("ended_at") or ""),
+                "latest_simulation_time": data.get("latest_simulation_time"),
                 "node_count": len(node_codes),
             })
-        runs.sort(key=lambda item: str(item.get("ended_at") or ""), reverse=True)
         return {
             "status": "ok",
             "backend": persistence_label(),
-            "runs": runs[:max(1, limit)],
-            "sampled_heartbeat_rows": len(rows),
+            "runs": runs,
+            "sampled_heartbeat_rows": total_heartbeat_rows,
+            "run_count": len(runs),
         }
 
     def replay_run(self, run_id: str, max_rows: int = 500) -> dict[str, object]:
@@ -2119,22 +2126,47 @@ class MemoryStore:
 
         try:
             with get_db() as db:
+                bounds = dict(db.execute(
+                    """
+                    SELECT COUNT(*) AS heartbeat_total,
+                           MIN(received_at) AS started_at,
+                           MAX(received_at) AS ended_at
+                    FROM heartbeat_shadow
+                    WHERE run_id = ?
+                    """,
+                    (clean_run_id,),
+                ).fetchone())
+                heartbeat_total = int(bounds.get("heartbeat_total") or 0)
+                if heartbeat_total <= 0:
+                    return {"status": "not_found", "run_id": clean_run_id}
+
+                started_at = str(bounds.get("started_at") or "")
+                ended_at = str(bounds.get("ended_at") or started_at)
+                identity_rows = db.execute(
+                    """
+                    SELECT DISTINCT node_code, scenario_id
+                    FROM heartbeat_shadow
+                    WHERE run_id = ?
+                    ORDER BY node_code ASC, scenario_id ASC
+                    """,
+                    (clean_run_id,),
+                ).fetchall()
                 heartbeat_rows = db.execute(
                     """
                     SELECT id, node_code, run_id, scenario_id, simulation_time, payload_json, received_at
-                    FROM heartbeat_shadow
-                    WHERE run_id = ?
+                    FROM (
+                        SELECT id, node_code, run_id, scenario_id, simulation_time, payload_json, received_at
+                        FROM heartbeat_shadow
+                        WHERE run_id = ?
+                        ORDER BY received_at DESC, id DESC
+                        LIMIT ?
+                    ) sampled
                     ORDER BY received_at ASC, id ASC
-                    LIMIT ?
                     """,
                     (clean_run_id, max(1, max_rows)),
                 ).fetchall()
-                if not heartbeat_rows:
-                    return {"status": "not_found", "run_id": clean_run_id}
 
                 heartbeat_data = [dict(row) for row in heartbeat_rows]
-                started_at = str(heartbeat_data[0].get("received_at") or "")
-                ended_at = str(heartbeat_data[-1].get("received_at") or started_at)
                 command_rows = db.execute(
                     """
                     SELECT command_id, node_code, command_type, risk_level, status, operator,
@@ -2194,8 +2226,16 @@ class MemoryStore:
 
         heartbeats: list[dict[str, object]] = []
         timeline: list[dict[str, object]] = []
-        scenario_ids: set[str] = set()
-        node_codes: set[str] = set()
+        scenario_ids = {
+            str(dict(row).get("scenario_id") or "")
+            for row in identity_rows
+            if str(dict(row).get("scenario_id") or "")
+        }
+        node_codes = {
+            str(dict(row).get("node_code") or "")
+            for row in identity_rows
+            if str(dict(row).get("node_code") or "")
+        }
         for data in heartbeat_data:
             payload: dict[str, object] = {}
             try:
@@ -2206,10 +2246,6 @@ class MemoryStore:
                 payload = {}
             node_code = str(data.get("node_code") or "")
             scenario_id = str(data.get("scenario_id") or "")
-            if node_code:
-                node_codes.add(node_code)
-            if scenario_id:
-                scenario_ids.add(scenario_id)
             production = payload.get("production") if isinstance(payload.get("production"), dict) else {}
             runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
             alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
@@ -2311,13 +2347,20 @@ class MemoryStore:
             "started_at": started_at,
             "ended_at": ended_at,
             "counts": {
-                "heartbeats": len(heartbeats),
+                "heartbeats": heartbeat_total,
                 "commands": len(commands),
                 "part_queue": len(part_queue),
                 "audit_events": len(audit_events),
                 "alerts": len(alerts),
                 "ai_diagnoses": len(ai_diagnoses),
                 "timeline": len(timeline),
+            },
+            "sampling": {
+                "max_rows": max(1, max_rows),
+                "heartbeat_rows": len(heartbeats),
+                "heartbeat_total": heartbeat_total,
+                "heartbeats_truncated": heartbeat_total > len(heartbeats),
+                "timeline_rows": len(timeline),
             },
             "heartbeats": heartbeats,
             "commands": commands,
