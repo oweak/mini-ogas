@@ -16,13 +16,14 @@ The original first-phase blockers have been addressed. The system now has a work
 8. The v2.5 local runtime now starts through the Go supervisor by default.
 9. PostgreSQL replay-readiness is exposed in persistence status and production reports.
 10. Run-level replay endpoints now rebuild persisted heartbeat, command, part queue, audit, alert, and AI diagnosis timelines by `run_id`.
-11. A scripted PostgreSQL restart drill now proves replay readiness after supervisor restart.
-12. Heartbeat shadow data now has a bounded per-node retention policy.
-13. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
-14. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
-15. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
-16. High-risk commands and human approvals now pass through a v2.5 Safety Governor with shared confirmation-code and control-plane protection rules.
-17. AI live-provider smoke now succeeds through the DeepSeek vault, and local fallback availability is checked at model/server level.
+11. Dashboard `运行回放` exposes those database-backed replay timelines to administrators.
+12. A scripted PostgreSQL restart drill now proves replay readiness after supervisor restart.
+13. Heartbeat shadow data now has a bounded per-node retention policy.
+14. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
+15. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
+16. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
+17. High-risk commands and human approvals now pass through a v2.5 Safety Governor with shared confirmation-code and control-plane protection rules.
+18. AI live-provider smoke now succeeds through the DeepSeek vault, and local fallback availability is checked at model/server level.
 
 No active first-phase or v2.5 blocker is currently tracked in this file. The next work should be selected from the v2.5/v3.0 roadmap.
 
@@ -39,6 +40,7 @@ No active first-phase or v2.5 blocker is currently tracked in this file. The nex
 | Root runtime logs | Resolved. Startup scripts now write to `.runtime/logs`, and existing root logs were moved. |
 | Missing production report API | Resolved. `/api/reports/production` aggregates operational report data. |
 | Missing run-level replay API | Resolved. `/api/replay/runs` and `/api/replay/runs/{run_id}` expose persisted operational replay data instead of only replay-readiness status. |
+| Missing run-level replay UI | Resolved. Dashboard `运行回放` renders persisted run batches and event timelines through the protected API client. |
 | Missing production report viewer | Resolved. Dashboard `生产报告` renders live report data from the protected report API. |
 | node-agent DB metric looked real while estimated | Resolved. Legacy node agent reports `db_size_source` as `local_file` or `estimated`. |
 | Kali red-team path blurred production status | Resolved. The workflow no longer contributes production availability truth, requires explicit lab acknowledgement, rejects public targets by default, uses bearer auth for protected operations, and stops high-risk AI decisions at human approval unless explicitly overridden for a lab run. |

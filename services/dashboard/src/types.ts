@@ -407,6 +407,63 @@ export type PartQueueSnapshot = {
   items: PartQueueItem[]
 }
 
+export type ReplayRunSummary = {
+  run_id: string
+  scenario_ids: string[]
+  node_codes: string[]
+  node_count: number
+  heartbeat_count: number
+  started_at: string
+  ended_at: string
+  latest_simulation_time?: string | null
+}
+
+export type ReplayRunsResponse = {
+  status: string
+  backend?: string
+  runs: ReplayRunSummary[]
+  sampled_heartbeat_rows?: number
+  reason?: string
+  error?: string
+}
+
+export type ReplayTimelineItem = {
+  time: string
+  kind: 'heartbeat' | 'command' | 'part_queue' | 'audit' | 'alert' | 'ai_diagnosis' | string
+  node_code?: string
+  title?: string
+  status?: string
+  detail?: Record<string, unknown>
+}
+
+export type ReplayRunDetail = {
+  status: string
+  backend?: string
+  run_id: string
+  scenario_ids: string[]
+  node_codes: string[]
+  started_at: string
+  ended_at: string
+  counts: {
+    heartbeats: number
+    commands: number
+    part_queue: number
+    audit_events: number
+    alerts: number
+    ai_diagnoses: number
+    timeline: number
+  }
+  heartbeats: Array<Record<string, unknown>>
+  commands: Array<Record<string, unknown>>
+  part_queue: Array<Record<string, unknown>>
+  audit_events: Array<Record<string, unknown>>
+  alerts: Array<Record<string, unknown>>
+  ai_diagnoses: Array<Record<string, unknown>>
+  timeline: ReplayTimelineItem[]
+  reason?: string
+  error?: string
+}
+
 export type DashboardSnapshot = {
   schema_version: string
   generated_at: string

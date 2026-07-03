@@ -6,6 +6,7 @@ import FactoryRuntimeView from './FactoryRuntimeView.vue'
 import LogManagementView from './LogManagementView.vue'
 import OrderDispatchView from './OrderDispatchView.vue'
 import ProductionReportView from './ProductionReportView.vue'
+import ReplayTimelineView from './ReplayTimelineView.vue'
 import StartupGate from './StartupGate.vue'
 import { useProtectedPolling } from './protectedPolling'
 import { closeIssue } from './operationsApi'
@@ -19,7 +20,7 @@ import { useRuntimePresentation } from './useRuntimePresentation'
 import { useStartupWorkflow } from './useStartupWorkflow'
 import { verificationSummary } from './verification'
 
-type ViewKey = 'factory' | 'orders' | 'alarms' | 'logs' | 'reports' | 'demo'
+type ViewKey = 'factory' | 'orders' | 'alarms' | 'logs' | 'replay' | 'reports' | 'demo'
 
 const activeView = ref<ViewKey>('factory')
 const selectedAlarmId = ref('')
@@ -374,6 +375,7 @@ const viewLabels = {
   orders: '工单调度',
   alarms: '报警处置',
   logs: '日志管理',
+  replay: '运行回放',
   reports: '生产报告',
   demo: '演示指挥'
 } as const
@@ -981,6 +983,10 @@ function handleAuthExpired() {
 
       <ProductionReportView
         v-else-if="activeView === 'reports'"
+      />
+
+      <ReplayTimelineView
+        v-else-if="activeView === 'replay'"
       />
 
       <AlarmManagementView

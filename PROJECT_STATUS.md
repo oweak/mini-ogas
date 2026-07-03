@@ -41,6 +41,7 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 | v2.5 supervisor handover | Implemented for initial rollout. `scripts/start-miniogas.ps1` defaults to the Go supervisor, `-ReplaceRunning` handover was verified, and supervisor owns dashboard plus backend/node processes. |
 | v2.5 replay-readiness evidence | Implemented. Persistence status and production reports now expose replay readiness for heartbeat, command, part queue, and audit shadow facts; tests verify a new store instance can restore persisted runtime facts. |
 | v2.5 run replay API | Implemented. `/api/replay/runs` lists persisted heartbeat `run_id` batches, and `/api/replay/runs/{run_id}` reconstructs heartbeat, command, part queue, audit, alert, and AI diagnosis timelines from persisted database facts. |
+| v2.5 run replay console | Implemented. Dashboard `运行回放` lists persisted run batches, loads replay details through the protected API client, and renders database-backed heartbeat, command, part queue, audit, alert, and AI diagnosis timelines. |
 | v2.5 restart replay drill | Implemented. `scripts/check-postgres-replay-drill.ps1` restarts the supervised stack and verifies PostgreSQL replay readiness after restart. Latest evidence is written to `.runtime/logs/postgres-replay-drill-last.json`. |
 | v2.5 heartbeat-shadow retention | Implemented. `HEARTBEAT_SHADOW_RETENTION_PER_NODE` keeps recent heartbeat shadow rows bounded per node, and persistence status exposes the active policy. |
 | v2.5 Kali red-team boundary | Implemented. `scripts/kali_redteam_workflow.py` is lab-acknowledged, private-target guarded, bearer-authenticated for protected operations, evidence-producing, and high-risk AI actions are held for human approval unless explicitly auto-approved for a lab run. |
@@ -68,6 +69,7 @@ Recent runtime check showed:
 - Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes
 - replay readiness: live PostgreSQL status reports heartbeat, command, and part queue shadow facts as replayable
 - run replay API: central-api tests verify `/api/replay/runs` and `/api/replay/runs/{run_id}` rebuild persisted operational timelines from database rows
+- run replay console: Playwright login verified the `运行回放` page renders PostgreSQL run batches and a reconstructed event timeline from the live supervised system
 - retention: live PostgreSQL status reports `keep_latest_per_node` for heartbeat shadow rows
 - Kali red-team boundary: low-risk `coolant_flow` completed attack-detect-AI-repair archival; high-risk `spindle_overheat` stopped at `waiting_human_approval` without isolation or repair until cleanup was run
 - report export: backend smoke tests verify Markdown/CSV attachments, and dashboard production build passes with export buttons
