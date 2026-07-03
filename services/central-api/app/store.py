@@ -2038,6 +2038,296 @@ class MemoryStore:
             "latest_heartbeats": heartbeat_latest,
         }
 
+    def replay_runs(self, max_rows: int = 1000, limit: int = 20) -> dict[str, object]:
+        """List persisted simulation runs found in heartbeat shadow rows."""
+        if not settings.persist_enabled:
+            return {"status": "disabled", "reason": "PERSIST_ENABLED=false", "runs": []}
+
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT run_id, node_code, scenario_id, simulation_time, received_at
+                    FROM heartbeat_shadow
+                    WHERE run_id <> ''
+                    ORDER BY received_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, max_rows),),
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover - depends on external backend
+            return {"status": "degraded", "error": str(exc), "runs": []}
+
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            data = dict(row)
+            run_id = str(data.get("run_id") or "")
+            if not run_id:
+                continue
+            item = grouped.setdefault(
+                run_id,
+                {
+                    "run_id": run_id,
+                    "scenario_ids": set(),
+                    "node_codes": set(),
+                    "heartbeat_count": 0,
+                    "started_at": "",
+                    "ended_at": "",
+                    "latest_simulation_time": None,
+                },
+            )
+            scenario_id = str(data.get("scenario_id") or "")
+            node_code = str(data.get("node_code") or "")
+            received_at = str(data.get("received_at") or "")
+            if scenario_id:
+                item["scenario_ids"].add(scenario_id)  # type: ignore[union-attr]
+            if node_code:
+                item["node_codes"].add(node_code)  # type: ignore[union-attr]
+            item["heartbeat_count"] = int(item["heartbeat_count"]) + 1
+            if not item["ended_at"] or received_at > str(item["ended_at"]):
+                item["ended_at"] = received_at
+                item["latest_simulation_time"] = data.get("simulation_time")
+            if not item["started_at"] or received_at < str(item["started_at"]):
+                item["started_at"] = received_at
+
+        runs: list[dict[str, object]] = []
+        for item in grouped.values():
+            node_codes = sorted(str(value) for value in item["node_codes"])  # type: ignore[index]
+            scenario_ids = sorted(str(value) for value in item["scenario_ids"])  # type: ignore[index]
+            runs.append({
+                **item,
+                "scenario_ids": scenario_ids,
+                "node_codes": node_codes,
+                "node_count": len(node_codes),
+            })
+        runs.sort(key=lambda item: str(item.get("ended_at") or ""), reverse=True)
+        return {
+            "status": "ok",
+            "backend": persistence_label(),
+            "runs": runs[:max(1, limit)],
+            "sampled_heartbeat_rows": len(rows),
+        }
+
+    def replay_run(self, run_id: str, max_rows: int = 500) -> dict[str, object]:
+        """Rebuild a persisted operational timeline for one simulation run."""
+        if not settings.persist_enabled:
+            return {"status": "disabled", "reason": "PERSIST_ENABLED=false", "run_id": run_id}
+
+        clean_run_id = run_id.strip()
+        if not clean_run_id:
+            return {"status": "not_found", "run_id": run_id, "reason": "empty run_id"}
+
+        try:
+            with get_db() as db:
+                heartbeat_rows = db.execute(
+                    """
+                    SELECT id, node_code, run_id, scenario_id, simulation_time, payload_json, received_at
+                    FROM heartbeat_shadow
+                    WHERE run_id = ?
+                    ORDER BY received_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (clean_run_id, max(1, max_rows)),
+                ).fetchall()
+                if not heartbeat_rows:
+                    return {"status": "not_found", "run_id": clean_run_id}
+
+                heartbeat_data = [dict(row) for row in heartbeat_rows]
+                started_at = str(heartbeat_data[0].get("received_at") or "")
+                ended_at = str(heartbeat_data[-1].get("received_at") or started_at)
+                command_rows = db.execute(
+                    """
+                    SELECT command_id, node_code, command_type, risk_level, status, operator,
+                           parameters_json, claimed_by, result_message, created_at, updated_at
+                    FROM command_shadow
+                    WHERE updated_at >= ? AND updated_at <= ?
+                    ORDER BY updated_at ASC, command_id ASC
+                    LIMIT ?
+                    """,
+                    (started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+                part_rows = db.execute(
+                    """
+                    SELECT part_id, parent_part_id, order_id, product_code, current_step, status,
+                           source_node, target_node, claimed_by, created_at, updated_at
+                    FROM part_queue_shadow
+                    WHERE updated_at >= ? AND updated_at <= ?
+                    ORDER BY updated_at ASC, part_id ASC
+                    LIMIT ?
+                    """,
+                    (started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+                audit_rows = db.execute(
+                    """
+                    SELECT id, actor, action, resource_type, resource_id, result, detail, created_at
+                    FROM audit_logs
+                    WHERE created_at >= ? AND created_at <= ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+                alert_rows = db.execute(
+                    """
+                    SELECT id, node_code, alert_type, severity, source, description,
+                           handled_by, status, created_at, resolved_at
+                    FROM alerts
+                    WHERE created_at >= ? AND created_at <= ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+                ai_rows = db.execute(
+                    """
+                    SELECT id, alert_id, severity, node_code, root_cause, recommended_action,
+                           confidence, need_isolation, model_name, created_at
+                    FROM ai_diagnosis
+                    WHERE created_at >= ? AND created_at <= ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT ?
+                    """,
+                    (started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover - depends on external backend
+            return {"status": "degraded", "run_id": clean_run_id, "error": str(exc)}
+
+        heartbeats: list[dict[str, object]] = []
+        timeline: list[dict[str, object]] = []
+        scenario_ids: set[str] = set()
+        node_codes: set[str] = set()
+        for data in heartbeat_data:
+            payload: dict[str, object] = {}
+            try:
+                decoded = json.loads(str(data.get("payload_json") or "{}"))
+                if isinstance(decoded, dict):
+                    payload = decoded
+            except json.JSONDecodeError:
+                payload = {}
+            node_code = str(data.get("node_code") or "")
+            scenario_id = str(data.get("scenario_id") or "")
+            if node_code:
+                node_codes.add(node_code)
+            if scenario_id:
+                scenario_ids.add(scenario_id)
+            production = payload.get("production") if isinstance(payload.get("production"), dict) else {}
+            runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+            alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
+            heartbeat_item = {
+                "id": data.get("id"),
+                "node_code": node_code,
+                "scenario_id": scenario_id,
+                "simulation_time": data.get("simulation_time"),
+                "received_at": data.get("received_at"),
+                "status": payload.get("status"),
+                "machine_code": production.get("machine_code"),
+                "active_order": production.get("active_order"),
+                "target_rate": production.get("target_rate"),
+                "actual_rate": production.get("actual_rate"),
+                "utilization": production.get("utilization"),
+                "defect_rate": production.get("defect_rate"),
+                "runtime": runtime,
+                "alarm_count": len(alarms),
+            }
+            heartbeats.append(heartbeat_item)
+            timeline.append({
+                "time": str(data.get("received_at") or ""),
+                "kind": "heartbeat",
+                "node_code": node_code,
+                "title": f"{node_code} heartbeat",
+                "status": payload.get("status") or "running",
+                "detail": heartbeat_item,
+            })
+
+        commands = []
+        for row in command_rows:
+            data = dict(row)
+            try:
+                parameters = json.loads(str(data.get("parameters_json") or "{}"))
+            except json.JSONDecodeError:
+                parameters = {}
+            item = {**data, "parameters": parameters if isinstance(parameters, dict) else {}}
+            commands.append(item)
+            timeline.append({
+                "time": str(data.get("updated_at") or data.get("created_at") or ""),
+                "kind": "command",
+                "node_code": data.get("node_code"),
+                "title": data.get("command_type"),
+                "status": data.get("status"),
+                "detail": item,
+            })
+
+        part_queue = [dict(row) for row in part_rows]
+        for item in part_queue:
+            timeline.append({
+                "time": str(item.get("updated_at") or item.get("created_at") or ""),
+                "kind": "part_queue",
+                "node_code": item.get("target_node") or item.get("source_node"),
+                "title": item.get("part_id"),
+                "status": item.get("status"),
+                "detail": item,
+            })
+
+        audit_events = [dict(row) for row in audit_rows]
+        for item in audit_events:
+            timeline.append({
+                "time": str(item.get("created_at") or ""),
+                "kind": "audit",
+                "node_code": item.get("actor"),
+                "title": item.get("action"),
+                "status": item.get("result"),
+                "detail": item,
+            })
+
+        alerts = [dict(row) for row in alert_rows]
+        for item in alerts:
+            timeline.append({
+                "time": str(item.get("created_at") or ""),
+                "kind": "alert",
+                "node_code": item.get("node_code"),
+                "title": item.get("alert_type"),
+                "status": item.get("status"),
+                "detail": item,
+            })
+
+        ai_diagnoses = [dict(row) for row in ai_rows]
+        for item in ai_diagnoses:
+            timeline.append({
+                "time": str(item.get("created_at") or ""),
+                "kind": "ai_diagnosis",
+                "node_code": item.get("node_code"),
+                "title": item.get("model_name"),
+                "status": "recorded",
+                "detail": item,
+            })
+
+        timeline.sort(key=lambda item: str(item.get("time") or ""))
+        return {
+            "status": "ok",
+            "backend": persistence_label(),
+            "run_id": clean_run_id,
+            "scenario_ids": sorted(scenario_ids),
+            "node_codes": sorted(node_codes),
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "counts": {
+                "heartbeats": len(heartbeats),
+                "commands": len(commands),
+                "part_queue": len(part_queue),
+                "audit_events": len(audit_events),
+                "alerts": len(alerts),
+                "ai_diagnoses": len(ai_diagnoses),
+                "timeline": len(timeline),
+            },
+            "heartbeats": heartbeats,
+            "commands": commands,
+            "part_queue": part_queue,
+            "audit_events": audit_events,
+            "alerts": alerts,
+            "ai_diagnoses": ai_diagnoses,
+            "timeline": timeline,
+        }
+
     def persistence_status(self) -> dict[str, object]:
         backend = persistence_backend()
         db_path = Path(settings.central_db_path)

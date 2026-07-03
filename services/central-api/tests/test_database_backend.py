@@ -265,3 +265,97 @@ def test_heartbeat_shadow_retention_keeps_latest_rows_per_node(tmp_path, monkeyp
     assert status["retention"]["heartbeat_shadow_per_node"] == 2
     assert status["retention"]["heartbeat_shadow_policy"] == "keep_latest_per_node"
     assert status["replay_readiness"]["status"] == "ok"
+
+
+def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.models import Severity
+    from app.store import store
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
+
+    run_id = "RUN-REPLAY-API-001"
+    node_code = "turning-workshop-01"
+    first_heartbeat = {
+        "node_code": node_code,
+        "status": "running",
+        "runtime": {
+            "run_id": run_id,
+            "scenario_id": "SCN-REPLAY-API",
+            "simulation_engine": "simpy",
+            "runtime_source": "node-agent",
+        },
+        "metrics": {"cpu_usage": 31, "memory_usage": 42, "disk_usage": 53},
+        "production": {
+            "machine_code": "LATHE-REPLAY-API",
+            "workshop_type": "turning",
+            "active_order": "WO-REPLAY-API",
+            "finished_quantity": 8,
+            "target_rate": 1.0,
+            "actual_rate": 0.96,
+            "utilization": 0.74,
+            "defect_rate": 0.01,
+        },
+    }
+    store.record_node_heartbeat_v2(first_heartbeat)
+    part = store.create_ready_part("WO-REPLAY-API", "P3")
+    command = store.add_command(
+        node_code,
+        "replay_api_adjust_feed_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.96},
+    )
+    store.claim_pending_commands_for_node(node_code, "pytest-agent")
+    store.record_command_result(node_code, command.id, "executed", "replay api command executed")
+    alert = store.create_alert(node_code, "replay_api_alarm", Severity.medium, "Replay API proof alert", "ai")
+    store.add_ai_diagnosis(
+        alert.id,
+        node_code,
+        "Replay test root cause",
+        "Replay test recommended action",
+        0.88,
+        False,
+        "pytest-rule",
+    )
+    store.record_node_heartbeat_v2({
+        **first_heartbeat,
+        "production": {
+            **first_heartbeat["production"],
+            "finished_quantity": 9,
+            "actual_rate": 0.98,
+            "utilization": 0.76,
+        },
+    })
+
+    with TestClient(app) as client:
+        runs = client.get("/api/replay/runs", headers={"X-OGAS-Token": "mini-ogas-dev-token"})
+        detail = client.get(f"/api/replay/runs/{run_id}", headers={"X-OGAS-Token": "mini-ogas-dev-token"})
+        missing = client.get("/api/replay/runs/RUN-DOES-NOT-EXIST", headers={"X-OGAS-Token": "mini-ogas-dev-token"})
+
+    assert runs.status_code == 200
+    assert detail.status_code == 200
+    assert missing.status_code == 404
+    assert run_id in {item["run_id"] for item in runs.json()["runs"]}
+
+    payload = detail.json()
+    assert payload["status"] == "ok"
+    assert payload["run_id"] == run_id
+    assert payload["counts"]["heartbeats"] == 2
+    assert payload["counts"]["commands"] >= 1
+    assert payload["counts"]["part_queue"] >= 1
+    assert payload["counts"]["audit_events"] >= 1
+    assert payload["counts"]["alerts"] >= 1
+    assert payload["counts"]["ai_diagnoses"] >= 1
+    assert part.part_id in {item["part_id"] for item in payload["part_queue"]}
+    assert command.id in {item["command_id"] for item in payload["commands"]}
+    assert {"heartbeat", "command", "part_queue", "audit", "alert", "ai_diagnosis"}.issubset(
+        {item["kind"] for item in payload["timeline"]}
+    )
