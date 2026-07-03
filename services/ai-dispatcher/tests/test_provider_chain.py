@@ -49,3 +49,38 @@ def test_chain_reaches_local_fallback_only_after_all_providers_fail(monkeypatch)
     assert result.source == "local-fallback"
     assert result.attempted_providers == ["deepseek", "groq"]
     assert len(result.provider_errors) == 2
+
+
+def test_ollama_configured_requires_selected_model(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"models": [{"name": "deepseek-r1:7b-local"}]}
+
+    monkeypatch.setenv("OLLAMA_MODEL", "deepseek-r1:7b-local")
+    monkeypatch.setattr(main.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    assert main._provider_configured("ollama") is True
+
+    monkeypatch.setenv("OLLAMA_MODEL", "llama3")
+
+    assert main._provider_configured("ollama") is False
+
+
+def test_lm_studio_configured_requires_reachable_server(monkeypatch) -> None:
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    monkeypatch.setattr(main.httpx, "get", lambda *_args, **_kwargs: FakeResponse())
+
+    assert main._provider_configured("lm_studio") is True
+
+    def fail_get(*_args, **_kwargs):
+        raise main.httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(main.httpx, "get", fail_get)
+
+    assert main._provider_configured("lm_studio") is False

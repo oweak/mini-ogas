@@ -1,6 +1,6 @@
 # Mini-OGAS System Issues
 
-> Report time: 2026-07-01
+> Report time: 2026-07-03
 
 ## Executive Summary
 
@@ -21,8 +21,9 @@ The original first-phase blockers have been addressed. The system now has a work
 13. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
 14. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
 15. High-risk commands and human approvals now pass through a v2.5 Safety Governor with shared confirmation-code and control-plane protection rules.
+16. AI live-provider smoke now succeeds through the DeepSeek vault, and local fallback availability is checked at model/server level.
 
-The remaining verified runtime gap is AI live-provider smoke: the supervised runtime is configured, but the 2026-07-01 login smoke returned `api_error` for provider `ollama`.
+No active first-phase or v2.5 blocker is currently tracked in this file. The next work should be selected from the v2.5/v3.0 roadmap.
 
 ## Resolved Historical Issues
 
@@ -42,12 +43,11 @@ The remaining verified runtime gap is AI live-provider smoke: the supervised run
 | Missing report export | Resolved. `/api/reports/production/export` supports JSON, Markdown, and CSV, and the dashboard report view exposes authenticated Markdown/CSV downloads. |
 | Command lifecycle spread across Store | Resolved for initial v2.5. `CommandManager` now owns deterministic transitions; Store performs persistence and incident-event side effects. |
 | High-risk action policy spread across routes | Resolved for initial v2.5. `SafetyGovernor` now owns confirmation-code enforcement and production-control-plane isolation denial for control commands, operations commands, dispatch approval, and escalation approval. |
+| AI live-provider smoke failing | Resolved. The 2026-07-03 supervised login smoke reports `source=api`, provider `deepseek`, and model `deepseek-v4-pro`; Ollama fallback verifies the selected `deepseek-r1:7b-local` model, and LM Studio no longer reports available when its server is stopped. |
 
 ## Current Issues
 
-| Priority | Issue | Current evidence |
-| --- | --- | --- |
-| P1 | AI live-provider smoke failing | 2026-07-01 supervised login succeeds with PostgreSQL JWT auth, but `ai_smoke.status` returns `api_error` while runtime provider is `ollama`. |
+No active system issue is currently tracked in this file.
 
 ## Verification Commands
 

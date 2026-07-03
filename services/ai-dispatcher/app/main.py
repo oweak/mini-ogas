@@ -57,7 +57,37 @@ def _provider_configured(name: str) -> bool:
         return _is_live_key(os.getenv("DEEPSEEK_API_KEY", ""))
     if name == "groq":
         return _is_live_key(os.getenv("GROQ_API_KEY", ""))
-    return name in {"ollama", "lm_studio"}
+    if name == "ollama":
+        return _ollama_model_available()
+    if name == "lm_studio":
+        return _lm_studio_available()
+    return False
+
+
+def _ollama_model_available() -> bool:
+    model = os.getenv("OLLAMA_MODEL", "llama3")
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    try:
+        response = httpx.get(base_url + "/api/tags", timeout=2)
+        response.raise_for_status()
+        models = response.json().get("models", [])
+        return any(
+            str(item.get("name") or item.get("model") or "") == model
+            for item in models
+            if isinstance(item, dict)
+        )
+    except (httpx.HTTPError, ValueError, TypeError):
+        return False
+
+
+def _lm_studio_available() -> bool:
+    base_url = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234").rstrip("/")
+    try:
+        response = httpx.get(base_url + "/v1/models", timeout=2)
+        response.raise_for_status()
+        return True
+    except httpx.HTTPError:
+        return False
 
 
 app = FastAPI(title="Mini-OGAS AI Dispatcher", version="0.2.0")

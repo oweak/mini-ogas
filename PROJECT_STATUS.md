@@ -1,6 +1,6 @@
 # Mini-OGAS Project Status
 
-> Report time: 2026-07-01
+> Report time: 2026-07-03
 
 ## Project Position
 
@@ -46,12 +46,13 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 | v2.5 production report export | Implemented. Protected report export endpoints provide JSON, Markdown, and node CSV downloads; the dashboard report page exposes Markdown and CSV export actions. |
 | v2.5 Command Manager lifecycle | Implemented initial module. `CommandManager` now owns create, approve, reject, claim, result, timeout, supersede, and heartbeat verification transitions; Store keeps persistence and event side effects. |
 | v2.5 Safety Governor | Implemented initial module. `SafetyGovernor` now gates high-risk natural-language control commands, operations gateway commands, dispatch approval, and escalation approval with shared confirmation-code and control-plane protection decisions. |
+| v2.5 AI live-provider verification | Implemented. The supervised login smoke now unlocks the DeepSeek vault with the administrator password, reports `source=api`, and shows Ollama as a verified local fallback only when the selected local model exists. |
 
 ## Current Open Work
 
 | Priority | Item | Reason |
 | --- | --- | --- |
-| P1 | AI provider live smoke | Runtime is configured, but the 2026-07-01 login smoke reported `api_error` with provider `ollama`. Next work should restore a verified live provider call or clearly mark fallback mode in the dashboard. |
+| Planning | Select next v2.5/v3.0 target | The trusted loop, supervisor runtime, command lifecycle, safety governor, PostgreSQL persistence, and live AI smoke are verified. The next item should be selected from the roadmap. |
 
 ## Current Verification Status
 
@@ -61,7 +62,7 @@ Recent runtime check showed:
 - preflight: ok
 - active nodes: 5
 - admin login: `admin` / `admin` verified against PostgreSQL-backed JWT auth
-- AI runtime: configured; latest login smoke returned `api_error` for provider `ollama`
+- AI runtime: live. Latest 2026-07-03 login smoke returned `source=api`, provider `deepseek`, model `deepseek-v4-pro`; Ollama fallback is available with `deepseek-r1:7b-local`, and LM Studio correctly reports unavailable when its server is not running
 - persistence: PostgreSQL active in the supervised runtime
 - Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes
 - replay readiness: live PostgreSQL status reports heartbeat, command, and part queue shadow facts as replayable

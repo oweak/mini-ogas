@@ -196,7 +196,7 @@ def login(payload: _LoginBody):
                 {"role": "system", "content": "You are a Mini-OGAS connectivity probe."},
                 {"role": "user", "content": "Reply with exactly: OK"},
             ],
-            timeout=min(settings.ai_timeout_seconds, 15),
+            timeout=max(10, min(settings.ai_timeout_seconds, 60)),
         )
         if provider != "rule_fallback":
             ai_smoke = {

@@ -20,7 +20,15 @@ class OllamaProvider(AIProvider):
         try:
             req = urllib.request.Request(self._base_url + "/api/tags")
             with urllib.request.urlopen(req, timeout=2) as resp:
-                return resp.status == 200
+                if resp.status != 200:
+                    return False
+                payload = json.loads(resp.read().decode("utf-8"))
+                models = payload.get("models", [])
+                return any(
+                    str(item.get("name") or item.get("model") or "") == self._model
+                    for item in models
+                    if isinstance(item, dict)
+                )
         except Exception:
             return False
 

@@ -1,6 +1,6 @@
 ﻿# Mini-OGAS Issues Status
 
-> Last updated: 2026-07-01
+> Last updated: 2026-07-03
 
 This file records the current verified state after the v2.2 first-phase remediation pass. It replaces older notes that still described the system as a three-node or VirtualBox-primary deployment.
 
@@ -12,7 +12,7 @@ This file records the current verified state after the v2.2 first-phase remediat
 | Production nodes | The live production runtime counts three SimPy workshop nodes: turning, milling, and grinding. Cloud workshop/DB entries remain management-side logical infrastructure facts, not production-node uptime counters. |
 | Production simulation | The three production nodes run SimPy-compatible heartbeat v2 payloads through `services/node-agent/simulator.py`. |
 | Snapshot API | `GET /api/dashboard/snapshot` is implemented and exposes runtime, production, part queue, dispatch, and rule facts. |
-| AI runtime | central-api and ai-dispatcher both support provider-chain fallback; current live runtime can use DeepSeek when unlocked. |
+| AI runtime | central-api and ai-dispatcher both support provider-chain fallback; current supervised runtime verifies live DeepSeek through the unlocked vault and Ollama through model-level local availability checks. |
 | Persistence | PostgreSQL is the central persistence backend when configured; SQLite remains an explicit local fallback for tests or edge use. |
 | Supervisor | Go supervisor is the preferred v2.5 runtime owner. `scripts/start-miniogas.ps1` defaults to supervisor mode, owns dashboard plus backend/node processes, and the `-ReplaceRunning` handover has been verified. |
 | Command lifecycle | v2.5 Command Manager owns command creation, approval, rejection, claim, result, timeout, supersede, and heartbeat verification transitions. |
@@ -43,10 +43,11 @@ This file records the current verified state after the v2.2 first-phase remediat
 | 19 | Commit hygiene | Resolved. Generated noise is ignored, `services/dashboard/tsconfig.tsbuildinfo` was removed from version content, secret scan and staged whitespace checks passed, and the implementation was committed as `4addc36`. |
 | 20 | Command Manager lifecycle | Resolved for initial v2.5. Command transitions are centralized in `app/command_manager.py`; duplicate results are idempotent, stale claimed commands expire, older pending same-node commands are superseded, and heartbeat verification drives `verified`. |
 | 21 | Safety Governor for high-risk actions | Resolved for initial v2.5. `app/safety_governor.py` now applies shared confirmation-code and control-plane isolation rules to `/control/command`, `/ops/issue-command`, dispatch-plan approval, and escalation approval. Runtime verification blocks missing confirmation as `confirmation_code_required` and blocks cloud isolation as `control_plane_isolation_blocked`. |
+| 22 | AI live-provider verification | Resolved for v2.5. The AI vault was re-encrypted to the current administrator password, login smoke now reports `provider=deepseek`, `source=api`, `model=deepseek-v4-pro`, and Ollama/LM Studio availability checks now verify the selected local model/server rather than reporting generic configured status. |
 
 ## Remaining Work After v2.2
 
-The v2.5 Safety Governor slice is complete. The next known runtime gap is AI live-provider verification: the 2026-07-01 supervised login smoke reported `api_error` while the runtime was configured for provider `ollama`.
+No open v2.5 blocker is currently tracked here. The latest supervised runtime verifies DeepSeek live smoke, Ollama local fallback availability, PostgreSQL persistence, and Safety Governor enforcement.
 
 ## Verification Targets
 

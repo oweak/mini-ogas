@@ -55,6 +55,30 @@ def test_runtime_status_marks_vault_present_without_unlock(monkeypatch, tmp_path
     assert status["vault_unlocked"] is False
 
 
+def test_runtime_status_reports_model_for_active_provider(monkeypatch, tmp_path) -> None:
+    vault_path = tmp_path / "missing-ai-vault.json"
+    monkeypatch.setattr(ai_vault, "default_vault_path", lambda: vault_path)
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
+    monkeypatch.setattr(settings, "groq_api_key", "")
+    monkeypatch.setattr(settings, "ollama_model", "deepseek-r1:7b-local")
+
+    class ActiveProvider:
+        name = "ollama"
+
+        def is_available(self) -> bool:
+            return True
+
+    from app.core.ai.registry import registry
+
+    monkeypatch.setattr(registry, "is_any_live_provider", lambda: True)
+    monkeypatch.setattr(registry, "first_available", lambda: ActiveProvider())
+
+    status = ai_vault.runtime_status()
+
+    assert status["provider"] == "ollama"
+    assert status["model"] == "deepseek-r1:7b-local"
+
+
 def test_dispatcher_rule_fallback_does_not_mask_central_live_provider(monkeypatch) -> None:
     monkeypatch.setattr(settings, "microservices_enabled", True)
     monkeypatch.setattr(ai.registry, "is_any_live_provider", lambda: True)

@@ -65,8 +65,20 @@ def runtime_status(*, verified_provider: str | None = None) -> dict[str, object]
     return {
         "status": "live" if verified_provider else "configured" if configured and settings.ai_enabled else "rule_fallback",
         "provider": provider,
-        "model": settings.deepseek_model,
+        "model": _model_for_provider(provider),
         "source": source,
         "vault_present": vault_present() or env_provider_configured(),
         "vault_unlocked": bool(verified_provider or env_provider_configured()),
     }
+
+
+def _model_for_provider(provider: str) -> str:
+    if provider == "deepseek":
+        return settings.deepseek_model
+    if provider == "ollama":
+        return settings.ollama_model
+    if provider == "groq":
+        return settings.groq_model
+    if provider == "lm_studio":
+        return str(getattr(settings, "lm_studio_model", "") or "local-model")
+    return ""

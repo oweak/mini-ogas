@@ -16,6 +16,11 @@ POSTGRES_DSN = "${POSTGRES_DSN}"
 MICROSERVICES_ENABLED = "true"
 JWT_SECRET = "${JWT_SECRET}"
 AUTH_BOOTSTRAP_PASSWORD = "${AUTH_BOOTSTRAP_PASSWORD}"
+AI_ENABLED = "true"
+AI_PROVIDER_CHAIN = "deepseek,ollama,lm_studio,groq"
+AI_TIMEOUT_SECONDS = "60"
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "deepseek-r1:7b-local"
 [process.health]
 type = "http"
 endpoint = "http://127.0.0.1:8080/health"
@@ -31,6 +36,10 @@ dir = "services/ai-dispatcher"
 depends_on = ["central-api"]
 [process.env]
 API_ACCESS_TOKEN = "${API_ACCESS_TOKEN}"
+AI_PROVIDER_CHAIN = "deepseek,ollama,lm_studio,groq"
+AI_TIMEOUT_SECONDS = "60"
+OLLAMA_BASE_URL = "http://localhost:11434"
+OLLAMA_MODEL = "deepseek-r1:7b-local"
 [process.health]
 type = "http"
 endpoint = "http://127.0.0.1:8081/health"
