@@ -104,6 +104,13 @@ snapshot 反向适配出的兼容 wrapper，并有后端测试验证 wrapper par
 运行回放优先按 `run_id` 精确读取命令、队列、审计、告警和 AI 诊断，旧数据再退回时间窗口。
 这使 DEBT-012 的退出条件基本满足，但 DEBT-008 的“全部主事实源切换”仍需继续推进。
 
+状态更新（2026-07-06）：已完成计划层 shadow 持久化。`production_plan_shadow`、
+`dispatch_task_shadow`、`allocation_order_shadow` 已加入 SQLite/PostgreSQL schema，
+生成生产计划、重建调度、提交上级调配和批准调度变更时会写入 shadow 表；启动时可恢复到
+`MemoryStore`，`persistence_status()` 与 `replay_readiness_report()` 已纳入这些事实。
+这继续推进 DEBT-008，但当前仍是“内存读路径 + PostgreSQL shadow/recovery”，不是所有读写
+都直接以 PostgreSQL 为唯一主事实源。
+
 ### DEBT-009：VirtualBox 状态与生产节点状态容易混淆
 
 级别：P2

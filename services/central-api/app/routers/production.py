@@ -30,6 +30,7 @@ def generate_production_plan():
 @router.post("/production-plans")
 def submit_production_plan(plan: ProductionPlanIn):
     store.production_plans.append(plan)
+    store.persist_production_plan_shadow()
     return {"accepted": True, "plan": plan}
 
 

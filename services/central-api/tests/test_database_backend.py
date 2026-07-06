@@ -257,6 +257,42 @@ def test_replay_readiness_survives_new_store_instance(tmp_path, monkeypatch: pyt
     assert second.node_heartbeats_v2["turning-workshop-01"]["runtime"]["run_id"] == "RUN-REPLAY-001"
 
 
+def test_planning_and_dispatch_shadows_survive_new_store_instance(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.models import AllocationOrderIn
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    monkeypatch.setattr(settings, "microservices_enabled", False)
+
+    first = MemoryStore()
+    order = first.submit_allocation_order(AllocationOrderIn(
+        product_code="P4",
+        required_quantity=41,
+        priority=1,
+        deadline_hours=8,
+        assigned_cloud_role="pytest-dispatch",
+        source_unit="pytest-suite",
+        reason="persist planning layer",
+    ))
+
+    first_report = first.replay_readiness_report()
+    second = MemoryStore()
+    second_report = second.replay_readiness_report()
+
+    assert first_report["status"] == "ok"
+    assert second_report["status"] == "ok"
+    assert order.order_id in {item.order_id for item in second.allocation_orders}
+    assert any(plan.product_code == "P4" for plan in second.production_plans)
+    assert len(second.dispatch_tasks) > 0
+    assert second_report["shadow"]["production_plans"] >= len(second.production_plans)
+    assert second_report["shadow"]["dispatch_tasks"] >= len(second.dispatch_tasks)
+    assert second_report["shadow"]["allocation_orders"] >= len(second.allocation_orders)
+    assert order.order_id in second_report["restored_cache"]["allocation_orders"]
+
+
 def test_heartbeat_shadow_retention_keeps_latest_rows_per_node(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.store import MemoryStore
 

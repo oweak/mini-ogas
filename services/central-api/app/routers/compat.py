@@ -359,6 +359,7 @@ def approve_dispatch_plan(payload: _ActorPayload,
             **current,
         }
     approved = _approve_waiting_dispatch_tasks(payload.actor)
+    store.persist_dispatch_task_shadow()
     store.add_event(
         node_code="central-api",
         stage="dispatch-approved",

@@ -210,6 +210,15 @@ class MemoryStore:
             self.load_heartbeat_shadow()
             self.load_command_shadow()
             self.load_part_queue_shadow()
+            allocation_rows = self.load_allocation_order_shadow()
+            plan_rows = self.load_production_plan_shadow()
+            dispatch_rows = self.load_dispatch_task_shadow()
+            if allocation_rows == 0:
+                self.persist_allocation_order_shadow()
+            if plan_rows == 0:
+                self.persist_production_plan_shadow()
+            if dispatch_rows == 0:
+                self.persist_dispatch_task_shadow()
 
     # ------------------------------------------------------------------
     # Persistence (optional, off by default)
@@ -228,6 +237,14 @@ class MemoryStore:
 
     def current_run_id_for_part(self, part: PartQueueItem) -> str:
         return self.current_run_id_for_node(part.target_node) or self.current_run_id_for_node(part.source_node)
+
+    def current_run_id_for_system(self) -> str:
+        for payload in self.node_heartbeats_v2.values():
+            runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+            run_id = str(runtime.get("run_id") or "")
+            if run_id:
+                return run_id
+        return ""
 
     def persist_metric(self, metric: MetricIn) -> None:
         if not self._persisting():
@@ -637,6 +654,230 @@ class MemoryStore:
                 except ValueError:
                     continue
             self.part_seq = max(self.part_seq, max_seq)
+        return len(loaded)
+
+    def persist_production_plan_shadow(self) -> None:
+        if not self._persisting():
+            return
+        run_id = self.current_run_id_for_system()
+        updated_at = utc_now().isoformat()
+        try:
+            with get_db() as db:
+                db.execute("DELETE FROM production_plan_shadow")
+                for index, plan in enumerate(self.production_plans):
+                    plan_key = f"{index:04d}-{plan.product_code}"
+                    db.execute(
+                        """
+                        INSERT INTO production_plan_shadow (
+                            plan_key, run_id, plan_index, product_code, target_quantity,
+                            priority, route_json, reason, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            plan_key,
+                            run_id,
+                            index,
+                            plan.product_code,
+                            plan.target_quantity,
+                            plan.priority,
+                            json.dumps(plan.route, ensure_ascii=False),
+                            plan.reason,
+                            updated_at,
+                        ),
+                    )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (production plan shadow): %s", exc)
+
+    def load_production_plan_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[ProductionPlanIn] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT product_code, target_quantity, priority, route_json, reason
+                    FROM production_plan_shadow
+                    ORDER BY plan_index ASC, plan_key ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (production plan shadow load): %s", exc)
+            return 0
+        for row in rows:
+            data = dict(row)
+            try:
+                route = json.loads(str(data.get("route_json") or "[]"))
+            except json.JSONDecodeError:
+                route = []
+            loaded.append(ProductionPlanIn(
+                product_code=str(data["product_code"]),
+                target_quantity=int(data["target_quantity"]),
+                priority=int(data["priority"]),
+                route=route if isinstance(route, list) else [],
+                reason=str(data.get("reason") or ""),
+            ))
+        if loaded:
+            with self._lock:
+                self.production_plans = loaded[-100:]
+        return len(loaded)
+
+    def persist_dispatch_task_shadow(self) -> None:
+        if not self._persisting():
+            return
+        run_id = self.current_run_id_for_system()
+        updated_at = utc_now().isoformat()
+        try:
+            with get_db() as db:
+                db.execute("DELETE FROM dispatch_task_shadow")
+                for task in self.dispatch_tasks:
+                    db.execute(
+                        """
+                        INSERT INTO dispatch_task_shadow (
+                            task_id, run_id, product_code, product_name, route_json,
+                            assigned_node, assigned_machine, quantity, priority,
+                            status, reason, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task.id,
+                            run_id,
+                            task.product_code,
+                            task.product_name,
+                            json.dumps(task.route, ensure_ascii=False),
+                            task.assigned_node,
+                            task.assigned_machine,
+                            task.quantity,
+                            task.priority,
+                            task.status,
+                            task.reason,
+                            task.created_at.isoformat(),
+                            updated_at,
+                        ),
+                    )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (dispatch task shadow): %s", exc)
+
+    def load_dispatch_task_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[DispatchTask] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT task_id, product_code, product_name, route_json, assigned_node,
+                           assigned_machine, quantity, priority, status, reason, created_at
+                    FROM dispatch_task_shadow
+                    ORDER BY task_id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (dispatch task shadow load): %s", exc)
+            return 0
+        for row in rows:
+            data = dict(row)
+            try:
+                route = json.loads(str(data.get("route_json") or "[]"))
+            except json.JSONDecodeError:
+                route = []
+            loaded.append(DispatchTask(
+                id=int(data["task_id"]),
+                product_code=str(data["product_code"]),
+                product_name=str(data["product_name"]),
+                route=route if isinstance(route, list) else [],
+                assigned_node=str(data.get("assigned_node") or ""),
+                assigned_machine=str(data.get("assigned_machine") or ""),
+                quantity=int(data.get("quantity") or 0),
+                priority=int(data.get("priority") or 5),
+                status=str(data.get("status") or "scheduled"),
+                reason=str(data.get("reason") or ""),
+                created_at=_database_datetime(data["created_at"]),
+            ))
+        if loaded:
+            with self._lock:
+                self.dispatch_tasks = loaded[-500:]
+                self.dispatch_seq = max(self.dispatch_seq, max(task.id for task in self.dispatch_tasks))
+        return len(loaded)
+
+    def persist_allocation_order_shadow(self) -> None:
+        if not self._persisting():
+            return
+        run_id = self.current_run_id_for_system()
+        updated_at = utc_now().isoformat()
+        try:
+            with get_db() as db:
+                db.execute("DELETE FROM allocation_order_shadow")
+                for order in self.allocation_orders:
+                    db.execute(
+                        """
+                        INSERT INTO allocation_order_shadow (
+                            order_id, run_id, source_unit, product_code, product_name,
+                            required_quantity, priority, deadline_hours, assigned_cloud_role,
+                            status, reason, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            order.order_id,
+                            run_id,
+                            order.source_unit,
+                            order.product_code,
+                            order.product_name,
+                            order.required_quantity,
+                            order.priority,
+                            order.deadline_hours,
+                            order.assigned_cloud_role,
+                            order.status,
+                            order.reason,
+                            order.created_at.isoformat(),
+                            updated_at,
+                        ),
+                    )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (allocation order shadow): %s", exc)
+
+    def load_allocation_order_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[AllocationOrder] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT order_id, source_unit, product_code, product_name, required_quantity,
+                           priority, deadline_hours, assigned_cloud_role, status, reason, created_at
+                    FROM allocation_order_shadow
+                    ORDER BY created_at ASC, order_id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (allocation order shadow load): %s", exc)
+            return 0
+        for row in rows:
+            data = dict(row)
+            loaded.append(AllocationOrder(
+                order_id=str(data["order_id"]),
+                source_unit=str(data["source_unit"]),
+                product_code=str(data["product_code"]),
+                product_name=str(data["product_name"]),
+                required_quantity=int(data["required_quantity"]),
+                priority=int(data["priority"]),
+                deadline_hours=int(data["deadline_hours"]),
+                assigned_cloud_role=str(data.get("assigned_cloud_role") or ""),
+                status=str(data.get("status") or "received"),
+                reason=str(data.get("reason") or ""),
+                created_at=_database_datetime(data["created_at"]),
+            ))
+        if loaded:
+            with self._lock:
+                self.allocation_orders = loaded[-100:]
+                max_seq = 0
+                for order in self.allocation_orders:
+                    try:
+                        max_seq = max(max_seq, int(order.order_id.rsplit("-", 1)[-1]))
+                    except ValueError:
+                        continue
+                self.order_seq = max(self.order_seq, max_seq)
         return len(loaded)
 
     # ------------------------------------------------------------------
@@ -1644,6 +1885,7 @@ class MemoryStore:
             service_plans = self._generate_production_plan_via_service()
             if service_plans:
                 self.production_plans = service_plans
+                self.persist_production_plan_shadow()
                 return service_plans
 
         signals = {s.product_code: s for s in self.market_signals}
@@ -1663,6 +1905,7 @@ class MemoryStore:
             ))
         plans.sort(key=lambda p: p.priority)
         self.production_plans = plans
+        self.persist_production_plan_shadow()
         return plans
 
     def _generate_production_plan_via_service(self) -> list[ProductionPlanIn]:
@@ -1757,6 +2000,7 @@ class MemoryStore:
                         reason=f"{process} 工序分配到 {machine.machine_code}（负载 {machine.load_rate:.0f}%）。",
                     )
                 self.dispatch_tasks.append(task)
+        self.persist_dispatch_task_shadow()
         return self.dispatch_tasks
 
     def resource_allocations(self) -> list[ResourceAllocation]:
@@ -1805,6 +2049,7 @@ class MemoryStore:
         )
         self.allocation_orders.append(order)
         self.allocation_orders = self.allocation_orders[-60:]
+        self.persist_allocation_order_shadow()
         return order
 
     def submit_allocation_order(self, order_in: AllocationOrderIn) -> AllocationOrder:
@@ -1909,6 +2154,9 @@ class MemoryStore:
             }
             expected_commands = {command.id: command.status for command in self.commands}
             expected_parts = {part.part_id: part.status for part in self.part_queue}
+            expected_plans = len(self.production_plans)
+            expected_dispatch = {task.id: task.status for task in self.dispatch_tasks}
+            expected_allocations = {order.order_id: order.status for order in self.allocation_orders}
             expected_events = self._shadow_event_count
         try:
             with get_db() as db:
@@ -1924,6 +2172,13 @@ class MemoryStore:
                     "SELECT part_id, status FROM part_queue_shadow"
                 ).fetchall()
                 event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
+                plan_count = int(db.execute("SELECT COUNT(*) AS count FROM production_plan_shadow").fetchone()["count"])
+                dispatch_rows = db.execute(
+                    "SELECT task_id, status FROM dispatch_task_shadow"
+                ).fetchall()
+                allocation_rows = db.execute(
+                    "SELECT order_id, status FROM allocation_order_shadow"
+                ).fetchall()
         except Exception as exc:  # pragma: no cover - depends on external backend
             return {"status": "degraded", "error": str(exc)}
 
@@ -1952,12 +2207,33 @@ class MemoryStore:
             part_id for part_id, status in expected_parts.items()
             if part_shadow.get(part_id) != status
         ]
-        ok = not heartbeat_mismatches and not command_mismatches and not part_mismatches and event_count >= expected_events
+        dispatch_shadow = {int(row["task_id"]): str(row["status"]) for row in dispatch_rows}
+        dispatch_mismatches = [
+            task_id for task_id, status in expected_dispatch.items()
+            if dispatch_shadow.get(task_id) != status
+        ]
+        allocation_shadow = {str(row["order_id"]): str(row["status"]) for row in allocation_rows}
+        allocation_mismatches = [
+            order_id for order_id, status in expected_allocations.items()
+            if allocation_shadow.get(order_id) != status
+        ]
+        ok = (
+            not heartbeat_mismatches
+            and not command_mismatches
+            and not part_mismatches
+            and not dispatch_mismatches
+            and not allocation_mismatches
+            and plan_count >= expected_plans
+            and event_count >= expected_events
+        )
         return {
             "status": "ok" if ok else "degraded",
             "heartbeats": {"expected": len(expected_heartbeats), "recent_rows": len(heartbeat_rows), "mismatches": heartbeat_mismatches},
             "commands": {"expected": len(expected_commands), "shadow_rows": len(command_shadow), "mismatches": command_mismatches},
             "part_queue": {"expected": len(expected_parts), "shadow_rows": len(part_shadow), "mismatches": part_mismatches},
+            "production_plans": {"expected": expected_plans, "shadow_rows": plan_count},
+            "dispatch_tasks": {"expected": len(expected_dispatch), "shadow_rows": len(dispatch_shadow), "mismatches": dispatch_mismatches},
+            "allocation_orders": {"expected": len(expected_allocations), "shadow_rows": len(allocation_shadow), "mismatches": allocation_mismatches},
             "events": {"expected_at_least": expected_events, "shadow_rows": event_count},
         }
 
@@ -1974,6 +2250,9 @@ class MemoryStore:
             )
             live_command_ids = sorted(command.id for command in self.commands)
             live_part_ids = sorted(part.part_id for part in self.part_queue)
+            live_plan_count = len(self.production_plans)
+            live_dispatch_ids = sorted(task.id for task in self.dispatch_tasks)
+            live_allocation_ids = sorted(order.order_id for order in self.allocation_orders)
             restored_heartbeat_nodes = sorted(
                 node_code
                 for node_code, payload in self.node_heartbeats_v2.items()
@@ -1984,6 +2263,8 @@ class MemoryStore:
                 if command.result_message or command.claimed_by or command.status not in {"pending", "queued"}
             )
             restored_part_ids = sorted(part.part_id for part in self.part_queue)
+            restored_dispatch_ids = sorted(task.id for task in self.dispatch_tasks)
+            restored_allocation_ids = sorted(order.order_id for order in self.allocation_orders)
 
         try:
             with get_db() as db:
@@ -2000,6 +2281,13 @@ class MemoryStore:
                     "SELECT part_id, status, updated_at FROM part_queue_shadow"
                 ).fetchall()
                 event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
+                plan_count = int(db.execute("SELECT COUNT(*) AS count FROM production_plan_shadow").fetchone()["count"])
+                dispatch_rows = db.execute(
+                    "SELECT task_id, status, updated_at FROM dispatch_task_shadow"
+                ).fetchall()
+                allocation_rows = db.execute(
+                    "SELECT order_id, status, updated_at FROM allocation_order_shadow"
+                ).fetchall()
         except Exception as exc:  # pragma: no cover - depends on external backend
             return {"status": "degraded", "error": str(exc)}
 
@@ -2017,11 +2305,22 @@ class MemoryStore:
 
         shadow_command_ids = sorted(int(dict(row)["command_id"]) for row in command_rows)
         shadow_part_ids = sorted(str(dict(row)["part_id"]) for row in part_rows)
+        shadow_dispatch_ids = sorted(int(dict(row)["task_id"]) for row in dispatch_rows)
+        shadow_allocation_ids = sorted(str(dict(row)["order_id"]) for row in allocation_rows)
         missing_heartbeats = [node_code for node_code in live_heartbeat_nodes if node_code not in heartbeat_latest]
         missing_commands = [command_id for command_id in live_command_ids if command_id not in shadow_command_ids]
         missing_parts = [part_id for part_id in live_part_ids if part_id not in shadow_part_ids]
+        missing_dispatch = [task_id for task_id in live_dispatch_ids if task_id not in shadow_dispatch_ids]
+        missing_allocations = [order_id for order_id in live_allocation_ids if order_id not in shadow_allocation_ids]
 
-        ok = not missing_heartbeats and not missing_commands and not missing_parts
+        ok = (
+            not missing_heartbeats
+            and not missing_commands
+            and not missing_parts
+            and not missing_dispatch
+            and not missing_allocations
+            and plan_count >= live_plan_count
+        )
         return {
             "status": "ok" if ok else "degraded",
             "backend": persistence_label(),
@@ -2029,23 +2328,33 @@ class MemoryStore:
                 "heartbeat_nodes": len(live_heartbeat_nodes),
                 "commands": len(live_command_ids),
                 "part_queue_items": len(live_part_ids),
+                "production_plans": live_plan_count,
+                "dispatch_tasks": len(live_dispatch_ids),
+                "allocation_orders": len(live_allocation_ids),
             },
             "shadow": {
                 "heartbeat_nodes": len(heartbeat_latest),
                 "heartbeat_rows_sampled": len(heartbeat_rows),
                 "commands": len(shadow_command_ids),
                 "part_queue_items": len(shadow_part_ids),
+                "production_plans": plan_count,
+                "dispatch_tasks": len(shadow_dispatch_ids),
+                "allocation_orders": len(shadow_allocation_ids),
                 "audit_events": event_count,
             },
             "restored_cache": {
                 "heartbeat_nodes": restored_heartbeat_nodes,
                 "commands": restored_command_ids,
                 "part_queue_items": restored_part_ids,
+                "dispatch_tasks": restored_dispatch_ids,
+                "allocation_orders": restored_allocation_ids,
             },
             "missing": {
                 "heartbeat_nodes": missing_heartbeats,
                 "commands": missing_commands,
                 "part_queue_items": missing_parts,
+                "dispatch_tasks": missing_dispatch,
+                "allocation_orders": missing_allocations,
             },
             "latest_heartbeats": heartbeat_latest,
         }
@@ -2412,7 +2721,16 @@ class MemoryStore:
         if not settings.persist_enabled:
             return {**base, "status": "disabled"}
 
-        required_tables = ("heartbeat_shadow", "part_queue_shadow", "command_shadow", "audit_logs", "commands")
+        required_tables = (
+            "heartbeat_shadow",
+            "part_queue_shadow",
+            "command_shadow",
+            "audit_logs",
+            "commands",
+            "production_plan_shadow",
+            "dispatch_task_shadow",
+            "allocation_order_shadow",
+        )
         try:
             init_db()
             with get_db() as db:

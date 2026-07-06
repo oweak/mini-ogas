@@ -106,6 +106,50 @@ CREATE TABLE IF NOT EXISTS command_shadow (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS production_plan_shadow (
+    plan_key TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    plan_index INTEGER NOT NULL,
+    product_code TEXT NOT NULL,
+    target_quantity INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    route_json TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_task_shadow (
+    task_id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    product_code TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    route_json TEXT NOT NULL DEFAULT '[]',
+    assigned_node TEXT NOT NULL DEFAULT '',
+    assigned_machine TEXT NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 5,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS allocation_order_shadow (
+    order_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    source_unit TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    required_quantity INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    deadline_hours INTEGER NOT NULL,
+    assigned_cloud_role TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'received',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS heartbeat_shadow (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_code TEXT NOT NULL,
@@ -250,6 +294,50 @@ CREATE TABLE IF NOT EXISTS command_shadow (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS production_plan_shadow (
+    plan_key TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    plan_index INTEGER NOT NULL,
+    product_code TEXT NOT NULL,
+    target_quantity INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    route_json TEXT NOT NULL DEFAULT '[]',
+    reason TEXT NOT NULL DEFAULT '',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS dispatch_task_shadow (
+    task_id BIGINT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    product_code TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    route_json TEXT NOT NULL DEFAULT '[]',
+    assigned_node TEXT NOT NULL DEFAULT '',
+    assigned_machine TEXT NOT NULL DEFAULT '',
+    quantity INTEGER NOT NULL DEFAULT 0,
+    priority INTEGER NOT NULL DEFAULT 5,
+    status TEXT NOT NULL DEFAULT 'scheduled',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS allocation_order_shadow (
+    order_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    source_unit TEXT NOT NULL,
+    product_code TEXT NOT NULL,
+    product_name TEXT NOT NULL,
+    required_quantity INTEGER NOT NULL,
+    priority INTEGER NOT NULL,
+    deadline_hours INTEGER NOT NULL,
+    assigned_cloud_role TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'received',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS heartbeat_shadow (
     id BIGSERIAL PRIMARY KEY,
     node_code TEXT NOT NULL,
@@ -362,6 +450,9 @@ RUN_ID_TABLES = (
     "audit_logs",
     "part_queue_shadow",
     "command_shadow",
+    "production_plan_shadow",
+    "dispatch_task_shadow",
+    "allocation_order_shadow",
 )
 
 RUN_ID_INDEX_SQL = (
@@ -371,6 +462,9 @@ RUN_ID_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_audit_logs_run_created ON audit_logs(run_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_part_queue_shadow_run_updated ON part_queue_shadow(run_id, updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_command_shadow_run_updated ON command_shadow(run_id, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_production_plan_shadow_run_updated ON production_plan_shadow(run_id, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_dispatch_task_shadow_run_updated ON dispatch_task_shadow(run_id, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_allocation_order_shadow_run_updated ON allocation_order_shadow(run_id, updated_at)",
 )
 
 
