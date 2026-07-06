@@ -16,6 +16,7 @@ from .core.config import settings
 from .core.session import get_session_token
 from .core.database import get_db, init_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
+from .core.supervisor import supervisor_health
 from .command_manager import CommandManager, CommandTransition
 
 logger = logging.getLogger(__name__)
@@ -3039,6 +3040,31 @@ class MemoryStore:
         import time as time_mod
 
         steps: list[PreflightStep] = []
+        my_token = get_session_token()
+
+        t0 = time_mod.monotonic()
+        supervisor_step = PreflightStep(key="supervisor", label="运行所有权", status="running")
+        supervisor = supervisor_health(my_token)
+        supervisor_status = str(supervisor.get("status") or "offline")
+        healthy = int(supervisor.get("healthy_processes") or 0)
+        expected = supervisor.get("expected_processes") or []
+        expected_count = len(expected) if isinstance(expected, list) else 0
+        missing = supervisor.get("missing_processes") or []
+        unhealthy = supervisor.get("unhealthy_processes") or []
+        if supervisor_status == "ok":
+            supervisor_step.status = "pass"
+            supervisor_step.detail = f"Go supervisor 接管运行，session 一致，{healthy}/{expected_count} 个进程健康。"
+        elif supervisor_status == "session_mismatch":
+            supervisor_step.status = "fail"
+            supervisor_step.detail = "Go supervisor 在线，但 session 与 central-api 不一致，可能存在旧进程残留。"
+        elif supervisor_status == "degraded":
+            supervisor_step.status = "fail"
+            supervisor_step.detail = f"Go supervisor 在线但进程异常：missing={len(missing)}，unhealthy={len(unhealthy)}。"
+        else:
+            supervisor_step.status = "fail"
+            supervisor_step.detail = "Go supervisor 未响应，无法确认系统运行所有权。"
+        supervisor_step.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
+        steps.append(supervisor_step)
 
         # ----------------------------------------------------------------
         # Step 1 — Service connectivity
@@ -3052,7 +3078,6 @@ class MemoryStore:
             ("市场模拟器", settings.market_simulator_url),
             ("排产规划器", settings.production_planner_url),
         ]
-        my_token = get_session_token()
         for name, base_url in probe_services:
             try:
                 if settings.microservices_enabled:

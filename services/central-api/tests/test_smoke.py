@@ -23,11 +23,11 @@ def test_health_endpoint() -> None:
 
 def test_health_supervisor_ok(monkeypatch) -> None:
     from app.core.config import settings
-    from app.routers import health as health_router
+    from app.core import supervisor
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api", "dashboard"])
     monkeypatch.setattr(
-        health_router,
+        supervisor,
         "get_json",
         lambda url, timeout=None: (
             True,
@@ -41,7 +41,7 @@ def test_health_supervisor_ok(monkeypatch) -> None:
         ),
     )
 
-    payload = health_router._supervisor_health("SESSION-1")
+    payload = supervisor.supervisor_health("SESSION-1")
 
     assert payload["status"] == "ok"
     assert payload["session_match"] is True
@@ -52,12 +52,12 @@ def test_health_supervisor_ok(monkeypatch) -> None:
 
 def test_health_supervisor_offline(monkeypatch) -> None:
     from app.core.config import settings
-    from app.routers import health as health_router
+    from app.core import supervisor
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
-    monkeypatch.setattr(health_router, "get_json", lambda url, timeout=None: (False, {"error": "URLError"}))
+    monkeypatch.setattr(supervisor, "get_json", lambda url, timeout=None: (False, {"error": "URLError"}))
 
-    payload = health_router._supervisor_health("SESSION-1")
+    payload = supervisor.supervisor_health("SESSION-1")
 
     assert payload["status"] == "offline"
     assert payload["session_match"] is False
@@ -66,11 +66,11 @@ def test_health_supervisor_offline(monkeypatch) -> None:
 
 def test_health_supervisor_session_mismatch(monkeypatch) -> None:
     from app.core.config import settings
-    from app.routers import health as health_router
+    from app.core import supervisor
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
     monkeypatch.setattr(
-        health_router,
+        supervisor,
         "get_json",
         lambda url, timeout=None: (
             True,
@@ -83,11 +83,43 @@ def test_health_supervisor_session_mismatch(monkeypatch) -> None:
         ),
     )
 
-    payload = health_router._supervisor_health("SESSION-1")
+    payload = supervisor.supervisor_health("SESSION-1")
 
     assert payload["status"] == "session_mismatch"
     assert payload["session_match"] is False
     assert payload["missing_processes"] == []
+
+
+def test_preflight_includes_supervisor_ownership(monkeypatch) -> None:
+    from app import store as store_module
+
+    monkeypatch.setattr(
+        store_module,
+        "supervisor_health",
+        lambda session_token: {
+            "status": "ok",
+            "session_match": True,
+            "healthy_processes": 8,
+            "expected_processes": [
+                "central-api",
+                "ai-dispatcher",
+                "market-simulator",
+                "production-planner",
+                "dashboard",
+                "turning-simpy-node",
+                "milling-simpy-node",
+                "grinding-simpy-node",
+            ],
+            "missing_processes": [],
+            "unhealthy_processes": [],
+        },
+    )
+
+    result = store.run_preflight()
+
+    assert result.steps[0].key == "supervisor"
+    assert result.steps[0].status == "pass"
+    assert "8/8" in result.steps[0].detail
 
 
 def test_summary_has_required_dashboard_fields() -> None:

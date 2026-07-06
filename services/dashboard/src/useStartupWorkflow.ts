@@ -42,6 +42,7 @@ function wait(ms: number) {
 
 function startupFallbackChecks(preflightLoading: boolean): PreflightCheck[] {
   return [
+    { id: 'supervisor', label: '运行所有权', status: preflightLoading ? 'checking' : 'waiting', detail: '等待确认 Go supervisor 接管 central-api、dashboard 与三个车间节点。' },
     { id: 'central-api', label: '父节点 central-api', status: preflightLoading ? 'checking' : 'waiting', detail: '等待连接主控 API。' },
     { id: 'edge-nodes', label: '父子节点连接', status: preflightLoading ? 'checking' : 'waiting', detail: '等待检查车间子节点心跳。' },
     { id: 'ai-runtime', label: 'AI 运行环境', status: 'locked', detail: '等待管理员密码解锁并调用模型接口。' },
@@ -54,6 +55,7 @@ function failedPreflight(authRuntime: AuthRuntime | null): PreflightState {
     ok: false,
     status: 'error',
     checks: [
+      { id: 'supervisor', label: '运行所有权', status: 'waiting', detail: 'central-api 不可用，暂未确认 Go supervisor 运行所有权。' },
       { id: 'central-api', label: '父节点 central-api', status: 'error', detail: '无法连接 central-api，请先启动后端服务。' },
       { id: 'edge-nodes', label: '父子节点连接', status: 'waiting', detail: '父节点不可用，暂未检查子节点。' },
       { id: 'ai-runtime', label: 'AI 运行环境', status: 'waiting', detail: '父节点不可用，暂未解锁 AI。' },
