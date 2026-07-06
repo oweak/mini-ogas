@@ -24,7 +24,7 @@ from ..core.security import (
     ActorInfo,
     require_permission,
 )
-from ..models import AiDiagnoseRequest, AuditLog, ControlCommandRequest, Severity
+from ..models import AiDiagnoseRequest, ControlCommandRequest, Severity
 from ..safety_governor import safety_governor
 from ..store import store
 
@@ -366,14 +366,7 @@ def approve_dispatch_plan(payload: _ActorPayload,
         severity=Severity.info,
         message=f"Dispatch plan approved by {payload.actor}; {approved} blocked task(s) rerouted.",
     )
-    store.audit_logs.append(AuditLog(
-        id=len(store.audit_logs) + 1,
-        actor=payload.actor,
-        action="dispatch:approve",
-        resource_type="dispatch_plan",
-        resource_id="current",
-        result="success",
-    ))
+    store.add_audit_log(payload.actor, "dispatch:approve", "dispatch_plan", "current", "success")
     result = f"Approved and rerouted {approved} blocked dispatch task(s)."
     updated = _dispatch_payload(status_override="approved_executed", result=result)
     return {
@@ -447,6 +440,15 @@ def confirm_alert(issue_id: str, payload: _ConfirmAlertBody):
         severity=alert.severity,
         message=f"报警已确认：{alert.alert_type}，操作员 {payload.operator} 已记录。",
     )
+    store.persist_alert_state(alert)
+    store.add_audit_log(
+        payload.operator,
+        "alert:confirm",
+        "alert",
+        str(alert.id),
+        "confirmed",
+        f"{alert.node_code}:{alert.alert_type}",
+    )
     return {
         "ok": True,
         "message": "报警已确认为真实事件",
@@ -506,6 +508,7 @@ def diagnose_by_issue_id(issue_id: str,
         raw_response=result.raw_text,
     )
     alert.status = "diagnosed"
+    store.persist_alert_state(alert)
     requires_human = alert.severity in {Severity.high, Severity.critical} or bool(result.need_isolation)
     escalation = None
     if requires_human:
@@ -566,6 +569,15 @@ def issue_actions(issue_id: str, payload: _IssueActionBody):
     if alert is not None:
         alert.status = "closed"
         alert.handled_by = operator
+        store.persist_alert_state(alert)
+        store.add_audit_log(
+            operator,
+            "issue:close",
+            "issue",
+            issue_id,
+            "closed",
+            action_text,
+        )
         store.add_event(
             node_code=alert.node_code,
             stage="issue-closed",
@@ -608,6 +620,15 @@ def issue_decision(issue_id: str, payload: _IssueDecisionBody):
         new_status = "observing" if decision == "observe" else "closed"
         alert.status = new_status
         alert.handled_by = operator
+        store.persist_alert_state(alert)
+        store.add_audit_log(
+            operator,
+            f"issue:decide:{decision}",
+            "issue",
+            issue_id,
+            new_status,
+            note or "",
+        )
         verb = "进入观察" if decision == "observe" else "按误报/无需处置关闭"
         store.add_event(
             node_code=alert.node_code,
@@ -682,12 +703,21 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
                 ):
                     alert.status = "closed"
                     alert.handled_by = operator
+                    store.persist_alert_state(alert)
                     closed_alerts.append(f"{alert.node_code}-{alert.alert_type}")
             store.add_event(
                 node_code=escalation.node_code,
                 stage="human-escalation",
                 severity=Severity.info,
                 message=f"Human approval closed {len(closed_alerts)} alert(s): {', '.join(closed_alerts)}",
+            )
+            store.add_audit_log(
+                operator,
+                "escalation:approve",
+                "escalation",
+                str(escalation_id),
+                "closed" if closed_alerts else "approved",
+                ", ".join(closed_alerts),
             )
     else:
         msg = f"人工升级 #{escalation_id} 已驳回。操作员: {operator}。"

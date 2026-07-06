@@ -257,6 +257,82 @@ def test_replay_readiness_survives_new_store_instance(tmp_path, monkeypatch: pyt
     assert second.node_heartbeats_v2["turning-workshop-01"]["runtime"]["run_id"] == "RUN-REPLAY-001"
 
 
+def test_alert_ai_and_audit_shadows_survive_new_store_instance(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.models import Severity
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+
+    first = MemoryStore()
+    first.record_node_heartbeat_v2({
+        "node_code": "milling-workshop-01",
+        "status": "running",
+        "runtime": {
+            "run_id": "RUN-ALERT-AI-AUDIT",
+            "scenario_id": "SCN-ALERT-AI-AUDIT",
+            "simulation_engine": "simpy",
+            "runtime_source": "node-agent",
+        },
+        "metrics": {"cpu_usage": 21, "memory_usage": 32, "disk_usage": 43},
+        "production": {
+            "machine_code": "MILL-AUDIT",
+            "workshop_type": "milling",
+            "active_order": "WO-AUDIT",
+            "finished_quantity": 12,
+            "target_rate": 1.0,
+            "actual_rate": 0.97,
+            "utilization": 0.78,
+        },
+    })
+    alert = first.create_alert(
+        "milling-workshop-01",
+        "pytest_spindle_vibration",
+        Severity.high,
+        "pytest spindle vibration",
+        "ai",
+    )
+    diagnosis = first.add_ai_diagnosis(
+        alert.id,
+        "milling-workshop-01",
+        "bearing vibration exceeds learned baseline",
+        "reduce spindle speed and request operator inspection",
+        0.86,
+        True,
+        "pytest-provider",
+        raw_response='{"provider":"pytest","risk":"high"}',
+    )
+    alert.status = "closed"
+    alert.handled_by = "pytest-operator"
+    first.persist_alert_state(alert)
+    first.add_audit_log(
+        "pytest-operator",
+        "issue:close",
+        "issue",
+        f"{alert.node_code}-{alert.alert_type}",
+        "closed",
+        "operator accepted AI recommendation",
+    )
+
+    second = MemoryStore()
+    restored_alert = next(item for item in second.alerts if item.id == alert.id)
+    restored_diagnosis = next(item for item in second.ai_diagnoses if item.id == diagnosis.id)
+    readiness = second.replay_readiness_report()
+    consistency = second.shadow_consistency_report()
+
+    assert restored_alert.status == "closed"
+    assert restored_alert.handled_by == "pytest-operator"
+    assert restored_diagnosis.raw_response == '{"provider":"pytest","risk":"high"}'
+    assert any(item.action == "issue:close" for item in second.audit_logs)
+    assert readiness["status"] == "ok"
+    assert consistency["status"] == "ok"
+    assert alert.id in readiness["restored_cache"]["alerts"]
+    assert diagnosis.id in readiness["restored_cache"]["ai_diagnoses"]
+    assert readiness["shadow"]["audit_events"] >= readiness["live"]["audit_logs"]
+
+
 def test_planning_and_dispatch_shadows_survive_new_store_instance(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.models import AllocationOrderIn
     from app.store import MemoryStore

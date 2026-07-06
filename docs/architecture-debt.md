@@ -111,6 +111,11 @@ snapshot 反向适配出的兼容 wrapper，并有后端测试验证 wrapper par
 这继续推进 DEBT-008，但当前仍是“内存读路径 + PostgreSQL shadow/recovery”，不是所有读写
 都直接以 PostgreSQL 为唯一主事实源。
 
+状态更新（2026-07-06）：告警、AI 诊断和人工审计运行事实已加入启动恢复链路。`alerts`、`ai_diagnosis`、`audit_logs`
+会恢复到 `MemoryStore`；告警确认、AI 诊断、问题关闭、人工决策、节点退役、调度审批和升级审批会把状态或审计事实写回持久化层。
+`shadow_consistency_report()` 与 `replay_readiness_report()` 已纳入 alert / AI / audit 覆盖检查。该项继续削减 DEBT-008，
+剩余边界仍是把读路径从“内存优先 + PostgreSQL shadow/recovery”推进到 PostgreSQL 主事实源。
+
 ### DEBT-009：VirtualBox 状态与生产节点状态容易混淆
 
 级别：P2

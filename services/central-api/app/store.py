@@ -210,6 +210,9 @@ class MemoryStore:
             self.load_heartbeat_shadow()
             self.load_command_shadow()
             self.load_part_queue_shadow()
+            self.load_alert_shadow()
+            self.load_ai_diagnosis_shadow()
+            self.load_audit_log_shadow()
             allocation_rows = self.load_allocation_order_shadow()
             plan_rows = self.load_production_plan_shadow()
             dispatch_rows = self.load_dispatch_task_shadow()
@@ -427,14 +430,119 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO alerts (run_id, node_code, alert_type, severity, source, description,
-                       handled_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
-                     alert.handled_by or "system", alert.description, alert.handled_by,
+                    """INSERT INTO alerts (id, run_id, node_code, alert_type, severity, source, description,
+                       handled_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                       run_id=excluded.run_id,
+                       node_code=excluded.node_code,
+                       alert_type=excluded.alert_type,
+                       severity=excluded.severity,
+                       source=excluded.source,
+                       description=excluded.description,
+                       handled_by=excluded.handled_by,
+                       status=excluded.status,
+                       created_at=excluded.created_at""",
+                    (alert.id, self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
+                     "central-api", alert.description, alert.handled_by,
                      alert.status, alert.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
             logger.warning("Persistence warning (alert): %s", exc)
+
+    def persist_alert_state(self, alert: Alert) -> None:
+        if not self._persisting():
+            return
+        try:
+            with get_db() as db:
+                db.execute(
+                    """
+                    UPDATE alerts
+                    SET handled_by = ?, status = ?
+                    WHERE id = ?
+                    """,
+                    (alert.handled_by, alert.status, alert.id),
+                )
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (alert state): %s", exc)
+
+    def load_alert_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[Alert] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT id, node_code, alert_type, severity, description,
+                           handled_by, status, created_at
+                    FROM alerts
+                    ORDER BY created_at ASC, id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (alert shadow load): %s", exc)
+            return 0
+
+        for row in rows:
+            data = dict(row)
+            try:
+                severity = Severity(str(data.get("severity") or Severity.medium.value))
+            except ValueError:
+                severity = Severity.medium
+            loaded.append(Alert(
+                id=int(data["id"]),
+                node_code=str(data["node_code"]),
+                alert_type=str(data["alert_type"]),
+                severity=severity,
+                description=str(data.get("description") or ""),
+                handled_by=data.get("handled_by"),
+                status=str(data.get("status") or "open"),
+                created_at=_database_datetime(data["created_at"]),
+            ))
+        if loaded:
+            with self._lock:
+                self.alerts = loaded[-120:]
+        return len(loaded)
+
+    def persist_audit_log(self, audit: AuditLog, detail: str = "") -> None:
+        if not self._persisting():
+            return
+        try:
+            with get_db() as db:
+                db.execute(
+                    """INSERT INTO audit_logs (run_id, actor, action, resource_type, resource_id, result, detail, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (self.current_run_id_for_system(), audit.actor, audit.action, audit.resource_type,
+                     audit.resource_id, audit.result, detail, audit.created_at.isoformat()),
+                )
+            with self._lock:
+                self._shadow_event_count += 1
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (audit_log): %s", exc)
+
+    def add_audit_log(
+        self,
+        actor: str,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        result: str,
+        detail: str = "",
+    ) -> AuditLog:
+        with self._lock:
+            next_id = max((item.id for item in self.audit_logs), default=0) + 1
+            audit = AuditLog(
+                id=next_id,
+                actor=actor,
+                action=action,
+                resource_type=resource_type,
+                resource_id=resource_id,
+                result=result,
+            )
+            self.audit_logs.append(audit)
+            self.audit_logs = self.audit_logs[-300:]
+        self.persist_audit_log(audit, detail)
+        return audit
 
     def persist_command(self, command: NodeCommand) -> None:
         if not self._persisting():
@@ -557,16 +665,121 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO ai_diagnosis (run_id, alert_id, severity, node_code, root_cause,
+                    """INSERT INTO ai_diagnosis (id, run_id, alert_id, severity, node_code, root_cause,
                        recommended_action, confidence, need_isolation, model_name, raw_response, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (self.current_run_id_for_node(diagnosis.node_code), diagnosis.alert_id, Severity.medium.value, diagnosis.node_code,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(id) DO UPDATE SET
+                       run_id=excluded.run_id,
+                       alert_id=excluded.alert_id,
+                       severity=excluded.severity,
+                       node_code=excluded.node_code,
+                       root_cause=excluded.root_cause,
+                       recommended_action=excluded.recommended_action,
+                       confidence=excluded.confidence,
+                       need_isolation=excluded.need_isolation,
+                       model_name=excluded.model_name,
+                       raw_response=excluded.raw_response,
+                       created_at=excluded.created_at""",
+                    (diagnosis.id, self.current_run_id_for_node(diagnosis.node_code), diagnosis.alert_id,
+                     Severity.medium.value, diagnosis.node_code,
                      diagnosis.root_cause, diagnosis.recommended_action, diagnosis.confidence,
-                     bool(diagnosis.need_isolation), diagnosis.model_name, None,
+                     bool(diagnosis.need_isolation), diagnosis.model_name, diagnosis.raw_response,
                      diagnosis.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
             logger.warning("Persistence warning (ai_diagnosis): %s", exc)
+
+    def load_ai_diagnosis_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded: list[AiDiagnosis] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT id, alert_id, node_code, root_cause, recommended_action,
+                           confidence, need_isolation, model_name, raw_response, created_at
+                    FROM ai_diagnosis
+                    ORDER BY created_at ASC, id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (ai_diagnosis shadow load): %s", exc)
+            return 0
+
+        for row in rows:
+            data = dict(row)
+            loaded.append(AiDiagnosis(
+                id=int(data["id"]),
+                alert_id=int(data.get("alert_id") or 0),
+                node_code=str(data.get("node_code") or ""),
+                model_name=str(data.get("model_name") or "deepseek"),
+                root_cause=str(data.get("root_cause") or ""),
+                recommended_action=str(data.get("recommended_action") or ""),
+                confidence=float(data.get("confidence") or 0),
+                need_isolation=bool(data.get("need_isolation")),
+                raw_response=str(data.get("raw_response") or ""),
+                created_at=_database_datetime(data["created_at"]),
+            ))
+        if loaded:
+            with self._lock:
+                self.ai_diagnoses = loaded[-80:]
+        return len(loaded)
+
+    def load_audit_log_shadow(self) -> int:
+        if not settings.persist_enabled:
+            return 0
+        loaded_audits: list[AuditLog] = []
+        loaded_events: list[IncidentEvent] = []
+        try:
+            with get_db() as db:
+                rows = db.execute(
+                    """
+                    SELECT id, actor, action, resource_type, resource_id, result, detail, created_at
+                    FROM audit_logs
+                    ORDER BY created_at ASC, id ASC
+                    """
+                ).fetchall()
+        except Exception as exc:  # pragma: no cover
+            logger.warning("Persistence warning (audit log shadow load): %s", exc)
+            return 0
+
+        for row in rows:
+            data = dict(row)
+            created_at = _database_datetime(data["created_at"])
+            loaded_audits.append(AuditLog(
+                id=int(data["id"]),
+                actor=str(data.get("actor") or ""),
+                action=str(data.get("action") or ""),
+                resource_type=str(data.get("resource_type") or ""),
+                resource_id=str(data.get("resource_id") or ""),
+                result=str(data.get("result") or ""),
+                created_at=created_at,
+            ))
+            if str(data.get("resource_type") or "") == "incident_event":
+                try:
+                    severity = Severity(str(data.get("result") or Severity.info.value))
+                except ValueError:
+                    severity = Severity.info
+                try:
+                    event_id = int(data.get("resource_id") or data["id"])
+                except (TypeError, ValueError):
+                    event_id = int(data["id"])
+                loaded_events.append(IncidentEvent(
+                    id=event_id,
+                    node_code=str(data.get("actor") or ""),
+                    stage=str(data.get("action") or ""),
+                    severity=severity,
+                    message=str(data.get("detail") or ""),
+                    created_at=created_at,
+                ))
+        with self._lock:
+            if loaded_audits:
+                self.audit_logs = loaded_audits[-300:]
+                self._shadow_event_count = max(self._shadow_event_count, len(loaded_audits))
+            if loaded_events:
+                self.incident_events = loaded_events[-160:]
+        return len(loaded_audits)
 
     def persist_part_queue_item(self, part: PartQueueItem) -> None:
         if not self._persisting():
@@ -1099,7 +1312,8 @@ class MemoryStore:
     def create_alert(self, node_code: str, alert_type: str, severity: Severity, description: str,
                      handled_by: str | None = None) -> Alert:
         with self._lock:
-            alert = Alert(id=len(self.alerts) + 1, node_code=node_code, alert_type=alert_type,
+            next_id = max((item.id for item in self.alerts), default=0) + 1
+            alert = Alert(id=next_id, node_code=node_code, alert_type=alert_type,
                           severity=severity, description=description, handled_by=handled_by)
             self.alerts.append(alert)
             self.alerts = self.alerts[-120:]
@@ -1110,7 +1324,8 @@ class MemoryStore:
                          recommended_action: str, confidence: float, need_isolation: bool,
                          model_name: str, raw_response: str = "") -> AiDiagnosis:
         with self._lock:
-            diagnosis = AiDiagnosis(id=len(self.ai_diagnoses) + 1, alert_id=alert_id, node_code=node_code,
+            next_id = max((item.id for item in self.ai_diagnoses), default=0) + 1
+            diagnosis = AiDiagnosis(id=next_id, alert_id=alert_id, node_code=node_code,
                                     model_name=model_name, root_cause=root_cause,
                                     recommended_action=recommended_action, confidence=confidence,
                                     need_isolation=need_isolation, raw_response=raw_response)
@@ -1444,8 +1659,7 @@ class MemoryStore:
             node.status = NodeStatus.isolated
             self.add_command(node_code, "isolate_node", "high", "executed", actor)
             self.add_event(node_code, "isolation", Severity.high, "车间接口已切断，只保留心跳与紧急恢复通道。")
-            self.audit_logs.append(AuditLog(id=len(self.audit_logs) + 1, actor=actor, action="node:isolate",
-                                            resource_type="node", resource_id=node_code, result="success"))
+            self.add_audit_log(actor, "node:isolate", "node", node_code, "success")
             for edge in self.topology_edges:
                 if edge.target == node_code:
                     edge.status = "isolated"
@@ -1459,8 +1673,7 @@ class MemoryStore:
             node.last_heartbeat = utc_now()  # prevent immediate timeout after restore
             self.add_command(node_code, "restore_node", "high", "executed", actor)
             self.add_event(node_code, "restore", Severity.info, "管理员恢复车间通信，重新纳入中心调度。")
-            self.audit_logs.append(AuditLog(id=len(self.audit_logs) + 1, actor=actor, action="node:restore",
-                                            resource_type="node", resource_id=node_code, result="success"))
+            self.add_audit_log(actor, "node:restore", "node", node_code, "success")
             for edge in self.topology_edges:
                 if edge.target == node_code:
                     edge.status = "healthy"
@@ -1489,18 +1702,15 @@ class MemoryStore:
             self.topology_edges = [
                 e for e in self.topology_edges if e.source != node_code and e.target != node_code
             ]
+            retired_alerts: list[Alert] = []
             for alert in self.alerts:
                 if alert.node_code == node_code and alert.status not in {"closed", "resolved"}:
                     alert.status = "closed"
                     alert.handled_by = actor
-            self.audit_logs.append(AuditLog(
-                id=len(self.audit_logs) + 1,
-                actor=actor,
-                action="node:retire",
-                resource_type="node",
-                resource_id=node_code,
-                result="success",
-            ))
+                    retired_alerts.append(alert)
+            self.add_audit_log(actor, "node:retire", "node", node_code, "success")
+        for alert in retired_alerts:
+            self.persist_alert_state(alert)
         self.add_event(node_code, "node-retired", Severity.info, "Runtime node retired from active topology.")
         return {
             "ok": True,
@@ -2154,6 +2364,9 @@ class MemoryStore:
             }
             expected_commands = {command.id: command.status for command in self.commands}
             expected_parts = {part.part_id: part.status for part in self.part_queue}
+            expected_alerts = {alert.id: alert.status for alert in self.alerts}
+            expected_ai = {diagnosis.id: diagnosis.node_code for diagnosis in self.ai_diagnoses}
+            expected_audits = len(self.audit_logs)
             expected_plans = len(self.production_plans)
             expected_dispatch = {task.id: task.status for task in self.dispatch_tasks}
             expected_allocations = {order.order_id: order.status for order in self.allocation_orders}
@@ -2170,6 +2383,12 @@ class MemoryStore:
                 ).fetchall()
                 part_rows = db.execute(
                     "SELECT part_id, status FROM part_queue_shadow"
+                ).fetchall()
+                alert_rows = db.execute(
+                    "SELECT id, status FROM alerts"
+                ).fetchall()
+                ai_rows = db.execute(
+                    "SELECT id, node_code FROM ai_diagnosis"
                 ).fetchall()
                 event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
                 plan_count = int(db.execute("SELECT COUNT(*) AS count FROM production_plan_shadow").fetchone()["count"])
@@ -2207,6 +2426,16 @@ class MemoryStore:
             part_id for part_id, status in expected_parts.items()
             if part_shadow.get(part_id) != status
         ]
+        alert_shadow = {int(row["id"]): str(row["status"]) for row in alert_rows}
+        alert_mismatches = [
+            alert_id for alert_id, status in expected_alerts.items()
+            if alert_shadow.get(alert_id) != status
+        ]
+        ai_shadow = {int(row["id"]): str(row["node_code"] or "") for row in ai_rows}
+        ai_mismatches = [
+            diagnosis_id for diagnosis_id, node_code in expected_ai.items()
+            if ai_shadow.get(diagnosis_id) != node_code
+        ]
         dispatch_shadow = {int(row["task_id"]): str(row["status"]) for row in dispatch_rows}
         dispatch_mismatches = [
             task_id for task_id, status in expected_dispatch.items()
@@ -2221,20 +2450,24 @@ class MemoryStore:
             not heartbeat_mismatches
             and not command_mismatches
             and not part_mismatches
+            and not alert_mismatches
+            and not ai_mismatches
             and not dispatch_mismatches
             and not allocation_mismatches
             and plan_count >= expected_plans
-            and event_count >= expected_events
+            and event_count >= max(expected_events, expected_audits)
         )
         return {
             "status": "ok" if ok else "degraded",
             "heartbeats": {"expected": len(expected_heartbeats), "recent_rows": len(heartbeat_rows), "mismatches": heartbeat_mismatches},
             "commands": {"expected": len(expected_commands), "shadow_rows": len(command_shadow), "mismatches": command_mismatches},
             "part_queue": {"expected": len(expected_parts), "shadow_rows": len(part_shadow), "mismatches": part_mismatches},
+            "alerts": {"expected": len(expected_alerts), "shadow_rows": len(alert_shadow), "mismatches": alert_mismatches},
+            "ai_diagnoses": {"expected": len(expected_ai), "shadow_rows": len(ai_shadow), "mismatches": ai_mismatches},
             "production_plans": {"expected": expected_plans, "shadow_rows": plan_count},
             "dispatch_tasks": {"expected": len(expected_dispatch), "shadow_rows": len(dispatch_shadow), "mismatches": dispatch_mismatches},
             "allocation_orders": {"expected": len(expected_allocations), "shadow_rows": len(allocation_shadow), "mismatches": allocation_mismatches},
-            "events": {"expected_at_least": expected_events, "shadow_rows": event_count},
+            "events": {"expected_at_least": expected_events, "audit_expected_at_least": expected_audits, "shadow_rows": event_count},
         }
 
     def replay_readiness_report(self, limit: int = 500) -> dict[str, object]:
@@ -2250,6 +2483,9 @@ class MemoryStore:
             )
             live_command_ids = sorted(command.id for command in self.commands)
             live_part_ids = sorted(part.part_id for part in self.part_queue)
+            live_alert_ids = sorted(alert.id for alert in self.alerts)
+            live_ai_ids = sorted(diagnosis.id for diagnosis in self.ai_diagnoses)
+            live_audit_count = len(self.audit_logs)
             live_plan_count = len(self.production_plans)
             live_dispatch_ids = sorted(task.id for task in self.dispatch_tasks)
             live_allocation_ids = sorted(order.order_id for order in self.allocation_orders)
@@ -2263,6 +2499,8 @@ class MemoryStore:
                 if command.result_message or command.claimed_by or command.status not in {"pending", "queued"}
             )
             restored_part_ids = sorted(part.part_id for part in self.part_queue)
+            restored_alert_ids = sorted(alert.id for alert in self.alerts)
+            restored_ai_ids = sorted(diagnosis.id for diagnosis in self.ai_diagnoses)
             restored_dispatch_ids = sorted(task.id for task in self.dispatch_tasks)
             restored_allocation_ids = sorted(order.order_id for order in self.allocation_orders)
 
@@ -2279,6 +2517,12 @@ class MemoryStore:
                 ).fetchall()
                 part_rows = db.execute(
                     "SELECT part_id, status, updated_at FROM part_queue_shadow"
+                ).fetchall()
+                alert_rows = db.execute(
+                    "SELECT id, status, created_at FROM alerts"
+                ).fetchall()
+                ai_rows = db.execute(
+                    "SELECT id, node_code, created_at FROM ai_diagnosis"
                 ).fetchall()
                 event_count = int(db.execute("SELECT COUNT(*) AS count FROM audit_logs").fetchone()["count"])
                 plan_count = int(db.execute("SELECT COUNT(*) AS count FROM production_plan_shadow").fetchone()["count"])
@@ -2305,11 +2549,15 @@ class MemoryStore:
 
         shadow_command_ids = sorted(int(dict(row)["command_id"]) for row in command_rows)
         shadow_part_ids = sorted(str(dict(row)["part_id"]) for row in part_rows)
+        shadow_alert_ids = sorted(int(dict(row)["id"]) for row in alert_rows)
+        shadow_ai_ids = sorted(int(dict(row)["id"]) for row in ai_rows)
         shadow_dispatch_ids = sorted(int(dict(row)["task_id"]) for row in dispatch_rows)
         shadow_allocation_ids = sorted(str(dict(row)["order_id"]) for row in allocation_rows)
         missing_heartbeats = [node_code for node_code in live_heartbeat_nodes if node_code not in heartbeat_latest]
         missing_commands = [command_id for command_id in live_command_ids if command_id not in shadow_command_ids]
         missing_parts = [part_id for part_id in live_part_ids if part_id not in shadow_part_ids]
+        missing_alerts = [alert_id for alert_id in live_alert_ids if alert_id not in shadow_alert_ids]
+        missing_ai = [diagnosis_id for diagnosis_id in live_ai_ids if diagnosis_id not in shadow_ai_ids]
         missing_dispatch = [task_id for task_id in live_dispatch_ids if task_id not in shadow_dispatch_ids]
         missing_allocations = [order_id for order_id in live_allocation_ids if order_id not in shadow_allocation_ids]
 
@@ -2317,9 +2565,12 @@ class MemoryStore:
             not missing_heartbeats
             and not missing_commands
             and not missing_parts
+            and not missing_alerts
+            and not missing_ai
             and not missing_dispatch
             and not missing_allocations
             and plan_count >= live_plan_count
+            and event_count >= live_audit_count
         )
         return {
             "status": "ok" if ok else "degraded",
@@ -2328,6 +2579,9 @@ class MemoryStore:
                 "heartbeat_nodes": len(live_heartbeat_nodes),
                 "commands": len(live_command_ids),
                 "part_queue_items": len(live_part_ids),
+                "alerts": len(live_alert_ids),
+                "ai_diagnoses": len(live_ai_ids),
+                "audit_logs": live_audit_count,
                 "production_plans": live_plan_count,
                 "dispatch_tasks": len(live_dispatch_ids),
                 "allocation_orders": len(live_allocation_ids),
@@ -2337,6 +2591,8 @@ class MemoryStore:
                 "heartbeat_rows_sampled": len(heartbeat_rows),
                 "commands": len(shadow_command_ids),
                 "part_queue_items": len(shadow_part_ids),
+                "alerts": len(shadow_alert_ids),
+                "ai_diagnoses": len(shadow_ai_ids),
                 "production_plans": plan_count,
                 "dispatch_tasks": len(shadow_dispatch_ids),
                 "allocation_orders": len(shadow_allocation_ids),
@@ -2346,6 +2602,8 @@ class MemoryStore:
                 "heartbeat_nodes": restored_heartbeat_nodes,
                 "commands": restored_command_ids,
                 "part_queue_items": restored_part_ids,
+                "alerts": restored_alert_ids,
+                "ai_diagnoses": restored_ai_ids,
                 "dispatch_tasks": restored_dispatch_ids,
                 "allocation_orders": restored_allocation_ids,
             },
@@ -2353,6 +2611,8 @@ class MemoryStore:
                 "heartbeat_nodes": missing_heartbeats,
                 "commands": missing_commands,
                 "part_queue_items": missing_parts,
+                "alerts": missing_alerts,
+                "ai_diagnoses": missing_ai,
                 "dispatch_tasks": missing_dispatch,
                 "allocation_orders": missing_allocations,
             },
@@ -2725,6 +2985,8 @@ class MemoryStore:
             "heartbeat_shadow",
             "part_queue_shadow",
             "command_shadow",
+            "alerts",
+            "ai_diagnosis",
             "audit_logs",
             "commands",
             "production_plan_shadow",
