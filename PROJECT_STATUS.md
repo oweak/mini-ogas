@@ -43,6 +43,7 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 | v2.5 run replay API | Implemented. `/api/replay/runs` lists persisted heartbeat `run_id` batches, and `/api/replay/runs/{run_id}` reconstructs heartbeat, command, part queue, audit, alert, and AI diagnosis timelines from persisted database facts. |
 | v2.5 run replay console | Implemented. Dashboard `运行回放` lists persisted run batches, loads replay details through the protected API client, and renders database-backed heartbeat, command, part queue, audit, alert, and AI diagnosis timelines. |
 | v2.5 replay sampling correctness | Implemented. Run replay summaries and details now use full database bounds/counts while the UI clearly marks recent-row samples for large runs. |
+| v2.5 run-scoped persistence | Implemented. Alerts, AI diagnoses, commands, audit events, command shadow rows, and part queue shadow rows now persist `run_id`; existing SQLite/PostgreSQL databases are migrated in place and replay prefers exact `run_id` matches with timestamp fallback for legacy rows. |
 | v2.5 restart replay drill | Implemented. `scripts/check-postgres-replay-drill.ps1` restarts the supervised stack and verifies PostgreSQL replay readiness after restart. Latest evidence is written to `.runtime/logs/postgres-replay-drill-last.json`. |
 | v2.5 heartbeat-shadow retention | Implemented. `HEARTBEAT_SHADOW_RETENTION_PER_NODE` keeps recent heartbeat shadow rows bounded per node, and persistence status exposes the active policy. |
 | v2.5 Kali red-team boundary | Implemented. `scripts/kali_redteam_workflow.py` is lab-acknowledged, private-target guarded, bearer-authenticated for protected operations, evidence-producing, and high-risk AI actions are held for human approval unless explicitly auto-approved for a lab run. |
@@ -70,6 +71,7 @@ Recent runtime check showed:
 - Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes
 - replay readiness: live PostgreSQL status reports heartbeat, command, and part queue shadow facts as replayable
 - run replay API: central-api tests verify `/api/replay/runs` and `/api/replay/runs/{run_id}` rebuild persisted operational timelines from database rows
+- run-scoped replay facts: central-api tests verify `run_id` schema migration and exact-run operational fact replay outside the heartbeat timestamp window
 - run replay console: Playwright login verified the `运行回放` page renders PostgreSQL run batches and a reconstructed event timeline from the live supervised system
 - replay sampling correctness: live verification showed list/detail boundaries match for `RUN-LOCAL-20260703-001`, while the UI marks the detail page as a recent heartbeat sample
 - retention: live PostgreSQL status reports `keep_latest_per_node` for heartbeat shadow rows

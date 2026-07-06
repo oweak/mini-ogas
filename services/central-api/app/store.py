@@ -221,6 +221,14 @@ class MemoryStore:
     def _ephemeral_node_code(self, node_code: str) -> bool:
         return node_code.startswith("workflow-check-node-")
 
+    def current_run_id_for_node(self, node_code: str) -> str:
+        heartbeat = self.node_heartbeats_v2.get(node_code) or {}
+        runtime = heartbeat.get("runtime") if isinstance(heartbeat.get("runtime"), dict) else {}
+        return str(runtime.get("run_id") or "")
+
+    def current_run_id_for_part(self, part: PartQueueItem) -> str:
+        return self.current_run_id_for_node(part.target_node) or self.current_run_id_for_node(part.source_node)
+
     def persist_metric(self, metric: MetricIn) -> None:
         if not self._persisting():
             return
@@ -402,9 +410,9 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO alerts (node_code, alert_type, severity, source, description,
-                       handled_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (alert.node_code, alert.alert_type, alert.severity.value,
+                    """INSERT INTO alerts (run_id, node_code, alert_type, severity, source, description,
+                       handled_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
                      alert.handled_by or "system", alert.description, alert.handled_by,
                      alert.status, alert.created_at.isoformat()),
                 )
@@ -417,9 +425,9 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO commands (node_code, command_type, risk_level, status, operator, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (command.node_code, command.command_type, command.risk_level,
+                    """INSERT INTO commands (run_id, node_code, command_type, risk_level, status, operator, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (self.current_run_id_for_node(command.node_code), command.node_code, command.command_type, command.risk_level,
                      command.status, command.operator, command.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
@@ -434,11 +442,12 @@ class MemoryStore:
                 db.execute(
                     """
                     INSERT INTO command_shadow (
-                        command_id, node_code, command_type, risk_level, status, operator,
+                        command_id, run_id, node_code, command_type, risk_level, status, operator,
                         parameters_json, claimed_by, result_message, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(command_id) DO UPDATE SET
+                        run_id=excluded.run_id,
                         node_code=excluded.node_code,
                         command_type=excluded.command_type,
                         risk_level=excluded.risk_level,
@@ -452,6 +461,7 @@ class MemoryStore:
                     """,
                     (
                         command.id,
+                        self.current_run_id_for_node(command.node_code),
                         command.node_code,
                         command.command_type,
                         command.risk_level,
@@ -514,9 +524,9 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO audit_logs (actor, action, resource_type, resource_id, result, detail, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (event.node_code, event.stage, "incident_event", str(event.id),
+                    """INSERT INTO audit_logs (run_id, actor, action, resource_type, resource_id, result, detail, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (self.current_run_id_for_node(event.node_code), event.node_code, event.stage, "incident_event", str(event.id),
                      event.severity.value, event.message, event.created_at.isoformat()),
                 )
             with self._lock:
@@ -530,10 +540,10 @@ class MemoryStore:
         try:
             with get_db() as db:
                 db.execute(
-                    """INSERT INTO ai_diagnosis (alert_id, severity, node_code, root_cause,
+                    """INSERT INTO ai_diagnosis (run_id, alert_id, severity, node_code, root_cause,
                        recommended_action, confidence, need_isolation, model_name, raw_response, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (diagnosis.alert_id, Severity.medium.value, diagnosis.node_code,
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (self.current_run_id_for_node(diagnosis.node_code), diagnosis.alert_id, Severity.medium.value, diagnosis.node_code,
                      diagnosis.root_cause, diagnosis.recommended_action, diagnosis.confidence,
                      bool(diagnosis.need_isolation), diagnosis.model_name, None,
                      diagnosis.created_at.isoformat()),
@@ -549,12 +559,13 @@ class MemoryStore:
                 db.execute(
                     """
                     INSERT INTO part_queue_shadow (
-                        part_id, parent_part_id, order_id, product_code, current_step, status,
+                        part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
                         source_node, target_node, claimed_by, claim_token, claim_expires_at,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(part_id) DO UPDATE SET
+                        run_id=excluded.run_id,
                         parent_part_id=excluded.parent_part_id,
                         order_id=excluded.order_id,
                         product_code=excluded.product_code,
@@ -570,6 +581,7 @@ class MemoryStore:
                     """,
                     (
                         part.part_id,
+                        self.current_run_id_for_part(part),
                         part.parent_part_id,
                         part.order_id,
                         part.product_code,
@@ -2169,57 +2181,62 @@ class MemoryStore:
                 heartbeat_data = [dict(row) for row in heartbeat_rows]
                 command_rows = db.execute(
                     """
-                    SELECT command_id, node_code, command_type, risk_level, status, operator,
+                    SELECT command_id, run_id, node_code, command_type, risk_level, status, operator,
                            parameters_json, claimed_by, result_message, created_at, updated_at
                     FROM command_shadow
-                    WHERE updated_at >= ? AND updated_at <= ?
+                    WHERE run_id = ?
+                       OR ((run_id IS NULL OR run_id = '') AND updated_at >= ? AND updated_at <= ?)
                     ORDER BY updated_at ASC, command_id ASC
                     LIMIT ?
                     """,
-                    (started_at, ended_at, max(1, max_rows)),
+                    (clean_run_id, started_at, ended_at, max(1, max_rows)),
                 ).fetchall()
                 part_rows = db.execute(
                     """
-                    SELECT part_id, parent_part_id, order_id, product_code, current_step, status,
+                    SELECT part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
                            source_node, target_node, claimed_by, created_at, updated_at
                     FROM part_queue_shadow
-                    WHERE updated_at >= ? AND updated_at <= ?
+                    WHERE run_id = ?
+                       OR ((run_id IS NULL OR run_id = '') AND updated_at >= ? AND updated_at <= ?)
                     ORDER BY updated_at ASC, part_id ASC
                     LIMIT ?
                     """,
-                    (started_at, ended_at, max(1, max_rows)),
+                    (clean_run_id, started_at, ended_at, max(1, max_rows)),
                 ).fetchall()
                 audit_rows = db.execute(
                     """
-                    SELECT id, actor, action, resource_type, resource_id, result, detail, created_at
+                    SELECT id, run_id, actor, action, resource_type, resource_id, result, detail, created_at
                     FROM audit_logs
-                    WHERE created_at >= ? AND created_at <= ?
+                    WHERE run_id = ?
+                       OR ((run_id IS NULL OR run_id = '') AND created_at >= ? AND created_at <= ?)
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                     """,
-                    (started_at, ended_at, max(1, max_rows)),
+                    (clean_run_id, started_at, ended_at, max(1, max_rows)),
                 ).fetchall()
                 alert_rows = db.execute(
                     """
-                    SELECT id, node_code, alert_type, severity, source, description,
+                    SELECT id, run_id, node_code, alert_type, severity, source, description,
                            handled_by, status, created_at, resolved_at
                     FROM alerts
-                    WHERE created_at >= ? AND created_at <= ?
+                    WHERE run_id = ?
+                       OR ((run_id IS NULL OR run_id = '') AND created_at >= ? AND created_at <= ?)
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                     """,
-                    (started_at, ended_at, max(1, max_rows)),
+                    (clean_run_id, started_at, ended_at, max(1, max_rows)),
                 ).fetchall()
                 ai_rows = db.execute(
                     """
-                    SELECT id, alert_id, severity, node_code, root_cause, recommended_action,
+                    SELECT id, run_id, alert_id, severity, node_code, root_cause, recommended_action,
                            confidence, need_isolation, model_name, created_at
                     FROM ai_diagnosis
-                    WHERE created_at >= ? AND created_at <= ?
+                    WHERE run_id = ?
+                       OR ((run_id IS NULL OR run_id = '') AND created_at >= ? AND created_at <= ?)
                     ORDER BY created_at ASC, id ASC
                     LIMIT ?
                     """,
-                    (started_at, ended_at, max(1, max_rows)),
+                    (clean_run_id, started_at, ended_at, max(1, max_rows)),
                 ).fetchall()
         except Exception as exc:  # pragma: no cover - depends on external backend
             return {"status": "degraded", "run_id": clean_run_id, "error": str(exc)}

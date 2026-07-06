@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
@@ -47,6 +48,43 @@ def test_database_datetime_accepts_sqlite_and_postgres_values() -> None:
 
     assert _database_datetime(timestamp) is timestamp
     assert _database_datetime("2026-06-22T01:02:03+00:00") == timestamp
+
+
+def test_sqlite_init_migrates_legacy_shadow_tables_with_run_id(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    db_path = tmp_path / "legacy.db"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE command_shadow (
+                command_id INTEGER PRIMARY KEY,
+                node_code TEXT NOT NULL,
+                command_type TEXT NOT NULL,
+                risk_level TEXT NOT NULL,
+                status TEXT NOT NULL,
+                operator TEXT NOT NULL,
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                claimed_by TEXT NOT NULL DEFAULT '',
+                result_message TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        connection.commit()
+
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+
+    database.init_db()
+
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(command_shadow)").fetchall()}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(command_shadow)").fetchall()}
+
+    assert "run_id" in columns
+    assert "idx_command_shadow_run_updated" in indexes
+
 
 def test_shadow_consistency_report_is_explicit_when_persistence_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.store import store
@@ -416,3 +454,61 @@ def test_replay_run_uses_full_bounds_and_latest_heartbeat_sample(tmp_path, monke
     assert result["sampling"]["heartbeat_rows"] == 2
     assert result["sampling"]["heartbeats_truncated"] is True
     assert [item["machine_code"] for item in result["heartbeats"]] == ["LATHE-2", "LATHE-3"]
+
+
+def test_replay_run_prefers_exact_run_id_for_operational_facts(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
+
+    run_id = "RUN-EXACT-FACTS-001"
+    payload = {
+        "node_code": "turning-workshop-01",
+        "status": "running",
+        "runtime": {"run_id": run_id, "scenario_id": "SCN-EXACT", "simulation_engine": "simpy"},
+        "production": {"machine_code": "LATHE-EXACT", "active_order": "P1"},
+    }
+    with database.get_db() as db:
+        for timestamp in ("2026-07-04T10:00:00+00:00", "2026-07-04T10:01:00+00:00"):
+            db.execute(
+                """INSERT INTO heartbeat_shadow (
+                   node_code, run_id, scenario_id, simulation_time, payload_json, received_at
+                ) VALUES (?, ?, ?, ?, ?, ?)""",
+                ("turning-workshop-01", run_id, "SCN-EXACT", None, json.dumps(payload), timestamp),
+            )
+        db.execute(
+            """
+            INSERT INTO command_shadow (
+                command_id, run_id, node_code, command_type, risk_level, status, operator,
+                parameters_json, claimed_by, result_message, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                7788,
+                run_id,
+                "turning-workshop-01",
+                "exact_run_id_command",
+                "low",
+                "executed",
+                "pytest",
+                "{}",
+                "pytest-agent",
+                "matched by run_id outside timestamp window",
+                "2026-07-05T12:00:00+00:00",
+                "2026-07-05T12:00:00+00:00",
+            ),
+        )
+
+    result = MemoryStore().replay_run(run_id, max_rows=10)
+
+    assert result["status"] == "ok"
+    assert result["started_at"] == "2026-07-04T10:00:00+00:00"
+    assert result["ended_at"] == "2026-07-04T10:01:00+00:00"
+    assert 7788 in {item["command_id"] for item in result["commands"]}
+    command = next(item for item in result["commands"] if item["command_id"] == 7788)
+    assert command["run_id"] == run_id
+    assert command["result_message"] == "matched by run_id outside timestamp window"

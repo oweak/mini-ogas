@@ -98,6 +98,12 @@ snapshot 反向适配出的兼容 wrapper，并有后端测试验证 wrapper par
 `heartbeat_shadow` 恢复最新 v2 心跳事实到运行态，避免重启后完全依赖内存。
 这仍不是 PostgreSQL 主事实源完成；audit、command、scenario 的主读写切换仍待完成。
 
+状态更新（2026-07-06）：已完成 replay 相关事实的 `run_id` 绑定。`alerts`、
+`ai_diagnosis`、`commands`、`audit_logs`、`command_shadow`、`part_queue_shadow`
+均新增 `run_id` 持久化列和索引，启动时会对旧 SQLite/PostgreSQL 库做非破坏性迁移。
+运行回放优先按 `run_id` 精确读取命令、队列、审计、告警和 AI 诊断，旧数据再退回时间窗口。
+这使 DEBT-012 的退出条件基本满足，但 DEBT-008 的“全部主事实源切换”仍需继续推进。
+
 ### DEBT-009：VirtualBox 状态与生产节点状态容易混淆
 
 级别：P2
@@ -133,6 +139,10 @@ snapshot 反向适配出的兼容 wrapper，并有后端测试验证 wrapper par
 风险：无法复盘 AI 决策是否合理，也不利于报告展示。
 处理阶段：v2.5.6。
 退出条件：可按 `run_id` 回放节点、报警、AI、命令、处置全过程。
+
+状态更新（2026-07-06）：已完成。回放 API 已不再只按心跳时间窗口拼接事实；
+新写入的告警、AI 诊断、命令、处置审计和 part queue 记录都会绑定 `run_id`，
+`replay_run()` 优先按 `run_id` 重建全过程，并为旧行保留时间窗口兼容路径。
 
 ## 4. 债务与阶段映射
 

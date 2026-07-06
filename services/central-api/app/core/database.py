@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 CREATE TABLE IF NOT EXISTS alerts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     alert_type TEXT NOT NULL,
     severity TEXT NOT NULL,
@@ -37,6 +38,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE TABLE IF NOT EXISTS ai_diagnosis (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
     alert_id INTEGER,
     severity TEXT NOT NULL DEFAULT 'medium',
     node_code TEXT,
@@ -51,6 +53,7 @@ CREATE TABLE IF NOT EXISTS ai_diagnosis (
 
 CREATE TABLE IF NOT EXISTS commands (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     command_type TEXT NOT NULL,
     risk_level TEXT NOT NULL,
@@ -61,6 +64,7 @@ CREATE TABLE IF NOT EXISTS commands (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL DEFAULT '',
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
     resource_type TEXT NOT NULL,
@@ -72,6 +76,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS part_queue_shadow (
     part_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     parent_part_id TEXT NOT NULL DEFAULT '',
     order_id TEXT NOT NULL,
     product_code TEXT NOT NULL DEFAULT '',
@@ -88,6 +93,7 @@ CREATE TABLE IF NOT EXISTS part_queue_shadow (
 
 CREATE TABLE IF NOT EXISTS command_shadow (
     command_id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     command_type TEXT NOT NULL,
     risk_level TEXT NOT NULL,
@@ -162,6 +168,7 @@ CREATE TABLE IF NOT EXISTS metrics (
 
 CREATE TABLE IF NOT EXISTS alerts (
     id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     alert_type TEXT NOT NULL,
     severity TEXT NOT NULL,
@@ -175,6 +182,7 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE TABLE IF NOT EXISTS ai_diagnosis (
     id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     alert_id BIGINT,
     severity TEXT NOT NULL DEFAULT 'medium',
     node_code TEXT,
@@ -189,6 +197,7 @@ CREATE TABLE IF NOT EXISTS ai_diagnosis (
 
 CREATE TABLE IF NOT EXISTS commands (
     id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     command_type TEXT NOT NULL,
     risk_level TEXT NOT NULL,
@@ -199,6 +208,7 @@ CREATE TABLE IF NOT EXISTS commands (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
     id BIGSERIAL PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     actor TEXT NOT NULL,
     action TEXT NOT NULL,
     resource_type TEXT NOT NULL,
@@ -210,6 +220,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS part_queue_shadow (
     part_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     parent_part_id TEXT NOT NULL DEFAULT '',
     order_id TEXT NOT NULL,
     product_code TEXT NOT NULL DEFAULT '',
@@ -226,6 +237,7 @@ CREATE TABLE IF NOT EXISTS part_queue_shadow (
 
 CREATE TABLE IF NOT EXISTS command_shadow (
     command_id BIGINT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
     node_code TEXT NOT NULL,
     command_type TEXT NOT NULL,
     risk_level TEXT NOT NULL,
@@ -343,11 +355,52 @@ def _schema_statements(schema_sql: str) -> list[str]:
     return [statement.strip() for statement in schema_sql.split(";") if statement.strip()]
 
 
+RUN_ID_TABLES = (
+    "alerts",
+    "ai_diagnosis",
+    "commands",
+    "audit_logs",
+    "part_queue_shadow",
+    "command_shadow",
+)
+
+RUN_ID_INDEX_SQL = (
+    "CREATE INDEX IF NOT EXISTS idx_alerts_run_created ON alerts(run_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_diagnosis_run_created ON ai_diagnosis(run_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_commands_run_created ON commands(run_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_logs_run_created ON audit_logs(run_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_part_queue_shadow_run_updated ON part_queue_shadow(run_id, updated_at)",
+    "CREATE INDEX IF NOT EXISTS idx_command_shadow_run_updated ON command_shadow(run_id, updated_at)",
+)
+
+
+def _sqlite_table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
+
+
+def _ensure_sqlite_run_id_columns(connection: sqlite3.Connection) -> None:
+    for table_name in RUN_ID_TABLES:
+        if "run_id" not in _sqlite_table_columns(connection, table_name):
+            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_postgres_run_id_columns(connection: PostgresConnection) -> None:
+    for table_name in RUN_ID_TABLES:
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_run_id_indexes(connection: Any) -> None:
+    for statement in RUN_ID_INDEX_SQL:
+        connection.execute(statement)
+
+
 def init_db() -> None:
     if persistence_backend() == "postgres":
         with _connect_postgres() as connection:
             for statement in _schema_statements(POSTGRES_SCHEMA_SQL):
                 connection.execute(statement)
+            _ensure_postgres_run_id_columns(connection)
+            _ensure_run_id_indexes(connection)
             connection.commit()
         return
 
@@ -355,6 +408,8 @@ def init_db() -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as connection:
         connection.executescript(SQLITE_SCHEMA_SQL)
+        _ensure_sqlite_run_id_columns(connection)
+        _ensure_run_id_indexes(connection)
         connection.commit()
 
 
