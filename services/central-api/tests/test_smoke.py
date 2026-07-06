@@ -18,6 +18,76 @@ def test_health_endpoint() -> None:
     assert payload["process_id"] > 0
     assert "T" in payload["process_started_at"]
     assert payload["session_token"]
+    assert "supervisor" in payload
+
+
+def test_health_supervisor_ok(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.routers import health as health_router
+
+    monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api", "dashboard"])
+    monkeypatch.setattr(
+        health_router,
+        "get_json",
+        lambda url, timeout=None: (
+            True,
+            {
+                "session_id": "SESSION-1",
+                "processes": [
+                    {"name": "central-api", "state": "healthy", "pid": 100, "crash_count": 0},
+                    {"name": "dashboard", "state": "healthy", "pid": 101, "crash_count": 0},
+                ],
+            },
+        ),
+    )
+
+    payload = health_router._supervisor_health("SESSION-1")
+
+    assert payload["status"] == "ok"
+    assert payload["session_match"] is True
+    assert payload["healthy_processes"] == 2
+    assert payload["missing_processes"] == []
+    assert payload["unhealthy_processes"] == []
+
+
+def test_health_supervisor_offline(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.routers import health as health_router
+
+    monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
+    monkeypatch.setattr(health_router, "get_json", lambda url, timeout=None: (False, {"error": "URLError"}))
+
+    payload = health_router._supervisor_health("SESSION-1")
+
+    assert payload["status"] == "offline"
+    assert payload["session_match"] is False
+    assert payload["missing_processes"] == ["central-api"]
+
+
+def test_health_supervisor_session_mismatch(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.routers import health as health_router
+
+    monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
+    monkeypatch.setattr(
+        health_router,
+        "get_json",
+        lambda url, timeout=None: (
+            True,
+            {
+                "session_id": "OTHER-SESSION",
+                "processes": [
+                    {"name": "central-api", "state": "healthy", "pid": 100, "crash_count": 0},
+                ],
+            },
+        ),
+    )
+
+    payload = health_router._supervisor_health("SESSION-1")
+
+    assert payload["status"] == "session_mismatch"
+    assert payload["session_match"] is False
+    assert payload["missing_processes"] == []
 
 
 def test_summary_has_required_dashboard_fields() -> None:

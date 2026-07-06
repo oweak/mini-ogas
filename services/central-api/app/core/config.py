@@ -90,7 +90,13 @@ class Settings(BaseModel):
     ai_dispatcher_url: str = os.getenv("AI_DISPATCHER_URL", "http://127.0.0.1:8081")
     market_simulator_url: str = os.getenv("MARKET_SIMULATOR_URL", "http://127.0.0.1:8082")
     production_planner_url: str = os.getenv("PRODUCTION_PLANNER_URL", "http://127.0.0.1:8083")
+    supervisor_url: str = os.getenv("SUPERVISOR_URL", "http://127.0.0.1:9099")
     service_probe_timeout_seconds: float = float(os.getenv("SERVICE_PROBE_TIMEOUT_SECONDS", "5"))
+    expected_supervisor_processes: list[str] = _csv_env(
+        "EXPECTED_SUPERVISOR_PROCESSES",
+        "central-api,ai-dispatcher,market-simulator,production-planner,dashboard,"
+        "turning-simpy-node,milling-simpy-node,grinding-simpy-node",
+    )
     expected_production_nodes: list[str] = _csv_env(
         "EXPECTED_PRODUCTION_NODES",
         "turning-workshop-01,milling-workshop-01,grinding-workshop-01",

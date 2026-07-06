@@ -39,6 +39,7 @@ The system is not yet a true multi-host v3.0 deployment. It is a local multi-pro
 | Production report viewer | Implemented. Dashboard `生产报告` renders live report data from the protected report API. |
 | Runtime log cleanup | Implemented. Launcher logs now target `.runtime/logs`. |
 | v2.5 supervisor handover | Implemented for initial rollout. `scripts/start-miniogas.ps1` defaults to the Go supervisor, `-ReplaceRunning` handover was verified, and supervisor owns dashboard plus backend/node processes. |
+| v2.5 supervisor health aggregation | Implemented. central-api `/health` now reports supervisor ownership, session match, expected process list, healthy process count, missing processes, and unhealthy processes. |
 | v2.5 replay-readiness evidence | Implemented. Persistence status and production reports now expose replay readiness for heartbeat, command, part queue, and audit shadow facts; tests verify a new store instance can restore persisted runtime facts. |
 | v2.5 run replay API | Implemented. `/api/replay/runs` lists persisted heartbeat `run_id` batches, and `/api/replay/runs/{run_id}` reconstructs heartbeat, command, part queue, audit, alert, and AI diagnosis timelines from persisted database facts. |
 | v2.5 run replay console | Implemented. Dashboard `运行回放` lists persisted run batches, loads replay details through the protected API client, and renders database-backed heartbeat, command, part queue, audit, alert, and AI diagnosis timelines. |
@@ -70,7 +71,7 @@ Recent runtime check showed:
 - admin login: `admin` / `admin` verified against PostgreSQL-backed JWT auth
 - AI runtime: live. Latest 2026-07-03 login smoke returned `source=api`, provider `deepseek`, model `deepseek-v4-pro`; Ollama fallback is available with `deepseek-r1:7b-local`, and LM Studio correctly reports unavailable when its server is not running
 - persistence: PostgreSQL active in the supervised runtime
-- Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes
+- Go supervisor: owns central-api, ai-dispatcher, market-simulator, production-planner, dashboard, and the three SimPy nodes; central-api `/health` now reports `runtime_owner=supervisor`, `session_match=true`, and 8/8 healthy supervised processes
 - replay readiness: live PostgreSQL status reports heartbeat, command, and part queue shadow facts as replayable
 - run replay API: central-api tests verify `/api/replay/runs` and `/api/replay/runs/{run_id}` rebuild persisted operational timelines from database rows
 - run-scoped replay facts: central-api tests verify `run_id` schema migration and exact-run operational fact replay outside the heartbeat timestamp window

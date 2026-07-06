@@ -50,6 +50,7 @@ This file records the current verified state after the v2.2 first-phase remediat
 | 20 | Command Manager lifecycle | Resolved for initial v2.5. Command transitions are centralized in `app/command_manager.py`; duplicate results are idempotent, stale claimed commands expire, older pending same-node commands are superseded, and heartbeat verification drives `verified`. |
 | 21 | Safety Governor for high-risk actions | Resolved for initial v2.5. `app/safety_governor.py` now applies shared confirmation-code and control-plane isolation rules to `/control/command`, `/ops/issue-command`, dispatch-plan approval, and escalation approval. Runtime verification blocks missing confirmation as `confirmation_code_required` and blocks cloud isolation as `control_plane_isolation_blocked`. |
 | 22 | AI live-provider verification | Resolved for v2.5. The AI vault was re-encrypted to the current administrator password, login smoke now reports `provider=deepseek`, `source=api`, `model=deepseek-v4-pro`, and Ollama/LM Studio availability checks now verify the selected local model/server rather than reporting generic configured status. |
+| 23 | Supervisor health visibility | Resolved for v2.5. central-api `/health` now aggregates the Go supervisor status endpoint and exposes `runtime_owner`, supervisor session match, expected process list, healthy count, missing processes, and unhealthy processes for login preflight and operations checks. |
 
 ## Remaining Work After v2.2
 
