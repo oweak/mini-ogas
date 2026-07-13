@@ -77,6 +77,30 @@ def _ai_runtime() -> dict:
     return runtime_status(verified_provider=registry.verified_provider())
 
 
+def _preflight_payload() -> dict[str, object]:
+    result = store.run_preflight()
+    checks = []
+    for step in result.steps:
+        status = "ok" if step.status == "pass" else ("error" if step.status == "fail" else "checking")
+        checks.append({
+            "id": step.key,
+            "label": step.label,
+            "status": status,
+            "detail": step.detail,
+        })
+    return {
+        "ok": result.all_pass,
+        "status": "ok" if result.all_pass else "warning",
+        "checks": checks,
+        "nodes": [
+            node.model_dump(mode="json")
+            for node in store.nodes.values()
+            if node.node_code in settings.expected_production_nodes
+        ],
+        "ai_runtime": _ai_runtime(),
+    }
+
+
 def _parse_issue_id(issue_id: str) -> tuple[str, str]:
     """Split a Codex issue_id like 'milling-workshop-01-SPINDLE_TEMP_HIGH'
     into (node_code, alert_type)."""
@@ -101,8 +125,12 @@ def _parse_issue_id(issue_id: str) -> tuple[str, str]:
 def _find_alert(issue_id: str):
     """Find an alert by matching issue_id = f'{node_code}-{alert_type}'."""
     node_code, alert_type = _parse_issue_id(issue_id)
-    for a in store.alerts:
-        if a.node_code == node_code and a.alert_type == alert_type:
+    for a in reversed(store.alerts):
+        if (
+            a.node_code == node_code
+            and a.alert_type == alert_type
+            and store.alert_in_current_run(a)
+        ):
             return a
     return None
 
@@ -204,7 +232,7 @@ def login(payload: _LoginBody):
                 "detail": "live provider call completed",
                 "source": "api",
                 "provider": provider,
-                "model": settings.deepseek_model,
+                "model": registry.model_for(provider),
             }
         else:
             ai_smoke = {
@@ -231,7 +259,7 @@ def login(payload: _LoginBody):
         "access_token": issue_access_token(user),
         "token_type": "bearer",
         "runtime": runtime,
-        "preflight": None,
+        "preflight": _preflight_payload(),
         "ai_smoke": ai_smoke,
     }
 
@@ -243,26 +271,7 @@ def login(payload: _LoginBody):
 @router.get("/system/preflight")
 def system_preflight():
     """Enhanced preflight — returns checks[] format Codex expects."""
-    result = store.run_preflight()
-    runtime = _ai_runtime()
-
-    checks = []
-    for step in result.steps:
-        status = "ok" if step.status == "pass" else ("error" if step.status == "fail" else "checking")
-        checks.append({
-            "id": step.key,
-            "label": step.label,
-            "status": status,
-            "detail": step.detail,
-        })
-
-    return {
-        "ok": result.all_pass,
-        "status": "ok" if result.all_pass else "warning",
-        "checks": checks,
-        "nodes": [n.model_dump(mode="json") for n in store.nodes.values()],
-        "ai_runtime": runtime,
-    }
+    return _preflight_payload()
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +343,7 @@ def approve_dispatch_plan(payload: _ActorPayload,
         actor_role=actor.role,
         confirmation_code=payload.confirmation_code,
     )
+    store.record_safety_decision(safety)
     if not safety.allow:
         current = _dispatch_payload()
         return {
@@ -482,7 +492,7 @@ def diagnose_by_issue_id(issue_id: str,
 
     from ..routers.ai import _rule_diagnosis
 
-    used_deepseek = False
+    provider_name = "rule_fallback"
     try:
         if settings.ai_enabled and registry.is_any_live_provider():
             prompt = (
@@ -490,12 +500,19 @@ def diagnose_by_issue_id(issue_id: str,
                 f"告警: {alert.description}\n"
                 f"请判断根因、建议动作、置信度，以及是否需要隔离该车间节点。"
             )
-            result = registry.diagnose(prompt)
-            used_deepseek = True
+            result, provider_name, _ = registry.diagnose_with_provenance(prompt)
         else:
             result = _rule_diagnosis(node_code)
     except Exception as exc:
         result = _rule_diagnosis(node_code, str(exc))
+
+    used_live_provider = provider_name != "rule_fallback"
+    used_deepseek = provider_name == "deepseek"
+    model_name = (
+        f"{provider_name}/{registry.model_for(provider_name)}"
+        if used_live_provider
+        else "local-fallback"
+    )
 
     diagnosis = store.add_ai_diagnosis(
         alert_id=alert.id,
@@ -504,7 +521,7 @@ def diagnose_by_issue_id(issue_id: str,
         recommended_action=result.recommended_action,
         confidence=result.confidence,
         need_isolation=result.need_isolation,
-        model_name=settings.deepseek_model if used_deepseek else "local-fallback",
+        model_name=model_name,
         raw_response=result.raw_text,
     )
     alert.status = "diagnosed"
@@ -538,7 +555,7 @@ def diagnose_by_issue_id(issue_id: str,
         "ok": True,
         "accepted": True,
         "used_deepseek": used_deepseek,
-        "status": "ai-live" if used_deepseek else "local-fallback",
+        "status": "ai-live" if used_live_provider else "local-fallback",
         "diagnosis": diagnosis.model_dump(mode="json"),
         "root_cause": diagnosis.root_cause,
         "recommended_action": diagnosis.recommended_action,
@@ -550,9 +567,9 @@ def diagnose_by_issue_id(issue_id: str,
             "issue_id": issue_id,
         },
         "escalation": escalation_payload,
-        "provider": "multi-backend",
+        "provider": provider_name,
         "model_name": diagnosis.model_name,
-        "source": "api" if used_deepseek else "rule_fallback",
+        "source": "api" if used_live_provider else "rule_fallback",
     }
 
 
@@ -680,6 +697,7 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
             actor_role=actor.role,
             confirmation_code=confirmation_code,
         )
+        store.record_safety_decision(safety)
         if not safety.allow:
             return {
                 "ok": False,
@@ -699,6 +717,7 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
                 if (
                     alert.node_code == escalation.node_code
                     and alert.status not in {"closed", "resolved"}
+                    and store.alert_in_current_run(alert)
                     and f"{alert.alert_type}:" in escalation.message
                 ):
                     alert.status = "closed"

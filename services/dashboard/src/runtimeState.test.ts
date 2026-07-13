@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { dashboardSnapshotToState, mergeAlarmFetchResults, normalizeLogLevel, responseToFetchSlot, snapshotSummary, visibleRuntimeEvents } from './runtimeState'
-import type { DashboardSnapshot } from './types'
+import { activeDashboardIssues, dashboardSnapshotToState, mergeAlarmFetchResults, normalizeAuditEvents, normalizeLogLevel, responseToFetchSlot, snapshotSummary, visibleRuntimeEvents } from './runtimeState'
+import type { DashboardSnapshot, RuntimeDashboardState } from './types'
 
 describe('responseToFetchSlot', () => {
   it('turns a successful response into a data slot', async () => {
@@ -24,6 +24,40 @@ describe('responseToFetchSlot', () => {
   it('treats null or non-ok responses as failed slots', async () => {
     await expect(responseToFetchSlot(null)).resolves.toEqual({ ok: false })
     await expect(responseToFetchSlot({ ok: false, json: async () => [] })).resolves.toEqual({ ok: false })
+  })
+})
+
+describe('normalizeAuditEvents', () => {
+  it('maps the paginated unified audit contract into dashboard archive rows', () => {
+    const events = normalizeAuditEvents({
+      total: 1,
+      events: [{
+        id: 'event-1',
+        timestamp: '2026-07-13T06:00:00+00:00',
+        actor: 'operator',
+        source_type: 'audit_log',
+        action: 'issue:close',
+        message: 'closed after verification',
+        result: 'closed',
+        node_code: 'milling-workshop-01',
+        severity: 'info',
+        detail: { alarm_removed: true }
+      }]
+    })
+
+    expect(events).toEqual([expect.objectContaining({
+      id: 'event-1',
+      time: '2026-07-13 06:00:00',
+      permission: 'issue:close',
+      subject: 'closed after verification',
+      status: 'closed',
+      source: 'audit_log',
+      effect: { alarm_removed: true }
+    })])
+  })
+
+  it('returns an empty archive for malformed payloads', () => {
+    expect(normalizeAuditEvents({ total: 2 })).toEqual([])
   })
 })
 
@@ -168,5 +202,23 @@ describe('dashboardSnapshotToState', () => {
       nodesConnected: 3,
       nodesExpected: 3
     })
+  })
+
+  it('keeps only active alerts and current-run result notifications', () => {
+    const state = {
+      issues: [
+        { id: 'ALM-OPEN', severity: 'high', title: 'open', detail: 'active', status: 'diagnosed' },
+        { id: 'ALM-CLOSED', severity: 'high', title: 'closed', detail: 'archived', status: 'closed' }
+      ],
+      notifications: [
+        { id: 'HUMAN-CURRENT', severity: 'notice', title: 'done', detail: 'current', status: 'unacknowledged', run_id: 'RUN-2' },
+        { id: 'HUMAN-OLD', severity: 'notice', title: 'done', detail: 'old', status: 'unacknowledged', run_id: 'RUN-1' },
+        { id: 'HUMAN-ACK', severity: 'notice', title: 'done', detail: 'ack', status: 'acknowledged', run_id: 'RUN-2' }
+      ],
+      logs: [],
+      snapshot: { run: { run_id: 'RUN-2' } }
+    } as unknown as RuntimeDashboardState
+
+    expect(activeDashboardIssues(state).map((issue) => issue.id)).toEqual(['ALM-OPEN', 'HUMAN-CURRENT'])
   })
 })

@@ -84,6 +84,7 @@ class Settings(BaseModel):
     microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     persist_enabled: bool = os.getenv("PERSIST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
     persist_backend: str = os.getenv("PERSIST_BACKEND", "auto").strip().lower()
+    central_fact_source: str = os.getenv("CENTRAL_FACT_SOURCE", "postgresql").strip().lower()
     postgres_dsn: str = os.getenv("POSTGRES_DSN", os.getenv("DATABASE_URL", "")).strip()
     central_db_path: str = os.getenv("CENTRAL_DB_PATH", str(PROJECT_ROOT / ".runtime" / "central.db"))
     heartbeat_shadow_retention_per_node: int = int(os.getenv("HEARTBEAT_SHADOW_RETENTION_PER_NODE", "2000"))
@@ -103,7 +104,13 @@ class Settings(BaseModel):
     )
     cors_origins: list[str] = _csv_env(
         "CORS_ORIGINS",
-        "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:4173,http://localhost:4173",
+        "http://127.0.0.1:5173,http://localhost:5173,"
+        "http://127.0.0.1:5174,http://localhost:5174,"
+        "http://127.0.0.1:5175,http://localhost:5175,"
+        "http://127.0.0.1:5176,http://localhost:5176,"
+        "http://127.0.0.1:5177,http://localhost:5177,"
+        "http://127.0.0.1:4173,http://localhost:4173,"
+        "http://127.0.0.1:3000,http://localhost:3000",
     )
 
 

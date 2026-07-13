@@ -63,3 +63,33 @@ def test_dispatch_approval_with_confirmation_is_allowed() -> None:
     assert decision.allow is True
     assert decision.requires_human is True
     assert decision.reason_code == "allowed"
+
+
+def test_operator_cannot_execute_high_risk_action_even_with_confirmation() -> None:
+    decision = safety_governor.review_control_action(
+        action="isolate_node",
+        target_node="milling-workshop-01",
+        risk_level="high",
+        actor_role="operator",
+        known_nodes=KNOWN_NODES,
+        confirmation_code="CONFIRM",
+    )
+
+    assert decision.allow is False
+    assert decision.reason_code == "insufficient_role"
+
+
+def test_emergency_containment_policy_can_auto_isolate_production_node() -> None:
+    decision = safety_governor.review_control_action(
+        action="isolate_node",
+        target_node="milling-workshop-01",
+        risk_level="high",
+        actor_role="safety_automation",
+        known_nodes=KNOWN_NODES,
+        run_mode="emergency_containment",
+    )
+
+    assert decision.allow is True
+    assert decision.requires_human is False
+    assert decision.reason_code == "emergency_containment_allowed"
+    assert decision.run_mode == "emergency_containment"

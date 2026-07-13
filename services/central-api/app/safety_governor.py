@@ -6,6 +6,9 @@ from pydantic import BaseModel
 CONFIRMATION_CODE = "CONFIRM"
 HIGH_RISK_ACTIONS = {
     "isolate_node",
+    "restore_node",
+    "retire_node",
+    "emergency_stop",
     "simulate_hostile_attack",
     "dispatch_plan_approve",
     "escalation_approve",
@@ -23,6 +26,7 @@ class SafetyDecision(BaseModel):
     target_node: str = ""
     risk_level: str = "low"
     actor_role: str = ""
+    run_mode: str = "normal"
 
 
 class SafetyGovernor:
@@ -37,6 +41,7 @@ class SafetyGovernor:
         actor_role: str,
         known_nodes: set[str],
         confirmation_code: str | None = None,
+        run_mode: str = "normal",
     ) -> SafetyDecision:
         target = target_node or ""
         risk = self._normalize_risk(action, risk_level)
@@ -48,6 +53,7 @@ class SafetyGovernor:
                 target,
                 risk,
                 actor_role,
+                run_mode,
             )
         if action == "isolate_node" and target in CONTROL_PLANE_NODES:
             return self._deny(
@@ -57,6 +63,7 @@ class SafetyGovernor:
                 target,
                 risk,
                 actor_role,
+                run_mode,
             )
         return self._confirmation_gate(
             action=action,
@@ -64,6 +71,7 @@ class SafetyGovernor:
             risk_level=risk,
             actor_role=actor_role,
             confirmation_code=confirmation_code,
+            run_mode=run_mode,
         )
 
     def review_manual_approval(
@@ -74,6 +82,7 @@ class SafetyGovernor:
         confirmation_code: str | None,
         target_node: str = "",
         risk_level: str = "high",
+        run_mode: str = "normal",
     ) -> SafetyDecision:
         risk = self._normalize_risk(action, risk_level)
         return self._confirmation_gate(
@@ -82,6 +91,7 @@ class SafetyGovernor:
             risk_level=risk,
             actor_role=actor_role,
             confirmation_code=confirmation_code,
+            run_mode=run_mode,
         )
 
     def _confirmation_gate(
@@ -92,7 +102,25 @@ class SafetyGovernor:
         risk_level: str,
         actor_role: str,
         confirmation_code: str | None,
+        run_mode: str,
     ) -> SafetyDecision:
+        if (
+            run_mode == "emergency_containment"
+            and actor_role == "safety_automation"
+            and action == "isolate_node"
+        ):
+            return SafetyDecision(
+                allow=True,
+                requires_human=False,
+                confirmation_required=False,
+                reason_code="emergency_containment_allowed",
+                message="Emergency containment policy approved automatic production-node isolation.",
+                action=action,
+                target_node=target_node,
+                risk_level=risk_level,
+                actor_role=actor_role,
+                run_mode=run_mode,
+            )
         requires_confirmation = risk_level == "high" or action in HIGH_RISK_ACTIONS
         if requires_confirmation and confirmation_code != CONFIRMATION_CODE:
             return SafetyDecision(
@@ -105,6 +133,20 @@ class SafetyGovernor:
                 target_node=target_node,
                 risk_level=risk_level,
                 actor_role=actor_role,
+                run_mode=run_mode,
+            )
+        if requires_confirmation and actor_role != "system_admin":
+            return SafetyDecision(
+                allow=False,
+                requires_human=True,
+                confirmation_required=False,
+                reason_code="insufficient_role",
+                message=f"High-risk action {action} requires the system_admin role.",
+                action=action,
+                target_node=target_node,
+                risk_level=risk_level,
+                actor_role=actor_role,
+                run_mode=run_mode,
             )
         return SafetyDecision(
             allow=True,
@@ -116,6 +158,7 @@ class SafetyGovernor:
             target_node=target_node,
             risk_level=risk_level,
             actor_role=actor_role,
+            run_mode=run_mode,
         )
 
     def _normalize_risk(self, action: str, risk_level: str) -> str:
@@ -134,6 +177,7 @@ class SafetyGovernor:
         target_node: str,
         risk_level: str,
         actor_role: str,
+        run_mode: str = "normal",
     ) -> SafetyDecision:
         return SafetyDecision(
             allow=False,
@@ -145,6 +189,7 @@ class SafetyGovernor:
             target_node=target_node,
             risk_level=risk_level,
             actor_role=actor_role,
+            run_mode=run_mode,
         )
 
 

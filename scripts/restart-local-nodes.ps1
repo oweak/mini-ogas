@@ -5,6 +5,7 @@ $NodeAgentDir = Join-Path $ProjectRoot "services\node-agent"
 $tokenPath = "D:\MiniOGAS-VMs\miniogas-token.txt"
 $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
 $sessionToken = $env:OGAS_SESSION_TOKEN
+$runId = "RUN-LOCAL-$(Get-Date -Format yyyyMMdd-HHmmss)"
 
 python -m pip show simpy *> $null
 if ($LASTEXITCODE -ne 0) {
@@ -12,9 +13,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $nodes = @(
-  @{ Path = "D:\MiniOGAS-VMs\vm-turning-workshop-01"; Node = "turning-workshop-01"; Type = "turning"; Engine = "simpy"; Seed = "20260611"; Scenario = "SCN-TURNING-SIMPY-FLOW-001" },
-  @{ Path = "D:\MiniOGAS-VMs\vm-milling-workshop-01"; Node = "milling-workshop-01"; Type = "milling"; Engine = "simpy"; Seed = "20260613"; Scenario = "SCN-MILLING-SIMPY-SINGLE-001" },
-  @{ Path = "D:\MiniOGAS-VMs\vm-grinding-workshop-01"; Node = "grinding-workshop-01"; Type = "grinding"; Engine = "simpy"; Seed = "20260615"; Scenario = "SCN-GRINDING-SIMPY-FLOW-001" }
+    @{ Path = "D:\MiniOGAS-VMs\vm-turning-workshop-01"; Node = "turning-workshop-01"; Type = "turning"; Engine = "simpy"; Seed = "20260713"; Scenario = "SCN-NORMAL-SIMPY-FLOW-001" },
+    @{ Path = "D:\MiniOGAS-VMs\vm-milling-workshop-01"; Node = "milling-workshop-01"; Type = "milling"; Engine = "simpy"; Seed = "20260713"; Scenario = "SCN-NORMAL-SIMPY-FLOW-001" },
+    @{ Path = "D:\MiniOGAS-VMs\vm-grinding-workshop-01"; Node = "grinding-workshop-01"; Type = "grinding"; Engine = "simpy"; Seed = "20260713"; Scenario = "SCN-NORMAL-SIMPY-FLOW-001" }
 )
 
 Get-CimInstance Win32_Process -Filter "name='python.exe'" |
@@ -42,7 +43,7 @@ foreach ($node in $nodes) {
 `$env:SIMULATION_ENGINE='$($node.Engine)'
 `$env:SIMULATION_SPEED='1'
 `$env:SIMULATION_RANDOM_SEED='$($node.Seed)'
-`$env:OGAS_RUN_ID='RUN-LOCAL-$(Get-Date -Format yyyyMMdd)-001'
+`$env:OGAS_RUN_ID='$runId'
 `$env:OGAS_SCENARIO_ID='$($node.Scenario)'
 `$env:NODE_DEPLOYMENT_MODE='process'
 Set-Location -LiteralPath '$path'

@@ -11,7 +11,7 @@ import StartupGate from './StartupGate.vue'
 import { useProtectedPolling } from './protectedPolling'
 import { closeIssue } from './operationsApi'
 import type { AiRuleExplanation, Alarm, ApiAlert, ApiDiagnosis, AuditEvent, DashboardSnapshot, DispatchPlan, EscalationItem, HostNode, HostWorkOrder, LogEvent, MachineState, NodeSyncRecord, PartQueueSnapshot, RuleConclusion, RuntimeDashboardState } from './types'
-import { dashboardSnapshotToState, mergeAlarmFetchResults, responseToFetchSlot, snapshotSummary, visibleRuntimeEvents } from './runtimeState'
+import { activeDashboardIssues, dashboardSnapshotToState, mergeAlarmFetchResults, normalizeAuditEvents, responseToFetchSlot, snapshotSummary, visibleRuntimeEvents } from './runtimeState'
 import { alertSoundForNewIssues, soundGain, soundPatterns, type SoundKind } from './soundPolicy'
 import { useAlarmWorkflow } from './useAlarmWorkflow'
 import { useDispatchWorkflow } from './useDispatchWorkflow'
@@ -454,7 +454,7 @@ async function fetchAuditEvents() {
   try {
     const res = await apiFetch('/api/audit/events')
     if (!res.ok) throw new Error('audit unavailable')
-    auditEvents.value = await res.json()
+    auditEvents.value = normalizeAuditEvents(await res.json())
     apiAvailable.value = true
   } catch {
     liveLogs.value.unshift(`${currentTime()} 审计日志暂不可用：保留当前节点、工单与 VM 状态，等待日志接口恢复。`)
@@ -543,7 +543,7 @@ async function loadDashboardState() {
       state = (await response.json()) as RuntimeDashboardState
       runtimeSnapshot.value = null
     }
-    apiIssues.value = uniqueIssues([...state.issues, ...(state.notifications ?? [])].map((issue) => ({
+    apiIssues.value = uniqueIssues(activeDashboardIssues(state).map((issue) => ({
       ...issue,
       actions: issue.actions ?? []
     })))

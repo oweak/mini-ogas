@@ -16,8 +16,9 @@ from .core.config import settings
 from .core.session import get_session_token
 from .core.database import get_db, init_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
-from .core.supervisor import supervisor_health
 from .command_manager import CommandManager, CommandTransition
+from .persistence_repository import central_fact_repository
+from .safety_governor import SafetyDecision, safety_governor
 
 logger = logging.getLogger(__name__)
 from .models import (
@@ -41,7 +42,6 @@ from .models import (
     NodeStatus,
     PartQueueItem,
     PreflightResult,
-    PreflightStep,
     ProductionPlanIn,
     ResourceAllocation,
     Severity,
@@ -49,16 +49,6 @@ from .models import (
     TopologyEdge,
     utc_now,
 )
-
-# Product catalog: a small automotive-parts machining factory.
-# Each product has a Chinese name, a process route, and a base unit price.
-PRODUCTS: dict[str, dict[str, object]] = {
-    "A1": {"name": "主轴", "route": ["turning", "milling", "inspection"], "price": 160.0},
-    "A2": {"name": "法兰盘", "route": ["turning", "drilling", "inspection"], "price": 95.0},
-    "A3": {"name": "变速箱齿轮", "route": ["turning", "milling", "grinding", "inspection"], "price": 240.0},
-    "A4": {"name": "精密轴套", "route": ["turning", "grinding", "inspection"], "price": 120.0},
-    "A5": {"name": "转向连接件", "route": ["milling", "drilling", "inspection"], "price": 140.0},
-}
 
 # Canonical product catalog shared with docs, market-simulator, and production-planner.
 # The A1-A5 aliases remain accepted for older tests and saved demo data.
@@ -187,6 +177,7 @@ class MemoryStore:
         self.commands: list[NodeCommand] = []
         self.command_manager = CommandManager()
         self.incident_events: list[IncidentEvent] = []
+        self._incident_event_seq = 0
         self._shadow_event_count = 0
         self.ai_diagnoses: list[AiDiagnosis] = []
         # Topology / governance
@@ -203,6 +194,11 @@ class MemoryStore:
         self.simulation_generated_orders = 0
         self.simulation_generated_events = 0
         self._suspend_persist = False
+        self._primary_projection_refreshed_at: datetime | None = None
+        self._primary_projection_last_error = ""
+        self._primary_projection_refresh_lock = threading.Lock()
+        self._primary_projection_in_progress = False
+        self._persistence_write_failures: dict[str, dict[str, object]] = {}
 
         if settings.persist_enabled:
             init_db()
@@ -231,6 +227,21 @@ class MemoryStore:
     def _persisting(self) -> bool:
         return settings.persist_enabled and not self._suspend_persist
 
+    def _record_persistence_write_failure(self, operation: str, exc: Exception) -> None:
+        previous = self._persistence_write_failures.get(operation, {})
+        self._persistence_write_failures[operation] = {
+            "operation": operation,
+            "error": str(exc),
+            "failed_at": utc_now().isoformat(),
+            "count": int(previous.get("count") or 0) + 1,
+        }
+        logger.error("Persistence write failed (%s): %s", operation, exc)
+
+    def _handle_projection_load_error(self, operation: str, exc: Exception) -> None:
+        logger.error("Persistence projection load failed (%s): %s", operation, exc)
+        if self._primary_projection_in_progress:
+            raise RuntimeError(f"primary projection load failed ({operation}): {exc}") from exc
+
     def _ephemeral_node_code(self, node_code: str) -> bool:
         return node_code.startswith("workflow-check-node-")
 
@@ -240,7 +251,16 @@ class MemoryStore:
         return str(runtime.get("run_id") or "")
 
     def current_run_id_for_part(self, part: PartQueueItem) -> str:
-        return self.current_run_id_for_node(part.target_node) or self.current_run_id_for_node(part.source_node)
+        return (
+            part.run_id
+            or self.current_run_id_for_node(part.source_node)
+            or self.current_run_id_for_node(part.target_node)
+            or self.current_run_id_for_system()
+        )
+
+    def part_in_current_run(self, part: PartQueueItem) -> bool:
+        current_run_id = self.current_run_id_for_system()
+        return not current_run_id or part.run_id == current_run_id
 
     def current_run_id_for_system(self) -> str:
         for payload in self.node_heartbeats_v2.values():
@@ -249,6 +269,27 @@ class MemoryStore:
             if run_id:
                 return run_id
         return ""
+
+    def current_run_id_for_audit(self, audit: AuditLog) -> str:
+        if audit.resource_type == "node":
+            return self.current_run_id_for_node(audit.resource_id)
+        if audit.resource_type == "command":
+            try:
+                command_id = int(audit.resource_id)
+            except ValueError:
+                command_id = -1
+            command = next((item for item in self.commands if item.id == command_id), None)
+            if command is not None:
+                return self.current_run_id_for_node(command.node_code)
+        if audit.resource_type == "alert":
+            try:
+                alert_id = int(audit.resource_id)
+            except ValueError:
+                alert_id = -1
+            alert = next((item for item in self.alerts if item.id == alert_id), None)
+            if alert is not None:
+                return self.current_run_id_for_node(alert.node_code)
+        return self.current_run_id_for_system()
 
     def persist_metric(self, metric: MetricIn) -> None:
         if not self._persisting():
@@ -263,32 +304,26 @@ class MemoryStore:
                      metric.network_in, metric.network_out, metric.db_latency_ms,
                      metric.api_latency_ms, utc_now().isoformat()),
                 )
-        except Exception as exc:  # pragma: no cover - persistence is best-effort
-            logger.warning("Persistence warning (metric): %s", exc)
+        except Exception as exc:  # pragma: no cover - external backend behavior
+            self._record_persistence_write_failure("metric", exc)
 
-    def persist_heartbeat_shadow(self, payload: dict[str, object]) -> None:
+    def persist_heartbeat_shadow(self, payload: dict[str, object]) -> bool:
         """Persist a replay-ready v2 heartbeat without changing the live read path."""
         if not self._persisting():
-            return
-        runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+            return False
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO heartbeat_shadow (
-                       node_code, run_id, scenario_id, simulation_time, payload_json, received_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (
-                        str(payload.get("node_code") or ""),
-                        str(runtime.get("run_id") or ""),
-                        str(runtime.get("scenario_id") or ""),
-                        runtime.get("simulation_time"),
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str),
-                        utc_now().isoformat(),
-                    ),
-                )
-                self._prune_heartbeat_shadow_locked(db)
-        except Exception as exc:  # pragma: no cover - persistence is best-effort
-            logger.warning("Persistence warning (heartbeat shadow): %s", exc)
+            central_fact_repository.persist_heartbeat(
+                {**payload, "_received_at": utc_now().isoformat()},
+                retention_per_node=settings.heartbeat_shadow_retention_per_node,
+            )
+            return True
+        except ValueError:
+            raise
+        except Exception as exc:  # pragma: no cover - external backend behavior
+            self._record_persistence_write_failure("heartbeat_shadow", exc)
+            if self.primary_projection_enabled():
+                raise RuntimeError(f"PostgreSQL heartbeat write failed: {exc}") from exc
+            return False
 
     def _prune_heartbeat_shadow_locked(self, db: object, max_per_node: int | None = None) -> int:
         limit = settings.heartbeat_shadow_retention_per_node if max_per_node is None else max_per_node
@@ -327,7 +362,7 @@ class MemoryStore:
             return {"status": "degraded", "error": str(exc), "max_per_node": limit}
         return {"status": "ok", "deleted": deleted, "remaining": remaining, "max_per_node": limit}
 
-    def load_heartbeat_shadow(self, limit: int = 500) -> int:
+    def load_heartbeat_shadow(self, limit: int = 500, replace_empty: bool = False) -> int:
         """Restore latest persisted v2 heartbeat facts into the live runtime cache."""
         if not settings.persist_enabled:
             return 0
@@ -342,7 +377,7 @@ class MemoryStore:
                     (max(1, limit),),
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (heartbeat shadow load): %s", exc)
+            self._handle_projection_load_error("heartbeats", exc)
             return 0
 
         latest: dict[str, tuple[dict[str, object], object]] = {}
@@ -361,6 +396,12 @@ class MemoryStore:
                 latest[node_code] = (payload, data.get("received_at"))
 
         with self._lock:
+            if replace_empty and not latest:
+                for node_code in settings.expected_production_nodes:
+                    self.node_heartbeats_v2.pop(node_code, None)
+                    node = self.nodes.get(node_code)
+                    if node is not None:
+                        node.status = NodeStatus.offline
             for node_code, (payload, received_at) in latest.items():
                 self._restore_heartbeat_shadow_locked(node_code, payload, received_at)
         return len(latest)
@@ -443,12 +484,12 @@ class MemoryStore:
                        handled_by=excluded.handled_by,
                        status=excluded.status,
                        created_at=excluded.created_at""",
-                    (alert.id, self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
-                     "central-api", alert.description, alert.handled_by,
+                    (alert.id, alert.run_id or self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
+                     alert.source, alert.description, alert.handled_by,
                      alert.status, alert.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (alert): %s", exc)
+            self._record_persistence_write_failure("alert", exc)
 
     def persist_alert_state(self, alert: Alert) -> None:
         if not self._persisting():
@@ -458,15 +499,19 @@ class MemoryStore:
                 db.execute(
                     """
                     UPDATE alerts
-                    SET handled_by = ?, status = ?
+                    SET handled_by = ?, status = ?,
+                        resolved_at = CASE
+                            WHEN ? IN ('closed', 'resolved') THEN CURRENT_TIMESTAMP
+                            ELSE resolved_at
+                        END
                     WHERE id = ?
                     """,
-                    (alert.handled_by, alert.status, alert.id),
+                    (alert.handled_by, alert.status, alert.status, alert.id),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (alert state): %s", exc)
+            self._record_persistence_write_failure("alert_state", exc)
 
-    def load_alert_shadow(self) -> int:
+    def load_alert_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[Alert] = []
@@ -474,14 +519,14 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
-                    SELECT id, node_code, alert_type, severity, description,
+                    SELECT id, run_id, node_code, alert_type, severity, source, description,
                            handled_by, status, created_at
                     FROM alerts
                     ORDER BY created_at ASC, id ASC
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (alert shadow load): %s", exc)
+            self._handle_projection_load_error("alerts", exc)
             return 0
 
         for row in rows:
@@ -492,15 +537,17 @@ class MemoryStore:
                 severity = Severity.medium
             loaded.append(Alert(
                 id=int(data["id"]),
+                run_id=str(data.get("run_id") or ""),
                 node_code=str(data["node_code"]),
                 alert_type=str(data["alert_type"]),
                 severity=severity,
                 description=str(data.get("description") or ""),
+                source=str(data.get("source") or "central-api"),
                 handled_by=data.get("handled_by"),
                 status=str(data.get("status") or "open"),
                 created_at=_database_datetime(data["created_at"]),
             ))
-        if loaded:
+        if loaded or replace_empty:
             with self._lock:
                 self.alerts = loaded[-120:]
         return len(loaded)
@@ -509,17 +556,11 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO audit_logs (run_id, actor, action, resource_type, resource_id, result, detail, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (self.current_run_id_for_system(), audit.actor, audit.action, audit.resource_type,
-                     audit.resource_id, audit.result, detail, audit.created_at.isoformat()),
-                )
+            central_fact_repository.persist_audit(audit, self.current_run_id_for_audit(audit), detail)
             with self._lock:
                 self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (audit_log): %s", exc)
+            self._record_persistence_write_failure("audit_log", exc)
 
     def add_audit_log(
         self,
@@ -549,61 +590,27 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO commands (run_id, node_code, command_type, risk_level, status, operator, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (self.current_run_id_for_node(command.node_code), command.node_code, command.command_type, command.risk_level,
-                     command.status, command.operator, command.created_at.isoformat()),
-                )
+            central_fact_repository.persist_command(
+                command,
+                self.current_run_id_for_node(command.node_code),
+                include_base=True,
+            )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (command): %s", exc)
-        self.persist_command_shadow(command)
+            self._record_persistence_write_failure("command", exc)
 
     def persist_command_shadow(self, command: NodeCommand) -> None:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """
-                    INSERT INTO command_shadow (
-                        command_id, run_id, node_code, command_type, risk_level, status, operator,
-                        parameters_json, claimed_by, result_message, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(command_id) DO UPDATE SET
-                        run_id=excluded.run_id,
-                        node_code=excluded.node_code,
-                        command_type=excluded.command_type,
-                        risk_level=excluded.risk_level,
-                        status=excluded.status,
-                        operator=excluded.operator,
-                        parameters_json=excluded.parameters_json,
-                        claimed_by=excluded.claimed_by,
-                        result_message=excluded.result_message,
-                        created_at=excluded.created_at,
-                        updated_at=excluded.updated_at
-                    """,
-                    (
-                        command.id,
-                        self.current_run_id_for_node(command.node_code),
-                        command.node_code,
-                        command.command_type,
-                        command.risk_level,
-                        command.status,
-                        command.operator,
-                        json.dumps(command.parameters, ensure_ascii=False, sort_keys=True),
-                        command.claimed_by,
-                        command.result_message,
-                        command.created_at.isoformat(),
-                        command.updated_at.isoformat(),
-                    ),
-                )
+            central_fact_repository.persist_command(
+                command,
+                self.current_run_id_for_node(command.node_code),
+                include_base=False,
+            )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (command shadow): %s", exc)
+            self._record_persistence_write_failure("command_shadow", exc)
 
-    def load_command_shadow(self) -> int:
+    def load_command_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[NodeCommand] = []
@@ -618,7 +625,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (command shadow load): %s", exc)
+            self._handle_projection_load_error("commands", exc)
             return 0
 
         for row in rows:
@@ -648,17 +655,11 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO audit_logs (run_id, actor, action, resource_type, resource_id, result, detail, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (self.current_run_id_for_node(event.node_code), event.node_code, event.stage, "incident_event", str(event.id),
-                     event.severity.value, event.message, event.created_at.isoformat()),
-                )
+            central_fact_repository.persist_event(event, self.current_run_id_for_node(event.node_code))
             with self._lock:
                 self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (event): %s", exc)
+            self._record_persistence_write_failure("event", exc)
 
     def persist_ai_diagnosis(self, diagnosis: AiDiagnosis) -> None:
         if not self._persisting():
@@ -688,9 +689,9 @@ class MemoryStore:
                      diagnosis.created_at.isoformat()),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (ai_diagnosis): %s", exc)
+            self._record_persistence_write_failure("ai_diagnosis", exc)
 
-    def load_ai_diagnosis_shadow(self) -> int:
+    def load_ai_diagnosis_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[AiDiagnosis] = []
@@ -705,7 +706,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (ai_diagnosis shadow load): %s", exc)
+            self._handle_projection_load_error("ai_diagnoses", exc)
             return 0
 
         for row in rows:
@@ -722,12 +723,12 @@ class MemoryStore:
                 raw_response=str(data.get("raw_response") or ""),
                 created_at=_database_datetime(data["created_at"]),
             ))
-        if loaded:
+        if loaded or replace_empty:
             with self._lock:
                 self.ai_diagnoses = loaded[-80:]
         return len(loaded)
 
-    def load_audit_log_shadow(self) -> int:
+    def load_audit_log_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded_audits: list[AuditLog] = []
@@ -736,13 +737,13 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
-                    SELECT id, actor, action, resource_type, resource_id, result, detail, created_at
+                    SELECT id, run_id, actor, action, resource_type, resource_id, result, detail, created_at
                     FROM audit_logs
                     ORDER BY created_at ASC, id ASC
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (audit log shadow load): %s", exc)
+            self._handle_projection_load_error("audit_logs", exc)
             return 0
 
         for row in rows:
@@ -762,24 +763,26 @@ class MemoryStore:
                     severity = Severity(str(data.get("result") or Severity.info.value))
                 except ValueError:
                     severity = Severity.info
-                try:
-                    event_id = int(data.get("resource_id") or data["id"])
-                except (TypeError, ValueError):
-                    event_id = int(data["id"])
                 loaded_events.append(IncidentEvent(
-                    id=event_id,
+                    id=int(data["id"]),
                     node_code=str(data.get("actor") or ""),
                     stage=str(data.get("action") or ""),
                     severity=severity,
                     message=str(data.get("detail") or ""),
+                    run_id=str(data.get("run_id") or ""),
                     created_at=created_at,
                 ))
         with self._lock:
-            if loaded_audits:
+            if loaded_audits or replace_empty:
                 self.audit_logs = loaded_audits[-300:]
                 self._shadow_event_count = max(self._shadow_event_count, len(loaded_audits))
-            if loaded_events:
+            if loaded_events or replace_empty:
                 self.incident_events = loaded_events[-160:]
+            if loaded_events:
+                self._incident_event_seq = max(
+                    self._incident_event_seq,
+                    max(event.id for event in loaded_events),
+                )
         return len(loaded_audits)
 
     def persist_part_queue_item(self, part: PartQueueItem) -> None:
@@ -828,9 +831,9 @@ class MemoryStore:
                     ),
                 )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (part_queue): %s", exc)
+            self._record_persistence_write_failure("part_queue", exc)
 
-    def load_part_queue_shadow(self) -> int:
+    def load_part_queue_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[PartQueueItem] = []
@@ -838,7 +841,7 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
-                    SELECT part_id, parent_part_id, order_id, product_code, current_step, status,
+                    SELECT part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
                            source_node, target_node, claimed_by, claim_token, claim_expires_at,
                            created_at, updated_at
                     FROM part_queue_shadow
@@ -846,7 +849,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (part_queue load): %s", exc)
+            self._handle_projection_load_error("part_queue", exc)
             return 0
 
         for row in rows:
@@ -900,9 +903,9 @@ class MemoryStore:
                         ),
                     )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (production plan shadow): %s", exc)
+            self._record_persistence_write_failure("production_plan_shadow", exc)
 
-    def load_production_plan_shadow(self) -> int:
+    def load_production_plan_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[ProductionPlanIn] = []
@@ -916,7 +919,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (production plan shadow load): %s", exc)
+            self._handle_projection_load_error("production_plans", exc)
             return 0
         for row in rows:
             data = dict(row)
@@ -931,7 +934,7 @@ class MemoryStore:
                 route=route if isinstance(route, list) else [],
                 reason=str(data.get("reason") or ""),
             ))
-        if loaded:
+        if loaded or replace_empty:
             with self._lock:
                 self.production_plans = loaded[-100:]
         return len(loaded)
@@ -970,9 +973,9 @@ class MemoryStore:
                         ),
                     )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (dispatch task shadow): %s", exc)
+            self._record_persistence_write_failure("dispatch_task_shadow", exc)
 
-    def load_dispatch_task_shadow(self) -> int:
+    def load_dispatch_task_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[DispatchTask] = []
@@ -987,7 +990,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (dispatch task shadow load): %s", exc)
+            self._handle_projection_load_error("dispatch_tasks", exc)
             return 0
         for row in rows:
             data = dict(row)
@@ -1008,10 +1011,11 @@ class MemoryStore:
                 reason=str(data.get("reason") or ""),
                 created_at=_database_datetime(data["created_at"]),
             ))
-        if loaded:
+        if loaded or replace_empty:
             with self._lock:
                 self.dispatch_tasks = loaded[-500:]
-                self.dispatch_seq = max(self.dispatch_seq, max(task.id for task in self.dispatch_tasks))
+                if self.dispatch_tasks:
+                    self.dispatch_seq = max(self.dispatch_seq, max(task.id for task in self.dispatch_tasks))
         return len(loaded)
 
     def persist_allocation_order_shadow(self) -> None:
@@ -1048,9 +1052,9 @@ class MemoryStore:
                         ),
                     )
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (allocation order shadow): %s", exc)
+            self._record_persistence_write_failure("allocation_order_shadow", exc)
 
-    def load_allocation_order_shadow(self) -> int:
+    def load_allocation_order_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
         loaded: list[AllocationOrder] = []
@@ -1065,7 +1069,7 @@ class MemoryStore:
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
-            logger.warning("Persistence warning (allocation order shadow load): %s", exc)
+            self._handle_projection_load_error("allocation_orders", exc)
             return 0
         for row in rows:
             data = dict(row)
@@ -1082,7 +1086,7 @@ class MemoryStore:
                 reason=str(data.get("reason") or ""),
                 created_at=_database_datetime(data["created_at"]),
             ))
-        if loaded:
+        if loaded or replace_empty:
             with self._lock:
                 self.allocation_orders = loaded[-100:]
                 max_seq = 0
@@ -1263,14 +1267,44 @@ class MemoryStore:
     # Events / commands / alerts / diagnoses
     # ------------------------------------------------------------------
 
-    def add_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
+    def _append_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
         with self._lock:
-            event = IncidentEvent(id=len(self.incident_events) + 1, node_code=node_code,
-                                  stage=stage, severity=severity, message=message)
+            self._incident_event_seq += 1
+            event = IncidentEvent(id=self._incident_event_seq, node_code=node_code,
+                                  stage=stage, severity=severity, message=message,
+                                  run_id=(
+                                      self.current_run_id_for_node(node_code)
+                                      or self.current_run_id_for_system()
+                                  ))
             self.incident_events.append(event)
             self.incident_events = self.incident_events[-160:]
+        return event
+
+    def add_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
+        event = self._append_event(node_code, stage, severity, message)
         self.persist_event(event)
         return event
+
+    def _persist_command_events(
+        self,
+        commands: list[NodeCommand],
+        event: IncidentEvent,
+        *,
+        include_base: bool = False,
+    ) -> None:
+        if not self._persisting():
+            return
+        try:
+            central_fact_repository.persist_command_events(
+                commands,
+                event,
+                self.current_run_id_for_node(event.node_code),
+                include_base=include_base,
+            )
+            with self._lock:
+                self._shadow_event_count += 1
+        except Exception as exc:  # pragma: no cover - external backend behavior
+            self._record_persistence_write_failure("command_event_transaction", exc)
 
     def _apply_command_transitions(
         self,
@@ -1278,13 +1312,13 @@ class MemoryStore:
         severity: Severity = Severity.info,
     ) -> None:
         for transition in transitions:
-            self.persist_command_shadow(transition.command)
-            self.add_event(
+            event = self._append_event(
                 transition.command.node_code,
                 transition.stage,
                 severity,
                 transition.message,
             )
+            self._persist_command_events([transition.command], event)
 
     def add_command(
         self,
@@ -1307,19 +1341,39 @@ class MemoryStore:
             )
         self._apply_command_transitions(transitions, Severity.medium)
         if created:
-            self.persist_command(command)
+            event = self._append_event(
+                node_code,
+                "command-created",
+                Severity.info,
+                f"command_id={command.id} created with status={command.status} type={command.command_type}.",
+            )
+            self._persist_command_events([command], event, include_base=True)
         return command
 
     def create_alert(self, node_code: str, alert_type: str, severity: Severity, description: str,
-                     handled_by: str | None = None) -> Alert:
+                     handled_by: str | None = None, source: str = "central-api") -> Alert:
         with self._lock:
             next_id = max((item.id for item in self.alerts), default=0) + 1
-            alert = Alert(id=next_id, node_code=node_code, alert_type=alert_type,
-                          severity=severity, description=description, handled_by=handled_by)
+            alert = Alert(id=next_id, run_id=(
+                              self.current_run_id_for_node(node_code)
+                              or self.current_run_id_for_system()
+                          ),
+                          node_code=node_code, alert_type=alert_type,
+                          severity=severity, description=description, source=source,
+                          handled_by=handled_by)
             self.alerts.append(alert)
             self.alerts = self.alerts[-120:]
         self.persist_alert(alert)
         return alert
+
+    def alert_in_current_run(self, alert: Alert) -> bool:
+        node_run_id = self.current_run_id_for_node(alert.node_code)
+        if node_run_id:
+            return alert.run_id == node_run_id
+        if not alert.run_id:
+            return True
+        system_run_id = self.current_run_id_for_system()
+        return not system_run_id or alert.run_id == system_run_id
 
     def add_ai_diagnosis(self, alert_id: int, node_code: str, root_cause: str,
                          recommended_action: str, confidence: float, need_isolation: bool,
@@ -1398,6 +1452,30 @@ class MemoryStore:
         alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
         raw_status = str(payload.get("status") or "running")
         node_status = "online" if raw_status in {"running", "online", "idle"} else "degraded"
+        run_id = str(runtime.get("run_id") or "")
+        scenario_id = str(runtime.get("scenario_id") or "")
+        random_seed = int(runtime.get("random_seed") or 0)
+        if run_id:
+            for existing_payload in self.node_heartbeats_v2.values():
+                existing_runtime = (
+                    existing_payload.get("runtime")
+                    if isinstance(existing_payload.get("runtime"), dict)
+                    else {}
+                )
+                existing_run_id = str(existing_runtime.get("run_id") or "")
+                existing_scenario_id = str(existing_runtime.get("scenario_id") or "")
+                existing_seed = int(existing_runtime.get("random_seed") or 0)
+                if existing_run_id == run_id:
+                    if existing_scenario_id != scenario_id:
+                        raise ValueError(f"run {run_id} cannot mix multiple scenario_id values")
+                    if existing_seed != random_seed:
+                        raise ValueError(f"run {run_id} cannot mix multiple random_seed values")
+                if existing_scenario_id and existing_scenario_id == scenario_id and existing_seed != random_seed:
+                    raise ValueError(f"scenario {scenario_id} cannot mix multiple random_seed values")
+
+        # When PostgreSQL is the primary fact source, commit the durable heartbeat
+        # before exposing it through the in-process projection.
+        self.persist_heartbeat_shadow(payload)
 
         uptime = int(payload.get("uptime_sec") or payload.get("uptime_seconds") or 0)
         agent_version = str(payload.get("agent_version") or "0.2.0")
@@ -1454,18 +1532,42 @@ class MemoryStore:
             }
             self._verify_target_rate_commands_locked(node_code, production)
 
-        self.persist_heartbeat_shadow(payload)
-
+        incoming_alarm_types: set[str] = set()
         created_alerts = []
         for alarm in alarms:
             if not isinstance(alarm, dict):
                 continue
             alert_type = str(alarm.get("type") or "UNKNOWN_ALARM")
+            incoming_alarm_types.add(alert_type)
             if any(a.node_code == node_code and a.alert_type == alert_type and a.status not in {"closed", "resolved"} for a in self.alerts):
                 continue
             severity = _heartbeat_alarm_severity(str(alarm.get("severity") or "medium"))
             description = _heartbeat_alarm_description(node_code, alert_type, production)
-            created_alerts.append(self.create_alert(node_code, alert_type, severity, description))
+            created_alerts.append(
+                self.create_alert(
+                    node_code,
+                    alert_type,
+                    severity,
+                    description,
+                    source="node-heartbeat",
+                )
+            )
+
+        resolved_alerts: list[Alert] = []
+        with self._lock:
+            for alert in self.alerts:
+                if (
+                    alert.node_code == node_code
+                    and alert.source == "node-heartbeat"
+                    and alert.alert_type not in incoming_alarm_types
+                    and alert.status not in {"closed", "resolved"}
+                    and alert.handled_by != "human-required"
+                ):
+                    alert.status = "resolved"
+                    alert.handled_by = "node-heartbeat-recovery"
+                    resolved_alerts.append(alert)
+        for alert in resolved_alerts:
+            self.persist_alert_state(alert)
 
         if created_alerts:
             self.add_event(
@@ -1473,6 +1575,13 @@ class MemoryStore:
                 "heartbeat-v2-alerts",
                 max((alert.severity for alert in created_alerts), key=_severity_rank),
                 f"v2 心跳上报 {len(created_alerts)} 个报警，已写入中心报警队列。",
+            )
+        if resolved_alerts:
+            self.add_event(
+                node_code,
+                "heartbeat-v2-recovery",
+                Severity.info,
+                f"v2 心跳确认 {len(resolved_alerts)} 个报警条件已恢复，已自动归档。",
             )
 
         parts_created = self._create_parts_from_turning_heartbeat(node_code, production)
@@ -1483,6 +1592,7 @@ class MemoryStore:
             "runtime": runtime,
             "production": production,
             "alarms_accepted": len(created_alerts),
+            "alarms_resolved": len(resolved_alerts),
             "parts_created": parts_created,
         }
 
@@ -1616,7 +1726,15 @@ class MemoryStore:
                           "车间节点入口流量异常，疑似敌对行为，建议立即隔离。", "system"))
             self.add_event(metric.node_code, "hostile-detected", Severity.high,
                            "检测到异常入站流量，策略引擎判定为敌对行为。")
-            self.isolate_node(metric.node_code, "auto-policy")
+            decision = safety_governor.review_control_action(
+                action="isolate_node",
+                target_node=metric.node_code,
+                risk_level="high",
+                actor_role="safety_automation",
+                known_nodes=set(self.nodes),
+                run_mode="emergency_containment",
+            )
+            self.isolate_node(metric.node_code, "safety_automation", decision)
 
         # ---- AI diagnosis (outside lock — slow DeepSeek call) ----
         if degraded_alert is not None:
@@ -1629,12 +1747,11 @@ class MemoryStore:
                 "请判断根因、推荐动作、置信度以及是否需要隔离。"
             )
             try:
-                result = registry.diagnose(prompt)
+                result, provider_name, _ = registry.diagnose_with_provenance(prompt)
                 rc, ra, cf, ni = (result.root_cause, result.recommended_action,
                                   result.confidence, result.need_isolation)
-                # Find which provider served the result
-                active = registry.first_available()
-                mn = active.name if active else "unknown"
+                model = registry.model_for(provider_name)
+                mn = f"{provider_name}/{model}" if provider_name != "rule_fallback" else "local-fallback"
             except Exception:
                 rc = "车间节点负载升高并伴随加工队列等待，可能由批量订单与本地缓存竞争导致。"
                 ra = "重启加工调度进程，限制新任务下发，并观察 10 分钟。"
@@ -1654,7 +1771,56 @@ class MemoryStore:
     # Node isolation / restore
     # ------------------------------------------------------------------
 
-    def isolate_node(self, node_code: str, actor: str) -> Node:
+    @staticmethod
+    def _require_safety_decision(
+        decision: SafetyDecision | None,
+        *,
+        action: str,
+        node_code: str,
+        actor: str,
+    ) -> SafetyDecision:
+        if decision is None or not decision.allow:
+            raise PermissionError(f"approved safety decision required for {action}")
+        if decision.action != action or decision.target_node != node_code:
+            raise PermissionError("safety decision does not match the requested action and target")
+        if decision.actor_role != actor:
+            raise PermissionError("safety decision actor does not match the executing actor")
+        return decision
+
+    def record_safety_decision(self, decision: SafetyDecision) -> AuditLog:
+        result = "allowed" if decision.allow else f"denied:{decision.reason_code}"
+        detail = json.dumps(
+            {
+                "reason_code": decision.reason_code,
+                "message": decision.message,
+                "risk_level": decision.risk_level,
+                "run_mode": decision.run_mode,
+                "requires_human": decision.requires_human,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        return self.add_audit_log(
+            decision.actor_role or "unknown",
+            f"safety:{decision.action}",
+            "node" if decision.target_node else "control_action",
+            decision.target_node or decision.action,
+            result,
+            detail,
+        )
+
+    def isolate_node(
+        self,
+        node_code: str,
+        actor: str,
+        safety_decision: SafetyDecision | None = None,
+    ) -> Node:
+        self._require_safety_decision(
+            safety_decision,
+            action="isolate_node",
+            node_code=node_code,
+            actor=actor,
+        )
         with self._lock:
             node = self.nodes[node_code]
             node.status = NodeStatus.isolated
@@ -1667,7 +1833,18 @@ class MemoryStore:
                     edge.latency_ms = 999
         return node
 
-    def restore_node(self, node_code: str, actor: str) -> Node:
+    def restore_node(
+        self,
+        node_code: str,
+        actor: str,
+        safety_decision: SafetyDecision | None = None,
+    ) -> Node:
+        self._require_safety_decision(
+            safety_decision,
+            action="restore_node",
+            node_code=node_code,
+            actor=actor,
+        )
         with self._lock:
             node = self.nodes[node_code]
             node.status = NodeStatus.online
@@ -1684,8 +1861,19 @@ class MemoryStore:
         self.rebuild_dispatch()
         return node
 
-    def retire_node(self, node_code: str, actor: str) -> dict[str, object]:
+    def retire_node(
+        self,
+        node_code: str,
+        actor: str,
+        safety_decision: SafetyDecision | None = None,
+    ) -> dict[str, object]:
         """Remove a transient or decommissioned node from active runtime state."""
+        self._require_safety_decision(
+            safety_decision,
+            action="retire_node",
+            node_code=node_code,
+            actor=actor,
+        )
         with self._lock:
             if node_code not in self.nodes:
                 raise KeyError(node_code)
@@ -1726,12 +1914,14 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def pending_commands_for_node(self, node_code: str) -> list[NodeCommand]:
+        self.refresh_primary_projection()
         expired = self._expire_stale_commands()
         if expired:
             self._apply_command_transitions(expired, Severity.medium)
         return self.command_manager.pending_for_node(self.commands, node_code)
 
     def claim_pending_commands_for_node(self, node_code: str, agent_id: str = "") -> list[NodeCommand]:
+        self.refresh_primary_projection()
         with self._lock:
             expired = self.command_manager.expire_stale_claims(
                 self.commands,
@@ -1743,15 +1933,14 @@ class MemoryStore:
                 agent_id=agent_id,
             )
         self._apply_command_transitions(expired, Severity.medium)
-        for command in claimed:
-            self.persist_command_shadow(command)
         if claimed:
-            self.add_event(
+            event = self._append_event(
                 node_code,
                 "command-claimed",
                 Severity.info,
                 f"agent claimed {len(claimed)} command(s): {', '.join(str(c.id) for c in claimed)}",
             )
+            self._persist_command_events(claimed, event)
         return claimed
 
     def record_command_result(self, node_code: str, command_id: int, status: str,
@@ -1765,9 +1954,13 @@ class MemoryStore:
                 message=message,
             )
         if changed:
-            self.persist_command_shadow(command)
-            self.add_event(node_code, "command-result", Severity.info,
-                           f"command_id={command_id} status={command.status}: {message}")
+            event = self._append_event(
+                node_code,
+                "command-result",
+                Severity.info,
+                f"command_id={command_id} status={command.status}: {message}",
+            )
+            self._persist_command_events([command], event)
         return {"accepted": True, "command_id": command_id, "status": command.status, "message": message}
 
     def record_agent_command_result(self, command_id: int, status: str, message: str) -> dict[str, object]:
@@ -1812,6 +2005,10 @@ class MemoryStore:
             self.part_seq += 1
             part = PartQueueItem(
                 part_id=f"PART-{self.part_seq:05d}",
+                run_id=(
+                    self.current_run_id_for_node(source_node)
+                    or self.current_run_id_for_system()
+                ),
                 parent_part_id=parent_part_id,
                 order_id=order_id,
                 product_code=product_code or "A3",
@@ -1835,6 +2032,7 @@ class MemoryStore:
         for part in self.part_queue:
             if (
                 part.status == "claimed"
+                and self.part_in_current_run(part)
                 and part.claim_expires_at is not None
                 and part.claim_expires_at <= now
             ):
@@ -1881,7 +2079,11 @@ class MemoryStore:
             now = utc_now()
             released = self._release_expired_part_claims_locked(now)
             for part in self.part_queue:
-                if part.target_node != node_code or part.status != "ready":
+                if (
+                    part.target_node != node_code
+                    or part.status != "ready"
+                    or not self.part_in_current_run(part)
+                ):
                     continue
                 part.status = "claimed"
                 part.claimed_by = node_code
@@ -1930,6 +2132,7 @@ class MemoryStore:
                 self.part_seq += 1
                 downstream = PartQueueItem(
                     part_id=f"PART-{self.part_seq:05d}",
+                    run_id=part.run_id,
                     parent_part_id=part.part_id,
                     order_id=part.order_id,
                     product_code=part.product_code,
@@ -1961,12 +2164,13 @@ class MemoryStore:
     def part_queue_snapshot(self) -> dict[str, object]:
         self.release_expired_part_claims()
         with self._lock:
+            current_parts = [part for part in self.part_queue if self.part_in_current_run(part)]
             counts: dict[str, int] = {}
-            for part in self.part_queue:
+            for part in current_parts:
                 counts[part.status] = counts.get(part.status, 0) + 1
             return {
                 "counts": counts,
-                "items": [part.model_dump(mode="json") for part in self.part_queue[-100:]],
+                "items": [part.model_dump(mode="json") for part in current_parts[-100:]],
             }
 
     def _create_parts_from_turning_heartbeat(self, node_code: str, production: dict[str, object]) -> int:
@@ -1989,34 +2193,112 @@ class MemoryStore:
         return delta
 
     def pending_approvals(self) -> list[NodeCommand]:
+        self.refresh_primary_projection()
         return self.command_manager.pending_approvals(self.commands)
 
     def approve_command(self, command_id: int, actor: str) -> dict[str, object]:
         with self._lock:
             command = self.command_manager.approve(self.commands, command_id=command_id, actor=actor)
-        self.persist_command_shadow(command)
-        self.add_event(command.node_code, "command-approved", Severity.info,
-                       f"运维人员 {actor} 审批通过命令 #{command_id} ({command.command_type})。")
+        event = self._append_event(
+            command.node_code,
+            "command-approved",
+            Severity.info,
+            f"运维人员 {actor} 审批通过命令 #{command_id} ({command.command_type})。",
+        )
+        self._persist_command_events([command], event)
         return {"accepted": True, "command_id": command_id, "status": command.status, "actor": actor}
 
     def reject_command(self, command_id: int, actor: str, reason: str = "") -> dict[str, object]:
         with self._lock:
             command = self.command_manager.reject(self.commands, command_id=command_id, actor=actor)
-        self.persist_command_shadow(command)
-        self.add_event(command.node_code, "command-rejected", Severity.medium,
-                       f"运维人员 {actor} 拒绝命令 #{command_id} ({command.command_type})。原因: {reason or '未提供'}。")
+        event = self._append_event(
+            command.node_code,
+            "command-rejected",
+            Severity.medium,
+            f"运维人员 {actor} 拒绝命令 #{command_id} ({command.command_type})。原因: {reason or '未提供'}。",
+        )
+        self._persist_command_events([command], event)
         return {"accepted": True, "command_id": command_id, "status": command.status,
                 "actor": actor, "reason": reason}
 
+    def cancel_command(self, command_id: int, actor: str, reason: str = "") -> NodeCommand:
+        with self._lock:
+            command, changed = self.command_manager.cancel(
+                self.commands,
+                command_id=command_id,
+                actor=actor,
+                reason=reason,
+            )
+        if changed:
+            event = self._append_event(
+                command.node_code,
+                "command-cancelled",
+                Severity.medium,
+                f"command_id={command_id} cancelled by {actor}: {reason or 'no reason provided'}.",
+            )
+            self._persist_command_events([command], event)
+            self.add_audit_log(actor, "command:cancel", "command", str(command_id), "cancelled", reason)
+        return command
+
+    def retry_command(self, command_id: int, actor: str) -> NodeCommand:
+        with self._lock:
+            command, transitions = self.command_manager.retry(
+                self.commands,
+                command_id=command_id,
+                actor=actor,
+            )
+        self._apply_command_transitions(transitions, Severity.medium)
+        event = self._append_event(
+            command.node_code,
+            "command-retried",
+            Severity.info,
+            f"command_id={command_id} retried as command_id={command.id} by {actor}.",
+        )
+        self._persist_command_events([command], event, include_base=True)
+        self.add_audit_log(actor, "command:retry", "command", str(command.id), "pending", f"retry_of={command_id}")
+        return command
+
     def escalate_to_human(self, node_code: str, issue_type: str, description: str) -> dict[str, object]:
+        with self._lock:
+            alert = next(
+                (
+                    item for item in reversed(self.alerts)
+                    if item.node_code == node_code
+                    and item.alert_type == issue_type
+                    and item.status not in {"closed", "resolved"}
+                    and self.alert_in_current_run(item)
+                ),
+                None,
+            )
+            if alert is not None:
+                alert.handled_by = "human-required"
+        if alert is None:
+            alert = self.create_alert(
+                node_code,
+                issue_type,
+                Severity.high,
+                description,
+                handled_by="human-required",
+            )
+        else:
+            self.persist_alert_state(alert)
         self.add_event(node_code, "escalation", Severity.high, f"[需人工介入] {issue_type}: {description}")
-        self.create_alert(node_code, issue_type, Severity.high, description, handled_by="human-required")
-        return {"escalated": True, "node_code": node_code, "issue_type": issue_type}
+        return {
+            "escalated": True,
+            "node_code": node_code,
+            "issue_type": issue_type,
+            "issue_id": f"{node_code}-{issue_type}",
+            "alert_id": alert.id,
+        }
 
     def pending_escalations(self) -> list[IncidentEvent]:
         open_alerts = [
             a for a in self.alerts
-            if a.status not in {"closed", "resolved"} and a.handled_by == "human-required"
+            if (
+                a.status not in {"closed", "resolved"}
+                and a.handled_by == "human-required"
+                and self.alert_in_current_run(a)
+            )
         ]
 
         def matches_open_alert(event: IncidentEvent) -> bool:
@@ -2278,6 +2560,11 @@ class MemoryStore:
 
     def summary(self) -> DashboardSummary:
         latest = list(self.latest_metrics().values())
+        active_alerts = [
+            alert
+            for alert in self.alerts
+            if alert.status not in {"closed", "resolved"} and self.alert_in_current_run(alert)
+        ]
         finished = sum(m.finished_quantity for m in latest)
         defects = sum(m.defect_quantity for m in latest)
         produced = finished + defects
@@ -2285,8 +2572,8 @@ class MemoryStore:
             node_count=len(self.nodes),
             online_count=sum(1 for n in self.nodes.values() if n.status == NodeStatus.online),
             isolated_count=sum(1 for n in self.nodes.values() if n.status == NodeStatus.isolated),
-            alert_count=len(self.alerts),
-            critical_alert_count=sum(1 for a in self.alerts if a.severity in {Severity.high, Severity.critical}),
+            alert_count=len(active_alerts),
+            critical_alert_count=sum(1 for a in active_alerts if a.severity in {Severity.high, Severity.critical}),
             total_finished_quantity=finished,
             defect_rate=round(defects / produced * 100, 2) if produced else 0.0,
             avg_cpu_usage=round(mean([m.cpu_usage for m in latest]), 2) if latest else 0.0,
@@ -2306,7 +2593,8 @@ class MemoryStore:
                 location="本地实验室", status="online", connection="local",
                 node_code="central-api", node_status="online", last_seen=utc_now(),
                 cpu_usage=host["cpu"], memory_usage=host["mem"], disk_usage=host["disk"],
-                api_latency_ms=0, database="In-memory / PostgreSQL (planned)",
+                api_latency_ms=0,
+                database=f"PostgreSQL primary / {settings.central_fact_source} projection",
                 service="FastAPI central-api"),
             HostRuntimeStatus(
                 host_code="tencent-lighthouse-cloud-workshop", host_name="云端协同车间节点",
@@ -2621,7 +2909,7 @@ class MemoryStore:
         }
 
     def replay_runs(self, max_rows: int = 1000, limit: int = 20) -> dict[str, object]:
-        """List persisted simulation runs found in heartbeat shadow rows."""
+        """List formal run entities, retaining heartbeat-derived legacy compatibility."""
         if not settings.persist_enabled:
             return {"status": "disabled", "reason": "PERSIST_ENABLED=false", "runs": []}
 
@@ -2629,7 +2917,31 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
+                    SELECT r.run_id,
+                           r.scenario_id,
+                           r.status,
+                           r.random_seed,
+                           r.started_at,
+                           COALESCE(r.ended_at, r.last_event_at) AS ended_at,
+                           r.last_event_at AS latest_simulation_time,
+                           COUNT(h.id) AS heartbeat_count
+                    FROM runs r
+                    LEFT JOIN heartbeat_shadow h ON h.run_id = r.run_id
+                    GROUP BY r.run_id, r.scenario_id, r.status, r.random_seed,
+                             r.started_at, r.ended_at, r.last_event_at
+                    ORDER BY r.last_event_at DESC
+                    LIMIT ?
+                    """,
+                    (max(1, min(limit, max_rows)),),
+                ).fetchall()
+                formal_entities = bool(rows)
+                if not rows:
+                    rows = db.execute(
+                    """
                     SELECT run_id,
+                           '' AS scenario_id,
+                           'legacy' AS status,
+                           0 AS random_seed,
                            COUNT(*) AS heartbeat_count,
                            MIN(received_at) AS started_at,
                            MAX(received_at) AS ended_at,
@@ -2641,7 +2953,7 @@ class MemoryStore:
                     LIMIT ?
                     """,
                     (max(1, min(limit, max_rows)),),
-                ).fetchall()
+                    ).fetchall()
                 identity_by_run: dict[str, dict[str, set[str]]] = {}
                 for row in rows:
                     run_id = str(dict(row).get("run_id") or "")
@@ -2679,6 +2991,9 @@ class MemoryStore:
             identity = identity_by_run.get(run_id, {"node_codes": set(), "scenario_ids": set()})
             node_codes = sorted(identity["node_codes"])
             scenario_ids = sorted(identity["scenario_ids"])
+            formal_scenario = str(data.get("scenario_id") or "")
+            if formal_scenario and formal_scenario not in scenario_ids:
+                scenario_ids.insert(0, formal_scenario)
             runs.append({
                 "run_id": run_id,
                 "scenario_ids": scenario_ids,
@@ -2688,13 +3003,19 @@ class MemoryStore:
                 "ended_at": str(data.get("ended_at") or ""),
                 "latest_simulation_time": data.get("latest_simulation_time"),
                 "node_count": len(node_codes),
+                "status": str(data.get("status") or "unknown"),
+                "random_seed": int(data.get("random_seed") or 0),
+                "formal_entity": formal_entities,
             })
         return {
             "status": "ok",
             "backend": persistence_label(),
+            "data_source": "replay",
+            "read_only": True,
             "runs": runs,
             "sampled_heartbeat_rows": total_heartbeat_rows,
             "run_count": len(runs),
+            "source": "runs" if formal_entities else "heartbeat_legacy_fallback",
         }
 
     def replay_run(self, run_id: str, max_rows: int = 500) -> dict[str, object]:
@@ -2928,6 +3249,8 @@ class MemoryStore:
         return {
             "status": "ok",
             "backend": persistence_label(),
+            "data_source": "replay",
+            "read_only": True,
             "run_id": clean_run_id,
             "scenario_ids": sorted(scenario_ids),
             "node_codes": sorted(node_codes),
@@ -2958,6 +3281,79 @@ class MemoryStore:
             "timeline": timeline,
         }
 
+    def primary_projection_enabled(self) -> bool:
+        return (
+            settings.persist_enabled
+            and persistence_backend() == "postgres"
+            and settings.central_fact_source == "postgresql"
+        )
+
+    def refresh_primary_projection(self, force: bool = False) -> dict[str, object]:
+        """Refresh the in-process read model from PostgreSQL, the central fact source."""
+        if not self.primary_projection_enabled():
+            return {
+                "status": "cache",
+                "fact_source": persistence_label() if settings.persist_enabled else "memory",
+                "read_model": "in_process_cache",
+                "last_error": "",
+            }
+
+        now = utc_now()
+        if (
+            not force
+            and self._primary_projection_refreshed_at is not None
+            and (now - self._primary_projection_refreshed_at).total_seconds() < 1.0
+        ):
+            return {
+                "status": "ok" if not self._primary_projection_last_error and not self._persistence_write_failures else "degraded",
+                "fact_source": "postgresql",
+                "read_model": "database_projection",
+                "refreshed_at": self._primary_projection_refreshed_at.isoformat(),
+                "last_error": self._primary_projection_last_error,
+                "write_failures": list(self._persistence_write_failures.values()),
+            }
+
+        with self._primary_projection_refresh_lock:
+            try:
+                self._primary_projection_in_progress = True
+                with get_db() as db:
+                    db.execute("SELECT 1 AS ok").fetchone()
+                counts = {
+                    "heartbeats": self.load_heartbeat_shadow(replace_empty=True),
+                    "commands": self.load_command_shadow(replace_empty=True),
+                    "part_queue": self.load_part_queue_shadow(replace_empty=True),
+                    "alerts": self.load_alert_shadow(replace_empty=True),
+                    "ai_diagnoses": self.load_ai_diagnosis_shadow(replace_empty=True),
+                    "audit_logs": self.load_audit_log_shadow(replace_empty=True),
+                    "allocation_orders": self.load_allocation_order_shadow(replace_empty=True),
+                    "production_plans": self.load_production_plan_shadow(replace_empty=True),
+                    "dispatch_tasks": self.load_dispatch_task_shadow(replace_empty=True),
+                }
+                self._primary_projection_refreshed_at = utc_now()
+                self._primary_projection_last_error = ""
+                return {
+                    "status": "degraded" if self._persistence_write_failures else "ok",
+                    "fact_source": "postgresql",
+                    "read_model": "database_projection",
+                    "refreshed_at": self._primary_projection_refreshed_at.isoformat(),
+                    "counts": counts,
+                    "last_error": "",
+                    "write_failures": list(self._persistence_write_failures.values()),
+                }
+            except Exception as exc:  # pragma: no cover - external backend behavior
+                self._primary_projection_last_error = str(exc)
+                logger.error("Primary PostgreSQL projection refresh failed: %s", exc)
+                return {
+                    "status": "degraded",
+                    "fact_source": "memory-cache",
+                    "configured_fact_source": "postgresql",
+                    "read_model": "stale_cache",
+                    "last_error": str(exc),
+                    "write_failures": list(self._persistence_write_failures.values()),
+                }
+            finally:
+                self._primary_projection_in_progress = False
+
     def persistence_status(self) -> dict[str, object]:
         backend = persistence_backend()
         db_path = Path(settings.central_db_path)
@@ -2966,6 +3362,12 @@ class MemoryStore:
             "backend": persistence_label(),
             "db_path": str(db_path) if backend == "sqlite" else "",
             "dsn_configured": bool(settings.postgres_dsn) if backend == "postgres" else False,
+            "fact_source": (
+                "postgresql"
+                if self.primary_projection_enabled()
+                else persistence_label() if settings.persist_enabled else "memory"
+            ),
+            "read_model": "database_projection" if self.primary_projection_enabled() else "in_process_cache",
             "db_exists": db_path.exists() if backend == "sqlite" else False,
             "retention": {
                 "heartbeat_shadow_per_node": settings.heartbeat_shadow_retention_per_node,
@@ -2978,12 +3380,16 @@ class MemoryStore:
             "tables": {},
             "counts": {},
             "last_error": "",
+            "write_failures": list(self._persistence_write_failures.values()),
         }
         if not settings.persist_enabled:
             return {**base, "status": "disabled"}
 
         required_tables = (
+            "schema_migrations",
             "heartbeat_shadow",
+            "scenarios",
+            "runs",
             "part_queue_shadow",
             "command_shadow",
             "alerts",
@@ -3022,6 +3428,7 @@ class MemoryStore:
                 if all(tables.values())
                 and consistency["status"] == "ok"
                 and replay["status"] == "ok"
+                and not self._persistence_write_failures
                 else "degraded"
             )
             return {
@@ -3036,221 +3443,39 @@ class MemoryStore:
         except Exception as exc:  # pragma: no cover
             return {**base, "status": "degraded", "last_error": str(exc)}
 
-    def run_preflight(self) -> PreflightResult:
-        import time as time_mod
-
-        steps: list[PreflightStep] = []
-        my_token = get_session_token()
-
-        t0 = time_mod.monotonic()
-        supervisor_step = PreflightStep(key="supervisor", label="运行所有权", status="running")
-        supervisor = supervisor_health(my_token)
-        supervisor_status = str(supervisor.get("status") or "offline")
-        healthy = int(supervisor.get("healthy_processes") or 0)
-        expected = supervisor.get("expected_processes") or []
-        expected_count = len(expected) if isinstance(expected, list) else 0
-        missing = supervisor.get("missing_processes") or []
-        unhealthy = supervisor.get("unhealthy_processes") or []
-        if supervisor_status == "ok":
-            supervisor_step.status = "pass"
-            supervisor_step.detail = f"Go supervisor 接管运行，session 一致，{healthy}/{expected_count} 个进程健康。"
-        elif supervisor_status == "session_mismatch":
-            supervisor_step.status = "fail"
-            supervisor_step.detail = "Go supervisor 在线，但 session 与 central-api 不一致，可能存在旧进程残留。"
-        elif supervisor_status == "degraded":
-            supervisor_step.status = "fail"
-            supervisor_step.detail = f"Go supervisor 在线但进程异常：missing={len(missing)}，unhealthy={len(unhealthy)}。"
-        else:
-            supervisor_step.status = "fail"
-            supervisor_step.detail = "Go supervisor 未响应，无法确认系统运行所有权。"
-        supervisor_step.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(supervisor_step)
-
-        # ----------------------------------------------------------------
-        # Step 1 — Service connectivity
-        # ----------------------------------------------------------------
-        t0 = time_mod.monotonic()
-        step1 = PreflightStep(key="services", label="微服务连通性", status="running")
-        svc_parts: list[str] = []
-        svc_ok = True
-        probe_services = [
-            ("AI 调度器", settings.ai_dispatcher_url),
-            ("市场模拟器", settings.market_simulator_url),
-            ("排产规划器", settings.production_planner_url),
-        ]
-        for name, base_url in probe_services:
-            try:
-                if settings.microservices_enabled:
-                    ok, data = get_json(f"{base_url}/health", timeout=settings.service_probe_timeout_seconds)
-                    if ok and isinstance(data, dict):
-                        svc_token = data.get("session_token", "")
-                        if svc_token and svc_token != my_token:
-                            svc_parts.append(f"{name} ✗(session_mismatch)")
-                            svc_ok = False
-                            continue
-                else:
-                    ok, _ = None, None  # standalone mode — not required
-            except Exception:
-                ok = False
-            if ok or not settings.microservices_enabled:
-                svc_parts.append(f"{name} ✓")
-            else:
-                svc_parts.append(f"{name} ✗")
-                svc_ok = False
-        step1.detail = "; ".join(svc_parts)
-        step1.status = "pass" if svc_ok else "fail"
-        step1.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(step1)
-
-        # ----------------------------------------------------------------
-        # Step 2 — Node connectivity (heartbeat OR recent metrics)
-        # ----------------------------------------------------------------
-        t0 = time_mod.monotonic()
-        step2 = PreflightStep(key="nodes", label="父子节点激活", status="running")
-
-        # Kick the simulation once if it's not running, to refresh heartbeats
-        if not self.simulation_running:
-            try:
-                self.simulation_step()
-            except Exception:
-                pass
-
-        now_utc = utc_now()
-        timeout_threshold = timedelta(seconds=max(settings.heartbeat_timeout_seconds * 2, 120))
-        online_nodes: list[str] = []
-        stale_nodes: list[str] = []
+    def production_node_readiness(self) -> dict[str, object]:
+        expected = list(settings.expected_production_nodes)
+        healthy: list[str] = []
+        missing: list[str] = []
+        stale: list[str] = []
+        unavailable: list[str] = []
+        now = utc_now()
+        freshness = timedelta(seconds=settings.heartbeat_timeout_seconds)
         with self._lock:
-            for node in list(self.nodes.values()):
-                if self._ephemeral_node_code(node.node_code):
+            for node_code in expected:
+                node = self.nodes.get(node_code)
+                if node is None:
+                    missing.append(node_code)
                     continue
-                if node.status == NodeStatus.isolated:
+                if now - node.last_heartbeat > freshness:
+                    stale.append(node_code)
                     continue
-                if now_utc - node.last_heartbeat <= timeout_threshold:
-                    online_nodes.append(node.node_code)
-                else:
-                    stale_nodes.append(node.node_code)
-        if online_nodes:
-            step2.detail = f"活跃节点 ({len(online_nodes)}): {', '.join(online_nodes[:6])}"
-            if stale_nodes:
-                step2.detail += f"; 无信号: {', '.join(stale_nodes[:4])}"
-            step2.status = "pass"
-        elif stale_nodes:
-            step2.detail = f"全部 {len(stale_nodes)} 个节点无心跳/无指标"
-            step2.status = "fail"
-        else:
-            step2.detail = "暂无已注册节点（系统尚未收到首次心跳）"
-            step2.status = "pass"  # not an error — seed may not have run yet
-        step2.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(step2)
+                if node.status not in {NodeStatus.online, NodeStatus.degraded}:
+                    unavailable.append(node_code)
+                    continue
+                healthy.append(node_code)
+        return {
+            "expected": expected,
+            "healthy": healthy,
+            "missing": missing,
+            "stale": stale,
+            "unavailable": unavailable,
+        }
 
-        # ----------------------------------------------------------------
-        # Step 3 — AI key verification
-        # ----------------------------------------------------------------
-        t0 = time_mod.monotonic()
-        step3 = PreflightStep(key="ai_key", label="AI Key 验证", status="running")
-        if not settings.ai_enabled:
-            step3.detail = "AI 已禁用（AI_ENABLED=false）"
-            step3.status = "pass"
-        elif not registry.is_any_live_provider():
-            step3.detail = "无可用 AI 后端，请检查 /api/ai/status 了解详情"
-            step3.status = "fail"
-        else:
-            try:
-                ping = registry.chat(
-                    [
-                        {"role": "system", "content": "Respond with exactly: {\"pong\":true}"},
-                        {"role": "user", "content": "ping"},
-                    ],
-                    timeout=10,
-                )
-                active = registry.first_available()
-                active_name = active.name if active else "unknown"
-                if "pong" in ping.lower():
-                    step3.detail = f"AI 响应正常（后端: {active_name}）"
-                    step3.status = "pass"
-                else:
-                    step3.detail = f"AI 返回异常内容: {ping[:120]}"
-                    step3.status = "fail"
-            except Exception as exc:
-                step3.detail = f"AI 验证失败: {exc}"
-                step3.status = "fail"
-        step3.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(step3)
+    def run_preflight(self) -> PreflightResult:
+        from .preflight_service import run_system_preflight
 
-        # ----------------------------------------------------------------
-        # Step 4 — Virtual dry-run diagnosis
-        # ----------------------------------------------------------------
-        t0 = time_mod.monotonic()
-        step4 = PreflightStep(key="dry_run", label="虚拟试运行", status="running")
-        # Build a synthetic high-load scenario
-        dry_metric = MetricIn(
-            node_code="preflight-check",
-            cpu_usage=92.0,
-            memory_usage=78.0,
-            disk_usage=55.0,
-            network_in=120_000,
-            network_out=90_000,
-            db_latency_ms=820,
-            api_latency_ms=850,
-            finished_quantity=42,
-            defect_quantity=3,
-        )
-        dry_prompt = (
-            f"车间节点: preflight-check\n"
-            f"告警: 试运行自动生成 — CPU={dry_metric.cpu_usage:.1f}%, "
-            f"API延迟={dry_metric.api_latency_ms}ms, DB延迟={dry_metric.db_latency_ms}ms\n"
-            f"最新指标: cpu={dry_metric.cpu_usage:.1f}%, memory={dry_metric.memory_usage:.1f}%, "
-            f"disk={dry_metric.disk_usage:.1f}%, network_in={dry_metric.network_in}, "
-            f"db_latency={dry_metric.db_latency_ms}ms, api_latency={dry_metric.api_latency_ms}ms, "
-            f"finished_quantity={dry_metric.finished_quantity}, defect_quantity={dry_metric.defect_quantity}\n"
-            f"用户补充: 系统开机自检虚拟试运行\n"
-            "请判断根因、建议动作、置信度，以及是否需要隔离该车间节点。"
-        )
-        try:
-            if registry.is_any_live_provider() and settings.ai_enabled:
-                diag = registry.diagnose(dry_prompt, timeout=15)
-                step4.detail = (
-                    f"根因: {diag.root_cause[:100]}; "
-                    f"建议: {diag.recommended_action[:100]}; "
-                    f"置信度: {diag.confidence:.0%}"
-                )
-                step4.status = "pass"
-            else:
-                step4.detail = "AI 未配置，使用本地规则诊断通过（CPU 92% + API 延迟 850ms → 建议限制新任务下发）"
-                step4.status = "pass"
-        except Exception as exc:
-            step4.detail = f"试运行异常: {exc}"
-            step4.status = "fail"
-        step4.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(step4)
-
-        # ----------------------------------------------------------------
-        # Step 5 - durable persistence
-        # ----------------------------------------------------------------
-        t0 = time_mod.monotonic()
-        step5 = PreflightStep(key="persistence", label="中心持久化检查", status="running")
-        persistence = self.persistence_status()
-        if persistence["status"] == "degraded":
-            step5.status = "fail"
-            step5.detail = f"{persistence.get('backend')} 持久化异常: {persistence.get('last_error') or persistence.get('tables')}"
-        elif persistence["status"] == "disabled":
-            step5.status = "pass"
-            step5.detail = "PERSIST_ENABLED=false，当前为内存测试模式。"
-        else:
-            counts = persistence.get("counts", {})
-            if isinstance(counts, dict):
-                parts = counts.get("part_queue_shadow", 0)
-                commands = counts.get("command_shadow", 0)
-            else:
-                parts = commands = 0
-            step5.status = "pass"
-            step5.detail = f"{persistence.get('backend')} 持久化正常，part_queue={parts}，commands={commands}。"
-        step5.elapsed_ms = int((time_mod.monotonic() - t0) * 1000)
-        steps.append(step5)
-
-        all_pass = all(s.status == "pass" for s in steps)
-        message = "所有自检通过，系统就绪" if all_pass else "部分自检未通过，请检查后重试"
-        return PreflightResult(all_pass=all_pass, steps=steps, message=message)
+        return run_system_preflight(self)
 
     # ------------------------------------------------------------------
     # Snapshot
@@ -3274,7 +3499,7 @@ class MemoryStore:
             "dispatch_tasks": self.dispatch_tasks,
             "resource_allocations": self.resource_allocations(),
             "machines": self.machines,
-            "alerts": self.alerts[-20:],
+            "alerts": [alert for alert in self.alerts if self.alert_in_current_run(alert)][-20:],
             "events": self.incident_events[-30:],
             "commands": self.commands[-20:],
             "part_queue": self.part_queue_snapshot(),

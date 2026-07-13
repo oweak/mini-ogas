@@ -1,7 +1,9 @@
 param(
   [string]$RuntimeRoot = "D:\MiniOGAS-VMs",
   [switch]$ReplaceRunning,
-  [switch]$Foreground
+  [switch]$Foreground,
+  [ValidateSet("postgresql", "memory")]
+  [string]$FactSource = "postgresql"
 )
 
 $ErrorActionPreference = "Stop"
@@ -75,7 +77,8 @@ $env:NODE_INGEST_TOKEN = $token
 $env:POSTGRES_DSN = $postgresDsn
 $env:JWT_SECRET = $jwtSecret
 $env:AUTH_BOOTSTRAP_PASSWORD = $bootstrapPassword
-$env:OGAS_RUN_ID = "RUN-LOCAL-$(Get-Date -Format yyyyMMdd)-001"
+$env:CENTRAL_FACT_SOURCE = $FactSource
+$env:OGAS_RUN_ID = "RUN-LOCAL-$(Get-Date -Format yyyyMMdd-HHmmss)"
 Set-Content -LiteralPath $SessionPath -Value $env:OGAS_SESSION_TOKEN -Encoding ASCII
 
 if (-not (Test-Path -LiteralPath $GoExe)) { throw "Go toolchain was not found: $GoExe" }
@@ -99,10 +102,38 @@ $stdout = Join-Path $RuntimeLogRoot "supervisor.out.log"
 $stderr = Join-Path $RuntimeLogRoot "supervisor.err.log"
 $quotedConfigPath = '"' + $ConfigPath + '"'
 $process = Start-Process -FilePath $SupervisorExe -ArgumentList @("-config", $quotedConfigPath) -WorkingDirectory $ProjectRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru -WindowStyle Hidden
+$expectedProcessCount = @(Select-String -LiteralPath $ConfigPath -Pattern '^\[\[process\]\]$').Count
+$deadline = (Get-Date).AddSeconds(60)
+$lastStates = @()
+while ((Get-Date) -lt $deadline) {
+  $process.Refresh()
+  if ($process.HasExited) {
+    throw "Go supervisor exited before readiness. See $stderr"
+  }
+  try {
+    $status = Invoke-RestMethod -Uri "http://127.0.0.1:9099/supervisor/status" -TimeoutSec 3
+    $lastStates = @($status.processes | ForEach-Object { "$($_.name)=$($_.state)" })
+    $healthy = @($status.processes | Where-Object { $_.state -eq "healthy" })
+    if (
+      $status.session_id -eq $env:OGAS_SESSION_TOKEN -and
+      $status.processes.Count -eq $expectedProcessCount -and
+      $healthy.Count -eq $expectedProcessCount
+    ) {
+      break
+    }
+  } catch {
+    $lastStates = @("management API not ready: $($_.Exception.Message)")
+  }
+  Start-Sleep -Milliseconds 500
+}
+if ((Get-Date) -ge $deadline) {
+  throw "Go supervisor readiness timed out: $($lastStates -join ', ')"
+}
 [pscustomobject]@{
   supervisor_pid = $process.Id
   management_url = "http://127.0.0.1:9099/supervisor/status"
   session_file = $SessionPath
   log = $stdout
   ownership = "go-supervisor"
+  healthy_processes = $expectedProcessCount
 } | ConvertTo-Json

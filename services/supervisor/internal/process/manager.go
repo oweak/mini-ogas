@@ -89,9 +89,11 @@ func (m *Manager) StartAll() error {
 	total := len(m.processes)
 	m.mu.RUnlock()
 	started := make(map[string]bool)
+	deadline := time.Now().Add(60 * time.Second)
 
 	for len(started) < total {
 		var ready []string
+		waitingForHealth := false
 		m.mu.RLock()
 		for name, proc := range m.processes {
 			if started[name] {
@@ -99,8 +101,15 @@ func (m *Manager) StartAll() error {
 			}
 			depsMet := true
 			for _, dependency := range proc.Spec.DependsOn {
-				if !started[dependency] {
+				dependencyProcess := m.processes[dependency]
+				dependencyProcess.mu.Lock()
+				dependencyHealthy := dependencyProcess.State == StateHealthy
+				dependencyProcess.mu.Unlock()
+				if !started[dependency] || !dependencyHealthy {
 					depsMet = false
+					if started[dependency] {
+						waitingForHealth = true
+					}
 					break
 				}
 			}
@@ -111,6 +120,13 @@ func (m *Manager) StartAll() error {
 		m.mu.RUnlock()
 
 		if len(ready) == 0 {
+			if waitingForHealth {
+				if time.Now().After(deadline) {
+					return fmt.Errorf("dependency health timeout: %d processes remain", total-len(started))
+				}
+				time.Sleep(100 * time.Millisecond)
+				continue
+			}
 			return fmt.Errorf("dependency deadlock: %d processes remain", total-len(started))
 		}
 		for _, name := range ready {

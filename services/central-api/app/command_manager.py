@@ -9,7 +9,8 @@ from .models import NodeCommand, utc_now
 CLAIMABLE_STATUSES = {"pending", "queued"}
 APPROVAL_STATUS = "waiting_approval"
 RESULT_STATUSES = {"executed", "failed"}
-TERMINAL_STATUSES = {"failed", "verified", "rejected", "expired", "superseded"}
+TERMINAL_STATUSES = {"failed", "verified", "rejected", "expired", "superseded", "cancelled"}
+RETRYABLE_STATUSES = {"failed", "rejected", "expired", "cancelled"}
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,6 @@ class CommandManager:
                     command.node_code == node_code
                     and command.command_type == command_type
                     and command.parameters.get("idempotency_key") == idempotency_key
-                    and command.status not in TERMINAL_STATUSES
                 ):
                     return command, [], False
 
@@ -115,7 +115,7 @@ class CommandManager:
             return command, False
         if command.status == status and command.result_message == message:
             return command, False
-        if command.status in {"expired", "superseded", "rejected"}:
+        if command.status in {"expired", "superseded", "rejected", "cancelled"}:
             raise ValueError(f"command {command_id} is not executable (current: {command.status})")
         if command.status not in {"claimed", "pending", "queued", "executed", "failed"}:
             raise ValueError(f"command {command_id} cannot accept result from status {command.status}")
@@ -161,6 +161,54 @@ class CommandManager:
         command.operator = actor
         command.updated_at = now
         return command
+
+    def cancel(
+        self,
+        commands: list[NodeCommand],
+        *,
+        command_id: int,
+        actor: str,
+        reason: str = "",
+        now: datetime | None = None,
+    ) -> tuple[NodeCommand, bool]:
+        now = now or utc_now()
+        command = self._find(commands, command_id)
+        if command.status == "cancelled":
+            return command, False
+        if command.status in TERMINAL_STATUSES or command.status == "executed":
+            raise ValueError(f"command {command_id} cannot be cancelled from status {command.status}")
+        command.status = "cancelled"
+        command.operator = actor
+        command.result_message = f"cancelled by {actor}: {reason or 'no reason provided'}"
+        command.updated_at = now
+        return command, True
+
+    def retry(
+        self,
+        commands: list[NodeCommand],
+        *,
+        command_id: int,
+        actor: str,
+        now: datetime | None = None,
+    ) -> tuple[NodeCommand, list[CommandTransition]]:
+        now = now or utc_now()
+        source = self._find(commands, command_id)
+        if source.status not in RETRYABLE_STATUSES:
+            raise ValueError(f"command {command_id} cannot be retried from status {source.status}")
+        parameters = dict(source.parameters)
+        parameters.pop("idempotency_key", None)
+        parameters["retry_of"] = source.id
+        command, transitions, _ = self.create_command(
+            commands,
+            node_code=source.node_code,
+            command_type=source.command_type,
+            risk_level=source.risk_level,
+            status="pending",
+            operator=actor,
+            parameters=parameters,
+            now=now,
+        )
+        return command, transitions
 
     def expire_stale_claims(
         self,

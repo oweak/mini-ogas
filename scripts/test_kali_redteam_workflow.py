@@ -20,6 +20,10 @@ class KaliRedteamWorkflowTests(unittest.TestCase):
                 self.assertEqual(heartbeat["alarms"][0]["type"], alarm_type)
                 self.assertEqual(heartbeat["runtime"]["source"], "kali-redteam")
                 self.assertEqual(heartbeat["runtime"]["attack_id"], "KALI-UNIT")
+                self.assertEqual(heartbeat["runtime"]["run_id"], "RUN-ATTACK-LAB-KALI-UNIT")
+                self.assertTrue(heartbeat["runtime"]["scenario_id"].startswith("SCN-ATTACK-LAB-"))
+                self.assertEqual(heartbeat["runtime"]["run_status"], "running")
+                self.assertIsInstance(heartbeat["runtime"]["random_seed"], int)
 
     def test_recovery_heartbeat_removes_alarm_and_restores_running_state(self) -> None:
         attack = workflow.build_attack_heartbeat(scenario="tool_wear", attack_id="KALI-UNIT")
@@ -30,6 +34,8 @@ class KaliRedteamWorkflowTests(unittest.TestCase):
         self.assertEqual(recovery["alarms"], [])
         self.assertLessEqual(recovery["production"]["tool_wear_level"], 58.0)
         self.assertEqual(recovery["runtime"]["recovery"], "script-restored-process-window")
+        self.assertEqual(recovery["runtime"]["run_status"], "completed")
+        self.assertEqual(recovery["runtime"]["run_id"], attack["runtime"]["run_id"])
 
     def test_select_alert_accepts_issue_id_or_id(self) -> None:
         alert = {"id": "node-a-QUALITY_DRIFT", "issue_id": "node-a-QUALITY_DRIFT"}

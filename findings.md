@@ -78,3 +78,58 @@ For each v2.2 requirement, record: source contract, implementation location, con
 - Diagnosis output records `source`, `attempted_providers`, and bounded `provider_errors`; central-api continues to persist the serving source without any route-contract change.
 - Unit tests prove next-provider fallback after a simulated DeepSeek outage and local-rule fallback only after all providers fail.
 - A real runtime probe reported the configured chain and returned a DeepSeek diagnosis with non-empty root cause and recommended action.
+
+## Full-System Audit Baseline (2026-07-10)
+- Repository history is small and recent: 17 commits from 2026-06-04 through 2026-07-06 on one branch. The highest code hotspot is `services/central-api/app/store.py`; it also appears in bug-fix commits, making it the primary architecture risk.
+- Production-owned source totals roughly 25,000 lines: central-api 11,213 lines, dashboard 10,408, node-agent 2,243, supervisor 814, and three Python microservices about 508 combined. Central API state/orchestration and the dashboard dominate complexity.
+- The worktree was clean at audit start. No supported service was listening during the first runtime probe, so older live-runtime claims are historical evidence rather than proof of current availability.
+- Current documentation and configuration disagree in material ways: root `.env.example` sets `MICROSERVICES_ENABLED=false`, while supervisor config forces it true; README describes Redis and NATS as architecture components although no active implementation was found in the source inventory.
+- Root reports contain stale and encoding-damaged sections. Status documents must be regenerated from code/runtime evidence after remediation, not treated as implementation truth.
+- Supported runtime ports are 8080/8081/8082/8083/5173 and supervisor 9099 according to `config/supervisor.toml`; the initial legacy-port probe was therefore invalid and will be repeated against configured ports.
+- Architecture boundary to verify: PostgreSQL is required as the central persistence backend, SQLite is permitted only for node-local/explicit fallback use, and in-memory state must not silently remain the authoritative read path for durable operational facts.
+
+## Automated Verification Baseline (2026-07-10)
+- Passed: central-api 102 tests, dashboard 60 tests, dashboard production build, Python simulator 22 tests, ai-dispatcher 4 tests, script suite 17 tests plus 9 subtests, and `mogas` CLI 13 tests.
+- Passed after explicitly using the repository-local Go cache: Go node-agent packages and Go supervisor packages. Direct `go test ./...` fails on this machine because the default `C:\Users\hq362\go` cache is not writable.
+- `scripts/verify-miniogas.ps1` does not source `scripts/env.ps1`, does not run the Go node-agent tests, and does not run supervisor tests. Its current "node-agent tests" step runs only `test_simulator.py`, so a green verification can miss failures in two supported Go runtime components.
+- All pytest invocations pass but emit a cache warning because the root `.pytest_cache` ACL is unreadable. The cache is nonessential, but verification should disable or redirect it to avoid persistent warning noise.
+- API contract check, dashboard login-gate check, secret scan, and `git diff --check` passed. Ruff did not run because it is not installed in the active Python environment; verification currently has no enforced Python lint/type-quality gate.
+- `services/central-api/app/store.py` is 3,295 lines and owns state, simulation, alerts, commands, audit, persistence restore, replay, planning, dispatch, preflight, and reports. This is confirmed architecture concentration, not just a historical hotspot.
+- Central API declares configurable `settings.cors_origins`, but `app/main.py` uses a separate hard-coded origin list. Configuration changes therefore do not actually control CORS behavior.
+
+## Confirmed Diagnosis (2026-07-10)
+1. **[HIGH] Pre-login self-check mutates operational state.** `MemoryStore.run_preflight()` calls `simulation_step()` when central simulation is stopped. This can refresh logical node facts without a child-node heartbeat and makes a connectivity check capable of manufacturing the evidence it is meant to verify.
+2. **[HIGH] Production-node readiness is under-specified.** Preflight passes when any non-ephemeral node is fresh and even passes when no nodes are registered. It does not require every node in `EXPECTED_PRODUCTION_NODES`, so one logical/control node can mask missing workshop nodes.
+3. **[HIGH] Pre-login self-check calls external AI.** Preflight invokes both `registry.chat()` and `registry.diagnose()` before administrator vault unlock, while the dashboard explicitly states that login-before-unlock uses only rule fallback. This is a contract and security-flow contradiction.
+4. **[HIGH] AI provenance can be false.** AI routes set `used_ai` from `is_any_live_provider()` before the request. If every live provider fails and the registry serves `rule_fallback`, responses can still claim a live backend. Chat and shortcut responses also hard-code the DeepSeek model even when Ollama, LM Studio, or Groq actually served the request.
+5. **[HIGH] Acceptance omits supported binaries.** `verify-miniogas.ps1` does not run the Go node-agent or Go supervisor tests and does not load the project-local Go environment. A green acceptance run therefore does not cover two supported runtime components.
+6. **[MED] Startup result is not refreshed after authentication.** The login response returns `preflight: None`; after AI vault unlock and smoke testing, the dashboard retains the older pre-login checks instead of receiving a final authenticated readiness snapshot.
+7. **[MED] Configuration drift is executable.** CORS settings are ignored by middleware, `.env.example` disables microservices while supported supervisor runtime enables them, and README lists Redis/NATS as current components despite no runtime implementation.
+8. **[MED] Central orchestration concentration is excessive.** `MemoryStore` contains persistence, state, simulation, rules, command lifecycle, part flow, replay, reports, and preflight. The immediate architecture change will extract preflight into a side-effect-free service; larger primary-read migration remains a separately testable v2.5 boundary.
+
+## Remediation Evidence Before Live Runtime (2026-07-10)
+- Extracted startup validation into `app/preflight_service.py`. It reads runtime evidence without advancing simulation, creating alerts, or calling an AI provider before login.
+- `MemoryStore.production_node_readiness()` now requires every configured production node to be registered, fresh within the heartbeat timeout, and in an available state. Logical cloud/control nodes cannot satisfy this check.
+- Login now returns a refreshed authenticated preflight payload after vault unlock and AI smoke testing; dashboard startup state can therefore reflect post-login reality.
+- `ProviderRegistry.diagnose_with_provenance()` records the provider that actually served each diagnosis. AI chat, shortcut, and diagnosis routes now distinguish live API from rule fallback and report the serving provider/model instead of assuming DeepSeek.
+- CORS middleware now consumes `settings.cors_origins`; `.env.example` defaults to microservices plus PostgreSQL and documents SQLite as edge/test fallback.
+- The canonical verification script now loads the local tool environment and covers central-api, Python simulator, Go node-agent, Go supervisor, AI dispatcher, CLI/workflow scripts, dashboard tests, and dashboard production build.
+- Serial full verification passed: central-api 107, Python simulator 22, AI dispatcher 4, CLI/workflow 30 plus 9 subtests, dashboard 60, both Go modules, API contract, login gate, secret scan, and production build.
+
+## v2.5 Contract Re-Audit (2026-07-13)
+- The Safety Governor existed but node-management routes could call Store mutations without carrying an approved decision. Store now rejects direct high-risk mutations unless the decision matches action, target, and actor; emergency automatic isolation is restricted to `safety_automation` in `emergency_containment` mode.
+- Safety denials were returned to clients but not consistently audited. Every route-level safety review now records allowed/denied decisions and machine-readable reason codes before execution.
+- PostgreSQL projection refresh previously swallowed individual loader failures and durable write failures only produced warning logs. Projection loads now fail closed into `stale_cache`, and write failures keep persistence/snapshot status degraded instead of claiming healthy primary facts.
+- Replay was database-backed and read-only in implementation, but its API/UI did not explicitly identify replay data. Responses now expose `data_source=replay` and `read_only=true`; an integration test snapshots live heartbeats, commands, parts, and alerts and proves replay leaves them unchanged.
+- Formal `runs` and `scenarios` tables had been added, but replay still discovered runs only by grouping heartbeat rows. Replay now prefers formal run entities and keeps an explicit heartbeat fallback for legacy rows.
+- The supervisor gave all three nodes one `run_id` while assigning three different scenario IDs and random seeds. Because `runs.run_id` is unique, successive heartbeats overwrote run identity. The runtime now uses one factory-level scenario and master seed, and central-api rejects conflicting run/scenario/seed identities before state mutation.
+- Kali attack-lab heartbeats had no `run_id`, `scenario_id`, or seed, so their alerts, AI decisions, and commands could not be isolated from normal runs. The workflow now emits a unique attack run, stable scenario seed, scripted engine provenance, and completed lifecycle state on recovery.
+- Remaining architectural concern: primary persistence SQL is still concentrated in `MemoryStore`; v2.5.2 is not complete until the repository/transaction boundary and migration rollback evidence are finalized.
+# Final full-system findings - 2026-07-13
+
+- PostgreSQL already stored `run_id` for alerts and part queue, but the domain models dropped it. This allowed historical open alerts to enter new live snapshots and allowed target-node residue to misclassify WIP. Domain ownership, restoration and operational filters now agree.
+- Incident events also needed run identity. Events without a node heartbeat inherit the current system run so central/manual workflow facts remain replayable without weakening live filters.
+- The Dashboard audit client consumed the paginated unified event response as an array. A contract normalizer now supports both pagination and legacy arrays and prevents `undefined` archive metrics.
+- Command creation had two event writers. Store/Command Manager is now the single event owner and transaction boundary.
+- Live browser truth after fixes: 3/3 nodes, 0 active faults, 0 warnings, 0 stale popups, current-run WIP only, DeepSeek API verified, formal replay read-only.
+- The accepted v2.5 architecture is local multi-process, PostgreSQL-primary and HTTP-connected. NATS, Redis, separate edge hosts and a registered Kali VM are not current implementation claims.

@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Response
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -9,10 +11,12 @@ from ..core.security import (
     ActorInfo,
     require_permission,
 )
-from ..models import MetricIn, Severity
+from ..models import MetricIn
+from ..safety_governor import safety_governor
 from ..store import store
 
 router = APIRouter(tags=["nodes"])
+logger = logging.getLogger(__name__)
 
 
 class NodeHeartbeatIn(BaseModel):
@@ -75,6 +79,11 @@ class NodeRecordSyncIn(BaseModel):
     records: list[NodeRecordIn] = Field(default_factory=list, max_length=100)
 
 
+class NodeSafetyActionIn(BaseModel):
+    confirmation_code: str = ""
+    run_mode: str = "normal"
+
+
 @router.get("/nodes")
 def list_nodes():
     return list(store.nodes.values())
@@ -91,9 +100,29 @@ def ingest_metric(metric: MetricIn):
     return {"accepted": True, "generated_alerts": alerts}
 
 
+def ingest_agent_heartbeat(node_code: str, heartbeat: NodeHeartbeatV2In):
+    if heartbeat.node_code != node_code:
+        raise HTTPException(status_code=400, detail="node_code mismatch")
+    try:
+        result = store.record_node_heartbeat_v2(heartbeat.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"ok": True, **result}
+
+
+@router.post("/agents/{node_code}/heartbeat")
+def agent_heartbeat_v2(node_code: str, heartbeat: NodeHeartbeatV2In):
+    return ingest_agent_heartbeat(node_code, heartbeat)
+
+
 @router.post("/node-heartbeats")
-def node_heartbeat_v2(heartbeat: NodeHeartbeatV2In):
-    return {"ok": True, **store.record_node_heartbeat_v2(heartbeat.model_dump(exclude_none=True))}
+def node_heartbeat_v2(heartbeat: NodeHeartbeatV2In, response: Response):
+    logger.warning("deprecated_api path=/node-heartbeats replacement=/agents/{node_code}/heartbeat node=%s", heartbeat.node_code)
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f'</agents/{heartbeat.node_code}/heartbeat>; rel="successor-version"'
+    return ingest_agent_heartbeat(heartbeat.node_code, heartbeat)
 
 
 @router.get("/node-dispatches/{node_code}")
@@ -153,12 +182,6 @@ def create_agent_command(node_code: str, payload: AgentCommandCreateIn):
         payload.operator,
         parameters={"target_rate": payload.target_rate},
     )
-    store.add_event(
-        node_code,
-        "command-created",
-        Severity.info,
-        f"低风险命令 #{command.id} 已创建：set_target_rate={payload.target_rate}",
-    )
     return command
 
 
@@ -204,24 +227,72 @@ def list_topology():
 
 
 @router.post("/nodes/{node_code}/isolate")
-def isolate_node(node_code: str, actor: ActorInfo = Depends(require_permission(PERM_NODE_ISOLATE))):
+def isolate_node(
+    node_code: str,
+    payload: NodeSafetyActionIn,
+    actor: ActorInfo = Depends(require_permission(PERM_NODE_ISOLATE)),
+):
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
-    return store.isolate_node(node_code, actor.role)
+    decision = safety_governor.review_control_action(
+        action="isolate_node",
+        target_node=node_code,
+        risk_level="high",
+        actor_role=actor.role,
+        known_nodes=set(store.nodes),
+        confirmation_code=payload.confirmation_code,
+        run_mode=payload.run_mode,
+    )
+    store.record_safety_decision(decision)
+    if not decision.allow:
+        raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
+    return store.isolate_node(node_code, actor.role, decision)
 
 
 @router.post("/nodes/{node_code}/restore")
-def restore_node(node_code: str, actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE))):
+def restore_node(
+    node_code: str,
+    payload: NodeSafetyActionIn,
+    actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE)),
+):
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
-    return store.restore_node(node_code, actor.role)
+    decision = safety_governor.review_control_action(
+        action="restore_node",
+        target_node=node_code,
+        risk_level="high",
+        actor_role=actor.role,
+        known_nodes=set(store.nodes),
+        confirmation_code=payload.confirmation_code,
+        run_mode=payload.run_mode,
+    )
+    store.record_safety_decision(decision)
+    if not decision.allow:
+        raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
+    return store.restore_node(node_code, actor.role, decision)
 
 
 @router.post("/nodes/{node_code}/retire")
-def retire_node(node_code: str, actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE))):
+def retire_node(
+    node_code: str,
+    payload: NodeSafetyActionIn,
+    actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE)),
+):
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     try:
-        return store.retire_node(node_code, actor.role)
+        decision = safety_governor.review_control_action(
+            action="retire_node",
+            target_node=node_code,
+            risk_level="high",
+            actor_role=actor.role,
+            known_nodes=set(store.nodes),
+            confirmation_code=payload.confirmation_code,
+            run_mode=payload.run_mode,
+        )
+        store.record_safety_decision(decision)
+        if not decision.allow:
+            raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
+        return store.retire_node(node_code, actor.role, decision)
     except KeyError:
         raise HTTPException(status_code=404, detail="node not found") from None

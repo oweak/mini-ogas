@@ -19,6 +19,7 @@ miniogas-token.txt
 node_modules/
 .runtime/
 .playwright-mcp/
+output/
 *.out.log
 *.err.log
 

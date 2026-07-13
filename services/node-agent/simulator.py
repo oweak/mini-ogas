@@ -13,6 +13,9 @@ from pathlib import Path
 
 import simpy
 
+from event_publishers import EventPublisher, HTTPPublisher
+from runtime_adapters import RuntimeAdapter, SimPyRuntimeAdapter, SimpleRuntimeAdapter
+
 
 @dataclass
 class MachineProfile:
@@ -325,6 +328,15 @@ def simulation_time_for_tick(tick: int) -> str:
     return (datetime.now(timezone.utc) + elapsed).isoformat()
 
 
+def create_runtime_adapter(engine: str | None = None) -> RuntimeAdapter:
+    selected = (engine or SIMULATION_ENGINE).strip().lower()
+    if selected == "simpy":
+        return SimPyRuntimeAdapter(simpy_machine_state, SIMULATION_RANDOM_SEED)
+    if selected == "simple":
+        return SimpleRuntimeAdapter(machine_state)
+    raise ValueError(f"unsupported SIMULATION_ENGINE={selected}")
+
+
 def production_flow_metrics(profile: MachineProfile, state: dict, tick: int) -> dict:
     target_rate = COMMAND_TARGET_RATE if COMMAND_TARGET_RATE is not None else 60.0 / profile.cycle_time_sec
     utilization = min(0.98, max(0.0, float(state["load"])))
@@ -344,24 +356,28 @@ def production_flow_metrics(profile: MachineProfile, state: dict, tick: int) -> 
     }
 
 
-def heartbeat_payload(profile: MachineProfile, tick: int) -> dict:
+def heartbeat_payload(
+    profile: MachineProfile,
+    tick: int,
+    *,
+    pending_records_override: int | None = None,
+    runtime_adapter: RuntimeAdapter | None = None,
+) -> dict:
     scenario_id = scenario_id_for(profile)
-    if SIMULATION_ENGINE == "simpy":
-        state = simpy_machine_state(
-            profile,
-            tick,
-            random_seed=SIMULATION_RANDOM_SEED,
-            scenario_id=scenario_id,
-        )
-    else:
-        state = machine_state(profile, tick)
+    runtime = runtime_adapter or create_runtime_adapter()
+    state = runtime.build_state(profile, tick, scenario_id)
     now = datetime.now(timezone.utc).isoformat()
     db_latency = 8 + int(state["load"] * 12) + (18 if state["status"] == "fault" else 0)
-    pending_records = 0
+    simulated_pending_records = 0
     if state["sync_pressure"]:
-        pending_records = 3 + (tick % 5)
+        simulated_pending_records = 3 + (tick % 5)
     elif state["status"] == "fault":
-        pending_records = min(12, 6 + (tick % 7))
+        simulated_pending_records = min(12, 6 + (tick % 7))
+    reported_pending_records = (
+        max(0, int(pending_records_override))
+        if pending_records_override is not None
+        else simulated_pending_records
+    )
     active_order = ACTIVE_PART.get("order_id") or ACTIVE_DISPATCH.get("active_order", "WO-20260530-004")
 
     return {
@@ -374,7 +390,7 @@ def heartbeat_payload(profile: MachineProfile, tick: int) -> dict:
         "runtime": {
             "deployment_mode": NODE_DEPLOYMENT_MODE,
             "simulation_mode": SIMULATION_MODE,
-            "simulation_engine": SIMULATION_ENGINE,
+            "simulation_engine": runtime.name,
             "host": gethostname(),
             "pid": os.getpid(),
             "heartbeat_sec": HEARTBEAT_SEC,
@@ -382,13 +398,14 @@ def heartbeat_payload(profile: MachineProfile, tick: int) -> dict:
             "scenario_id": scenario_id,
             "simulation_time": simulation_time_for_tick(tick),
             "simulation_speed": SIMULATION_SPEED,
+            "random_seed": SIMULATION_RANDOM_SEED,
             "runtime_source": "node-agent",
         },
         "metrics": {
             "cpu_usage": round(24 + state["load"] * 42 + random.uniform(-2, 2), 2),
             "memory_usage": round(48 + state["load"] * 20 + random.uniform(-1, 1), 2),
             "disk_usage": 64.2,
-            "network_latency_ms": 35 + pending_records * 3,
+            "network_latency_ms": 35 + simulated_pending_records * 3,
             "db_latency_ms": db_latency,
         },
         "production": {
@@ -406,7 +423,7 @@ def heartbeat_payload(profile: MachineProfile, tick: int) -> dict:
         "alarms": state["alarms"],
         "sync": {
             "last_sync_id": tick,
-            "pending_records": pending_records,
+            "pending_records": reported_pending_records,
         },
     }
 
@@ -476,16 +493,9 @@ def mark_records_synced(conn: sqlite3.Connection, record_ids: list[int], request
     conn.commit()
 
 
-def send_heartbeat(payload: dict) -> dict:
-    request, request_id = build_json_request("/api/node-heartbeats", payload)
-    try:
-        with urllib.request.urlopen(request, timeout=3) as response:
-            ok = 200 <= response.status < 300
-            return {"synced": ok, "request_id": request_id, "http_status": response.status, "error": ""}
-    except urllib.error.HTTPError as error:
-        return {"synced": False, "request_id": request_id, "http_status": error.code, "error": str(error)}
-    except (urllib.error.URLError, TimeoutError) as error:
-        return {"synced": False, "request_id": request_id, "http_status": 0, "error": str(error)}
+def send_heartbeat(payload: dict, publisher: EventPublisher | None = None) -> dict:
+    active_publisher = publisher or HTTPPublisher(CENTRAL_API_URL, OGAS_API_TOKEN)
+    return active_publisher.publish_heartbeat(payload)
 
 
 def sync_pending_records(conn: sqlite3.Connection, limit: int = 20) -> dict:
@@ -685,6 +695,8 @@ def main() -> None:
         log_event("error", "startup_failed", errors=startup_errors)
         raise SystemExit(2)
     profile = PROFILES.get(WORKSHOP_TYPE, PROFILES["milling"])
+    runtime_adapter = create_runtime_adapter()
+    event_publisher: EventPublisher = HTTPPublisher(CENTRAL_API_URL, OGAS_API_TOKEN)
     conn = connect_db()
     tick = 0
     log_event(
@@ -702,8 +714,13 @@ def main() -> None:
             fetch_dispatch()
             poll_agent_commands()
             poll_part_queue(tick)
-        payload = heartbeat_payload(profile, tick)
-        result = send_heartbeat(payload)
+        payload = heartbeat_payload(
+            profile,
+            tick,
+            pending_records_override=pending_record_count(conn),
+            runtime_adapter=runtime_adapter,
+        )
+        result = send_heartbeat(payload, event_publisher)
         store_heartbeat(conn, payload, result)
         sync_result = {"count": 0}
         if result.get("synced"):

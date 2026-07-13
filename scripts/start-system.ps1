@@ -7,7 +7,9 @@ param(
   [string]$SessionToken = "",
   [switch]$CheckOnly,
   [switch]$RequireAiApi,
-  [switch]$StartKali
+  [switch]$StartKali,
+  [ValidateSet("postgresql", "memory")]
+  [string]$FactSource = "postgresql"
 )
 
 $ErrorActionPreference = "Stop"
@@ -77,6 +79,7 @@ if ($CheckOnly -and (Test-Path -LiteralPath $SessionTokenPath)) {
   Set-Content -LiteralPath $SessionTokenPath -Value $LaunchSessionToken -Encoding ASCII
 }
 $env:OGAS_SESSION_TOKEN = $LaunchSessionToken
+$env:CENTRAL_FACT_SOURCE = $FactSource
 
 function Test-PortListening {
   param([int]$Port)
@@ -231,6 +234,7 @@ $apiCommand = @"
 `$env:OGAS_SESSION_TOKEN = '$LaunchSessionToken'
 `$env:PERSIST_ENABLED = 'true'
 `$env:PERSIST_BACKEND = 'postgres'
+`$env:CENTRAL_FACT_SOURCE = '$FactSource'
 `$env:POSTGRES_DSN = '$PostgresDsn'
 `$env:MICROSERVICES_ENABLED = 'true'
 `$env:JWT_SECRET = '$($authConfig.jwt_secret)'

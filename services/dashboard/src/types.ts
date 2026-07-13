@@ -326,6 +326,7 @@ export type DashboardSnapshotAlert = {
   detail: string
   status?: string
   actions?: string[]
+  run_id?: string
 }
 
 export type RuleEvidence = {
@@ -416,11 +417,17 @@ export type ReplayRunSummary = {
   started_at: string
   ended_at: string
   latest_simulation_time?: string | null
+  status?: string
+  random_seed?: number
+  formal_entity?: boolean
 }
 
 export type ReplayRunsResponse = {
   status: string
   backend?: string
+  data_source?: 'replay' | string
+  read_only?: boolean
+  source?: string
   runs: ReplayRunSummary[]
   sampled_heartbeat_rows?: number
   reason?: string
@@ -439,6 +446,8 @@ export type ReplayTimelineItem = {
 export type ReplayRunDetail = {
   status: string
   backend?: string
+  data_source?: 'replay' | string
+  read_only?: boolean
   run_id: string
   scenario_ids: string[]
   node_codes: string[]

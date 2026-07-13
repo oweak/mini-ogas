@@ -132,6 +132,7 @@ class DispatchTask(BaseModel):
 
 class PartQueueItem(BaseModel):
     part_id: str
+    run_id: str = ""
     parent_part_id: str = ""
     order_id: str
     product_code: str = ""
@@ -187,10 +188,12 @@ class AllocationOrder(BaseModel):
 
 class Alert(BaseModel):
     id: int
+    run_id: str = ""
     node_code: str
     alert_type: str
     severity: Severity
     description: str
+    source: str = "central-api"
     handled_by: str | None = None
     status: str = "open"
     created_at: datetime = Field(default_factory=utc_now)
@@ -226,6 +229,7 @@ class IncidentEvent(BaseModel):
     stage: str
     severity: Severity
     message: str
+    run_id: str = ""
     created_at: datetime = Field(default_factory=utc_now)
 
 
@@ -293,6 +297,8 @@ class AiChatResponse(BaseModel):
     status: str
     model: str
     answer: str
+    provider: str = "rule_fallback"
+    source: str = "rule_fallback"
 
 
 class AiShortcut(BaseModel):
@@ -359,6 +365,8 @@ class ControlCommandResponse(BaseModel):
     accepted: bool
     executed: bool
     used_deepseek: bool
+    provider: str = "rule_engine"
+    source: str = "rule_engine"
     status: str
     plan: ControlCommandPlan
     result: dict[str, object] | None = None
@@ -447,6 +455,7 @@ class SimulationState(BaseModel):
 
 class DemoScenario(BaseModel):
     scenario: str = Field(pattern="^(normal|common_fault|complex_fault|market_shift|hostile_attack)$")
+    confirmation_code: str = ""
 
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 import type {
+  AuditEvent,
   DashboardSnapshot,
   EventLog,
   HostNode,
@@ -12,6 +13,41 @@ import type {
 export type FetchSlot<T> = {
   ok: boolean
   data?: T
+}
+
+export function normalizeAuditEvents(payload: unknown): AuditEvent[] {
+  const rows = Array.isArray(payload)
+    ? payload
+    : (payload && typeof payload === 'object' && Array.isArray((payload as { events?: unknown[] }).events)
+        ? (payload as { events: unknown[] }).events
+        : [])
+
+  return rows
+    .filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object'))
+    .map((row) => {
+      if (typeof row.time === 'string' && typeof row.permission === 'string') {
+        return row as AuditEvent
+      }
+      const timestamp = String(row.timestamp ?? '')
+      const detail = row.detail && typeof row.detail === 'object'
+        ? row.detail as Record<string, unknown>
+        : undefined
+      return {
+        id: String(row.id ?? ''),
+        time: timestamp ? timestamp.replace('T', ' ').slice(0, 19) : '',
+        actor: String(row.actor ?? 'system'),
+        role: String(row.source_type ?? 'system'),
+        permission: String(row.action ?? 'audit:read'),
+        subject: String(row.message ?? `${row.resource_type ?? 'event'} ${row.resource_id ?? ''}`).trim(),
+        action: String(row.action ?? ''),
+        result: String(row.result ?? 'recorded'),
+        status: String(row.result ?? 'recorded'),
+        node_code: String(row.node_code ?? ''),
+        severity: String(row.severity ?? 'info'),
+        source: String(row.source_type ?? 'audit'),
+        effect: detail
+      }
+    })
 }
 
 export type JsonResponseLike<T> = {
@@ -132,6 +168,26 @@ export function dashboardSnapshotToState(snapshot: DashboardSnapshot): RuntimeDa
     dispatch_plan: snapshot.dispatch_plan,
     snapshot
   }
+}
+
+const terminalIssueStatuses = new Set(['closed', 'resolved', 'archived', 'acknowledged'])
+
+export function activeDashboardIssues(state: RuntimeDashboardState): DashboardSnapshot['alerts'] {
+  const currentRunId = state.snapshot?.run.run_id ?? ''
+  const activeAlerts = (state.issues ?? []).filter((issue) =>
+    !terminalIssueStatuses.has(String(issue.status ?? '').toLowerCase())
+  )
+  const pendingNotifications = (state.notifications ?? []).filter((notification) => {
+    if (terminalIssueStatuses.has(String(notification.status ?? '').toLowerCase())) return false
+    return !currentRunId || !notification.run_id || notification.run_id === currentRunId
+  })
+
+  const seen = new Set<string>()
+  return [...activeAlerts, ...pendingNotifications].filter((issue) => {
+    if (seen.has(issue.id)) return false
+    seen.add(issue.id)
+    return true
+  })
 }
 
 export function snapshotSummary(snapshot: DashboardSnapshot | null): SnapshotSummary | null {

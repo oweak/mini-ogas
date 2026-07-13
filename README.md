@@ -14,14 +14,15 @@ machining factory with turning, milling, and grinding workshops.
 - Simulate market demand changes and adjust production plans.
 - Demonstrate authentication, RBAC, resource permissions, and audit logs.
 
-## Suggested Deployment
+## Current Deployment
 
-- Central node: Lenovo Legion Y7000P 2023 laptop.
-- Child nodes: low-end cloud servers, 2 cores and 4 GB RAM each.
-- Workshop nodes:
-  - `turning-workshop`
-  - `milling-workshop`
-  - `grinding-workshop`
+- Central host: one Windows workstation running the Go supervisor.
+- Central facts: PostgreSQL primary database.
+- Workshop nodes: three supervised SimPy processes (`turning`, `milling`, `grinding`).
+- Transport: authenticated HTTP heartbeat, command polling and REST management.
+- Optional attack lab: prepared Kali disk/tooling, not a production availability dependency.
+
+Separate edge hosts, NATS transport and a registered Kali lab belong to the v3.0 roadmap and are not current runtime claims.
 
 ## Architecture
 
@@ -32,9 +33,8 @@ central-control
 |-- ai-dispatcher
 |-- market-simulator
 |-- production-planner
-|-- postgres
-|-- redis
-`-- nats
+|-- postgres (primary facts)
+`-- go-supervisor
 
 workshop-node
 |-- node-agent
@@ -75,17 +75,17 @@ mini-ogas/
 `-- README.md
 ```
 
-## Recommended Technology
+## Implemented Technology
 
-- Dashboard: Vue 3 + TypeScript + ECharts.
-- Central API: Go or Python FastAPI.
-- Node agent: Go.
-- AI dispatcher: Python FastAPI.
-- Message bus: NATS.
+- Dashboard: Vue 3 + TypeScript + Vite.
+- Central API: Python FastAPI.
+- Runtime supervisor: Go.
+- Node runtime: Python SimPy, with a Go node-agent implementation and tests.
+- AI dispatcher: Python FastAPI with provider-chain fallback.
 - Central database: PostgreSQL.
-- Node database: SQLite.
-- Cache and short-lived state: Redis.
-- Deployment: Docker Compose.
+- Node/local test database: SQLite.
+- Current event transport: HTTP via `EventPublisher` / `HTTPPublisher`.
+- Future transport option: NATS behind the publisher interface; not deployed.
 
 ## Current Verification
 

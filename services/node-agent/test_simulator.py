@@ -12,6 +12,8 @@ os.environ.setdefault("OGAS_API_TOKEN", "node-agent-test-token")
 os.environ.setdefault("LOCAL_DB_PATH", str(Path(tempfile.gettempdir()) / "miniogas-node-agent-test.db"))
 
 import simulator
+from event_publishers import EventPublisher, HTTPPublisher
+from runtime_adapters import RuntimeAdapter, SimPyRuntimeAdapter, SimpleRuntimeAdapter
 
 
 class FakeResponse:
@@ -29,6 +31,68 @@ class FakeResponse:
 
 
 class NodeAgentTests(unittest.TestCase):
+    def test_heartbeat_reports_actual_local_backlog_without_faking_latency(self) -> None:
+        profile = simulator.PROFILES["milling"]
+
+        payload = simulator.heartbeat_payload(profile, 1, pending_records_override=2400)
+
+        self.assertEqual(payload["sync"]["pending_records"], 2400)
+        self.assertLess(payload["metrics"]["network_latency_ms"], 500)
+
+    def test_runtime_adapter_controls_heartbeat_state(self) -> None:
+        class StubRuntime(RuntimeAdapter):
+            name = "stub-runtime"
+
+            def build_state(self, profile, tick, scenario_id):
+                return {
+                    "status": "running",
+                    "finished_quantity": 9,
+                    "defect_quantity": 1,
+                    "tool_wear_level": 21.0,
+                    "spindle_temp": 61.0,
+                    "load": 0.5,
+                    "defect_rate": 1 / 9,
+                    "alarms": [],
+                    "sync_pressure": False,
+                }
+
+        payload = simulator.heartbeat_payload(
+            simulator.PROFILES["milling"],
+            3,
+            runtime_adapter=StubRuntime(),
+        )
+
+        self.assertEqual(payload["production"]["finished_quantity"], 9)
+        self.assertEqual(payload["runtime"]["simulation_engine"], "stub-runtime")
+
+    def test_runtime_adapter_factory_selects_simple_and_simpy(self) -> None:
+        self.assertIsInstance(simulator.create_runtime_adapter("simple"), SimpleRuntimeAdapter)
+        self.assertIsInstance(simulator.create_runtime_adapter("simpy"), SimPyRuntimeAdapter)
+
+    def test_http_publisher_implements_event_publisher_contract(self) -> None:
+        captured = {}
+
+        def fake_urlopen(request, timeout):
+            captured["url"] = request.full_url
+            captured["token"] = request.headers["X-ogas-token"]
+            captured["timeout"] = timeout
+            return FakeResponse()
+
+        publisher: EventPublisher = HTTPPublisher("http://central.test:8080", "node-token")
+        with patch("urllib.request.urlopen", fake_urlopen):
+            result = publisher.publish_heartbeat({"node_code": "turning-workshop-01"})
+
+        self.assertTrue(result["synced"])
+        self.assertEqual(result["http_status"], 202)
+        self.assertEqual(
+            captured,
+            {
+                "url": "http://central.test:8080/api/agents/turning-workshop-01/heartbeat",
+                "token": "node-token",
+                "timeout": 3,
+            },
+        )
+
     def test_parse_positive_int_rejects_invalid_values(self) -> None:
         with patch.dict(simulator.os.environ, {"BAD_INT": "abc", "ZERO_INT": "0"}):
             with self.assertRaises(ValueError):
@@ -456,6 +520,7 @@ class NodeAgentTests(unittest.TestCase):
 
         self.assertEqual(payload["runtime"]["simulation_engine"], "simpy")
         self.assertEqual(payload["runtime"]["scenario_id"], "SCN-MILLING-COOLANT-LOW-001")
+        self.assertEqual(payload["runtime"]["random_seed"], 99)
         self.assertIn("run_id", payload["runtime"])
         self.assertIn("actual_rate", payload["production"])
         self.assertEqual(payload["alarms"][0]["type"], "COOLANT_FLOW_LOW")

@@ -121,7 +121,7 @@ v2.2 建议引入但不强制 v1 节点提供：
 
 ## 8. 权限兼容
 
-当前系统使用 `actor` / `operator` 字段判断主管权限。v2.2 不改变该机制。
+当前系统使用 JWT + RBAC 判断权限。`actor` / `operator` 字段只保留为审计显示和旧客户端兼容信息，不能单独授予权限。旧机器 token 仅可通过显式兼容开关启用，生产默认关闭。
 
 高风险接口继续要求：
 
@@ -180,3 +180,23 @@ v2.2 建议引入但不强制 v1 节点提供：
 3. 心跳 v1/v2 兼容策略明确。
 4. 权限和错误响应基线明确。
 5. 每个临时兼容层有退出条件。
+
+## 12. v2.5 落实状态（2026-07-13）
+
+| 接口 | 当前角色 | 状态 |
+| --- | --- | --- |
+| `POST /api/agents/{node_code}/heartbeat` | canonical agent ingestion | 主路径，接收 Heartbeat v2。 |
+| `POST /api/node-heartbeats` | legacy heartbeat | 兼容 wrapper，带 deprecation header/log。 |
+| `GET /api/dashboard/snapshot` | Dashboard fact contract | 主路径，PostgreSQL projection 支撑。 |
+| `GET /api/dashboard-state` | legacy dashboard contract | snapshot 反向适配 wrapper。 |
+| `GET /api/audit/events` | unified audit timeline | 分页 `{total, limit, offset, events}`；Dashboard 已做契约归一化。 |
+| `GET /api/replay/runs` | formal run list | PostgreSQL-backed read-only replay。 |
+| `GET /api/replay/runs/{run_id}` | formal run detail | `data_source=replay`、`read_only=true`。 |
+
+落实证据：
+
+1. API contract checker 通过，前端 24 条 API 调用均有后端路由。
+2. Dashboard 核心运行事实不再依赖 `dashboard-state`。
+3. 旧 heartbeat 与 dashboard 接口仍通过兼容测试。
+4. canonical heartbeat、snapshot、wrapper parity、JWT/RBAC、replay 和 current-run 隔离测试均通过。
+5. 下一次破坏性退役必须进入 v3 API 版本，不在 v2.5 直接删除 wrapper。

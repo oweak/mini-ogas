@@ -1,64 +1,52 @@
 # Mini-OGAS System Issues
 
-> Report time: 2026-07-03
+Report time: 2026-07-13
 
-## Executive Summary
+## Current Result
 
-The original first-phase blockers have been addressed. The system now has a working v2.2 trusted loop:
+No open P0/P1 issue remains inside the accepted v2.2/v2.5 local-runtime scope. This statement is backed by automated tests, a clean supervised restart, live PostgreSQL/AI/node verification and browser inspection.
 
-1. central-api validates fresh runtime processes.
-2. Production nodes send heartbeat v2 payloads.
-3. `/api/dashboard/snapshot` exposes backend runtime facts to the dashboard.
-4. AI provider-chain fallback is implemented.
-5. PostgreSQL is the configured central persistence target.
-6. Runtime logs are written to `.runtime/logs`.
-7. A structured production report endpoint and dashboard report viewer exist.
-8. The v2.5 local runtime now starts through the Go supervisor by default.
-9. PostgreSQL replay-readiness is exposed in persistence status and production reports.
-10. Run-level replay endpoints now rebuild persisted heartbeat, command, part queue, audit, alert, and AI diagnosis timelines by `run_id`.
-11. Dashboard `运行回放` exposes those database-backed replay timelines to administrators.
-12. A scripted PostgreSQL restart drill now proves replay readiness after supervisor restart.
-13. Heartbeat shadow data now has a bounded per-node retention policy.
-14. The Kali red-team workflow is now explicitly lab-only, authenticated, evidence-producing, and approval-gated for high-risk actions.
-15. Production reports can be exported from protected backend endpoints and downloaded from the dashboard.
-16. Command lifecycle transitions now live in a v2.5 Command Manager module with idempotent result handling, claim timeout, supersede, approval, rejection, and heartbeat verification.
-17. High-risk commands and human approvals now pass through a v2.5 Safety Governor with shared confirmation-code and control-plane protection rules.
-18. AI live-provider smoke now succeeds through the DeepSeek vault, and local fallback availability is checked at model/server level.
+## Defects Found During The Final Audit
 
-No active first-phase or v2.5 blocker is currently tracked in this file. The next work should be selected from the v2.5/v3.0 roadmap.
+| Severity | Finding | Root cause | Fix and proof |
+| --- | --- | --- | --- |
+| P0 | Top summary showed zero faults while ten old warning popups appeared. | PostgreSQL restored historical `open` alerts, but `Alert` did not retain its SQL `run_id`. | Domain model and operational queries now enforce current-run alerts; browser shows 0 summary / 0 popups. |
+| P0 | WIP could be persisted or claimed under a stale target-node run. | SQL had `run_id`, but `PartQueueItem` inferred it dynamically from target heartbeat. | WIP owns immutable run identity and downstream inheritance; replay test and current-run claim filters pass. |
+| P1 | Completed-result notifications could cross run boundaries. | Incident events had no domain-level run identity. | Events persist/restore `run_id`; unbound central events inherit current system run; workflow notification check passes. |
+| P1 | Log archive card rendered `undefined 条归档`. | Frontend expected an array while `/api/audit/events` returns `{total, events}`. | Response normalization added; malformed response test, build and browser check pass. |
+| P1 | Duplicate command-created audit entries. | Route and Store both emitted the event. | Route duplicate removed; Store transaction is the single owner. |
+| P1 | Same run could be fed by mismatched scenario/seed data. | Supervisor/node defaults were independently configured. | Shared scenario/seed plus pre-mutation identity rejection tests. |
+| P1 | Some AI outputs could expose configured rather than actual provider labels. | Provenance was assembled outside provider result. | Actual provider/model/source now travels with the result; API/fallback tests pass. |
+| P1 | Safety checks were inconsistent across high-risk routes. | Policy lived partly in handlers. | Safety Governor now gates all supported high-risk entry points and audits denial codes. |
 
-## Resolved Historical Issues
+## Verified Non-Issues
 
-| Historical issue | Current state |
-| --- | --- |
-| No reliable launcher | Resolved for local operation by `scripts/start-miniogas.ps1`, which defaults to the Go supervisor and can fall back to the legacy script launcher when requested. |
-| Preflight accepted stale processes | Resolved. Health includes session token, process ID, and process start time. |
-| AI depended on one DeepSeek path only | Resolved. Provider-chain fallback exists in central-api and ai-dispatcher. |
-| Dashboard showed `0/3 online` while API had 5 nodes | Resolved. Frontend counts actual host nodes. |
-| VirtualBox confused production status | Resolved for production UI. Remaining VirtualBox references are optional Kali/red-team lab support or old design documents. |
-| Missing dashboard-state rich fields | Resolved. Snapshot and dashboard-state expose production, metrics, alarms, sync, work orders, dispatch, and rule facts. |
-| Root runtime logs | Resolved. Startup scripts now write to `.runtime/logs`, and existing root logs were moved. |
-| Missing production report API | Resolved. `/api/reports/production` aggregates operational report data. |
-| Missing run-level replay API | Resolved. `/api/replay/runs` and `/api/replay/runs/{run_id}` expose persisted operational replay data instead of only replay-readiness status. |
-| Missing run-level replay UI | Resolved. Dashboard `运行回放` renders persisted run batches and event timelines through the protected API client. |
-| Missing production report viewer | Resolved. Dashboard `生产报告` renders live report data from the protected report API. |
-| node-agent DB metric looked real while estimated | Resolved. Legacy node agent reports `db_size_source` as `local_file` or `estimated`. |
-| Kali red-team path blurred production status | Resolved. The workflow no longer contributes production availability truth, requires explicit lab acknowledgement, rejects public targets by default, uses bearer auth for protected operations, and stops high-risk AI decisions at human approval unless explicitly overridden for a lab run. |
-| Missing report export | Resolved. `/api/reports/production/export` supports JSON, Markdown, and CSV, and the dashboard report view exposes authenticated Markdown/CSV downloads. |
-| Command lifecycle spread across Store | Resolved for initial v2.5. `CommandManager` now owns deterministic transitions; Store performs persistence and incident-event side effects. |
-| High-risk action policy spread across routes | Resolved for initial v2.5. `SafetyGovernor` now owns confirmation-code enforcement and production-control-plane isolation denial for control commands, operations commands, dispatch approval, and escalation approval. |
-| AI live-provider smoke failing | Resolved. The 2026-07-03 supervised login smoke reports `source=api`, provider `deepseek`, and model `deepseek-v4-pro`; Ollama fallback verifies the selected `deepseek-r1:7b-local` model, and LM Studio no longer reports available when its server is stopped. |
+- Production availability does not depend on VirtualBox.
+- The normal runtime uses PostgreSQL, not SQLite.
+- The frontend does receive backend heartbeat, alert, WIP, audit and run facts.
+- DeepSeek participation is real when login smoke says `source=api`; fallback is visibly separate.
+- Replay is database-backed and read-only.
+- Closed/acknowledged items leave live queues and remain in audit/replay.
 
-## Current Issues
+## Residual Risks
 
-No active system issue is currently tracked in this file.
+These are accepted boundaries or v3.0 work, not silently completed features:
+
+1. All production processes currently share one physical Windows host.
+2. HTTP is the node event transport; NATS is not deployed.
+3. PostgreSQL is a single local central instance without HA/SLO claims.
+4. DeepSeek availability and response latency depend on an external provider.
+5. The prepared Kali VM is not registered; attack scripts must not target public or non-lab systems.
+6. `MemoryStore` remains a large projection/orchestration object, although key persistence, command, safety and preflight logic now have module boundaries.
+7. Ruff is optional and was not installed during this acceptance run; all mandatory test/build gates passed.
 
 ## Verification Commands
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\check-runtime-status.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\verify-miniogas.ps1 -RequireAiUnlocked
-python -m pytest services/central-api/tests
-python -m pytest services/node-agent
-cd services/dashboard; npm test; npm run build
+.\scripts\start-miniogas.ps1 -ReplaceRunning -FactSource postgresql
+.\scripts\verify-miniogas.ps1 -RequireAiUnlocked
+& '.\services\central-api\.venv\Scripts\python.exe' '.\scripts\check_runtime_workflow.py'
+.\scripts\check-runtime-status.ps1
 ```
+
+See `docs/full-system-audit-and-optimization-2026-07-13.md` for the complete architecture and evidence report.

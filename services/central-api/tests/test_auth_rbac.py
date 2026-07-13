@@ -67,7 +67,7 @@ def test_node_retire_is_admin_bearer_operation_not_node_ingest(monkeypatch) -> N
         )
         retired = client.post(
             f"/nodes/{node_code}/retire",
-            json={"actor": "pytest"},
+            json={"actor": "pytest", "confirmation_code": "CONFIRM"},
             headers={"Authorization": f"Bearer {login.json()['access_token']}"},
         )
 
@@ -111,7 +111,11 @@ def test_high_risk_alert_human_approval_closes_active_queues(monkeypatch) -> Non
         )
         active_alerts = client.get("/alerts", headers=auth).json()
         active_queue = client.get("/ops/escalations", headers=auth).json()
-        client.post(f"/nodes/{node_code}/retire", json={"actor": "pytest"}, headers=auth)
+        client.post(
+            f"/nodes/{node_code}/retire",
+            json={"actor": "pytest", "confirmation_code": "CONFIRM"},
+            headers=auth,
+        )
 
     assert heartbeat.status_code == 200
     assert confirmed.json()["lifecycle"]["status"] == "confirmed"
@@ -121,3 +125,50 @@ def test_high_risk_alert_human_approval_closes_active_queues(monkeypatch) -> Non
     assert approved.json()["effect"]["verification"]["issue_closed"] is True
     assert not any(item.get("issue_id") == issue_id for item in active_alerts)
     assert not any(item.get("issue_id") == issue_id for item in active_queue)
+
+
+def test_node_state_changes_cannot_bypass_safety_governor(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    node_code = "workflow-check-node-pytest-safety"
+    with TestClient(app) as client:
+        created = client.post(
+            "/node-heartbeats",
+            json={"node_code": node_code, "status": "running"},
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+        login = client.post("/auth/login", json={"operator": "admin", "password": "mini-ogas-dev-token"})
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        blocked_isolate = client.post(f"/nodes/{node_code}/isolate", json={}, headers=auth)
+        isolated = client.post(
+            f"/nodes/{node_code}/isolate",
+            json={"confirmation_code": "CONFIRM"},
+            headers=auth,
+        )
+        blocked_restore = client.post(f"/nodes/{node_code}/restore", json={}, headers=auth)
+        restored = client.post(
+            f"/nodes/{node_code}/restore",
+            json={"confirmation_code": "CONFIRM"},
+            headers=auth,
+        )
+        retired = client.post(
+            f"/nodes/{node_code}/retire",
+            json={"confirmation_code": "CONFIRM"},
+            headers=auth,
+        )
+
+    assert created.status_code == 200
+    assert blocked_isolate.status_code == 409
+    assert blocked_isolate.json()["detail"]["error"] == "confirmation_code_required"
+    assert any(
+        item.action == "safety:isolate_node"
+        and item.resource_id == node_code
+        and item.result == "denied:confirmation_code_required"
+        for item in store.audit_logs
+    )
+    assert isolated.status_code == 200
+    assert isolated.json()["status"] == "isolated"
+    assert blocked_restore.status_code == 409
+    assert restored.status_code == 200
+    assert restored.json()["status"] == "online"
+    assert retired.status_code == 200

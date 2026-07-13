@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
+. (Join-Path $PSScriptRoot "env.ps1")
 
 function Invoke-Step {
   param([string]$Name, [scriptblock]$Action)
@@ -23,13 +24,33 @@ try {
     Push-Location .\services\central-api
     try { python -m pytest -q } finally { Pop-Location }
   }
-  Invoke-Step "node-agent tests" {
+  Invoke-Step "Python simulator tests" {
     Push-Location .\services\node-agent
-    try { python .\test_simulator.py } finally { Pop-Location }
+    try { python -m pytest .\test_simulator.py -q } finally { Pop-Location }
+  }
+  Invoke-Step "Go node-agent tests" {
+    Push-Location .\services\node-agent
+    try { go test ./... } finally { Pop-Location }
+  }
+  Invoke-Step "Go supervisor tests" {
+    Push-Location .\services\supervisor
+    try { go test ./... } finally { Pop-Location }
+  }
+  Invoke-Step "AI dispatcher tests" {
+    Push-Location .\services\ai-dispatcher
+    try { python -m pytest .\tests -q } finally { Pop-Location }
+  }
+  Invoke-Step "CLI and workflow tests" {
+    python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py -q
   }
   Invoke-Step "dashboard tests and build" {
     Push-Location .\services\dashboard
     try { npm.cmd run test -- --run; npm.cmd run build } finally { Pop-Location }
+  }
+  if (Get-Command ruff -ErrorAction SilentlyContinue) {
+    Invoke-Step "Python lint" { ruff check .\services .\scripts .\tools }
+  } else {
+    Write-Host "==> Python lint skipped: install ruff to enable the optional local lint gate"
   }
   if (-not $SkipRuntime) {
     $runtimeArgs = @("-File", (Join-Path $ProjectRoot "scripts\start-system.ps1"), "-CheckOnly")

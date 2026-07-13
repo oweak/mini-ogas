@@ -89,25 +89,39 @@ def run_ai_shortcut(shortcut_id: str) -> AiChatResponse:
         },
         {"role": "user", "content": f"{shortcut.prompt}\n当前系统上下文：{context}"},
     ]
-    used_ai = registry.is_any_live_provider()
     try:
-        answer = registry.chat(messages)
-        return AiChatResponse(accepted=True, used_deepseek=used_ai, status="multi-backend" if used_ai else "rule-fallback",
-                              model=settings.deepseek_model, answer=answer)
+        answer, provider, _ = registry.chat_with_provenance(messages)
+        used_live_provider = provider != "rule_fallback"
+        return AiChatResponse(
+            accepted=True,
+            used_deepseek=provider == "deepseek",
+            status="api" if used_live_provider else "rule-fallback",
+            model=registry.model_for(provider),
+            answer=answer,
+            provider=provider,
+            source="api" if used_live_provider else "rule_fallback",
+        )
     except Exception as exc:
         return AiChatResponse(
             accepted=True, used_deepseek=False, status="local-fallback", model="local-fallback",
             answer=f"{shortcut.label}：AI 后端暂不可用，已使用本地兜底。建议先查看 /api/ai/status。原因：{exc}",
+            provider="rule_fallback", source="rule_fallback",
         )
 
 
 @router.post("/ai/diagnose")
 def diagnose(payload: AiDiagnoseRequest, actor: ActorInfo = Depends(require_permission(PERM_AI_DIAGNOSE))):
     latest = store.latest_metrics().get(payload.node_code)
-    alert = next((item for item in reversed(store.alerts) if item.id == payload.alert_id), None)
+    alert = next(
+        (
+            item for item in reversed(store.alerts)
+            if item.id == payload.alert_id and store.alert_in_current_run(item)
+        ),
+        None,
+    )
     if alert is None:
         alert = next((item for item in reversed(store.alerts)
-                      if item.node_code == payload.node_code), None)
+                      if item.node_code == payload.node_code and store.alert_in_current_run(item)), None)
     if alert is None:
         alert = store.create_alert(
             payload.node_code, "manual_ai_diagnosis", Severity.medium,
@@ -127,15 +141,17 @@ def diagnose(payload: AiDiagnoseRequest, actor: ActorInfo = Depends(require_perm
             model_name=f"ai-dispatcher/{service_result['source']}",
             raw_response="",
         )
-        return _flatten_diagnosis_response(diagnosis, service_result["source"] == "deepseek",
-                                           f"ai-dispatcher-{service_result['source']}")
+        return _flatten_diagnosis_response(
+            diagnosis,
+            provider=str(service_result["source"]),
+            status=f"ai-dispatcher-{service_result['source']}",
+        )
 
     prompt = build_prompt(payload, alert.description, latest)
-    used_ai = False
+    provider_name = "rule_fallback"
     try:
         if payload.provider == "auto":
-            result = registry.diagnose(prompt)
-            used_ai = registry.is_any_live_provider()
+            result, provider_name, _ = registry.diagnose_with_provenance(prompt)
         elif payload.provider == "rule_fallback":
             result = _rule_diagnosis(payload.node_code)
         else:
@@ -146,18 +162,18 @@ def diagnose(payload: AiDiagnoseRequest, actor: ActorInfo = Depends(require_perm
             else:
                 try:
                     result = provider.diagnose(prompt)
-                    used_ai = True
+                    provider_name = provider.name
                 except Exception as exc:
                     result = _rule_diagnosis(payload.node_code, str(exc))
     except Exception as exc:
         result = _rule_diagnosis(payload.node_code, str(exc))
 
     # Determine model name
-    if used_ai:
-        active = registry.first_available()
-        model_name = active.name if active else "multi-backend"
-    else:
-        model_name = "local-fallback"
+    model_name = (
+        f"{provider_name}/{registry.model_for(provider_name)}"
+        if provider_name != "rule_fallback"
+        else "local-fallback"
+    )
 
     diagnosis = store.add_ai_diagnosis(
         alert_id=alert.id, node_code=payload.node_code,
@@ -175,8 +191,11 @@ def diagnose(payload: AiDiagnoseRequest, actor: ActorInfo = Depends(require_perm
     else:
         store.add_command(payload.node_code, "review_ai_recommendation", "medium",
                           "waiting_approval", "ai-policy")
-    return _flatten_diagnosis_response(diagnosis, used_ai,
-                                       "multi-backend" if used_ai else "local-fallback")
+    return _flatten_diagnosis_response(
+        diagnosis,
+        provider=provider_name,
+        status="api" if provider_name != "rule_fallback" else "local-fallback",
+    )
 
 
 def _find_provider(name: str):
@@ -234,12 +253,17 @@ def chat(payload: AiChatRequest, actor: ActorInfo = Depends(require_permission(P
         ),
     }
     messages = [system_message, *[item.model_dump() for item in payload.messages[-12:]]]
-    used_ai = registry.is_any_live_provider()
     try:
-        answer = registry.chat(messages)
+        answer, provider, _ = registry.chat_with_provenance(messages)
+        used_live_provider = provider != "rule_fallback"
         return AiChatResponse(
-            accepted=True, used_deepseek=used_ai, status="multi-backend" if used_ai else "rule-fallback",
-            model=settings.deepseek_model, answer=answer,
+            accepted=True,
+            used_deepseek=provider == "deepseek",
+            status="api" if used_live_provider else "rule-fallback",
+            model=registry.model_for(provider),
+            answer=answer,
+            provider=provider,
+            source="api" if used_live_provider else "rule_fallback",
         )
     except Exception as exc:
         return AiChatResponse(
@@ -249,6 +273,8 @@ def chat(payload: AiChatRequest, actor: ActorInfo = Depends(require_permission(P
                 f"原因：{exc}。你可以先检查 /api/ai/status、API Key 和网络连通性。"
                 "支持的后端：DeepSeek、Ollama、LM Studio、Groq。"
             ),
+            provider="rule_fallback",
+            source="rule_fallback",
         )
 
 
@@ -270,10 +296,14 @@ def build_prompt(payload: AiDiagnoseRequest, alert_description: str, latest) -> 
     )
 
 
-def _flatten_diagnosis_response(diagnosis, used_deepseek: bool, status: str) -> dict:
+def _flatten_diagnosis_response(diagnosis, provider: str, status: str) -> dict:
+    used_live_provider = provider not in {"", "local-fallback", "rule_fallback"}
     return {
         "accepted": True,
-        "used_deepseek": used_deepseek,
+        "used_deepseek": provider == "deepseek",
+        "used_live_provider": used_live_provider,
+        "provider": provider,
+        "source": "api" if used_live_provider else "rule_fallback",
         "status": status,
         "diagnosis": diagnosis,
         "root_cause": diagnosis.root_cause,

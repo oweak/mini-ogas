@@ -11,9 +11,10 @@ router = APIRouter(tags=["audit"])
 
 @router.get("/alerts")
 def list_alerts():
+    store.refresh_primary_projection()
     rows = []
     for alert in store.alerts:
-        if alert.status in {"closed", "resolved"}:
+        if alert.status in {"closed", "resolved"} or not store.alert_in_current_run(alert):
             continue
         item = alert.model_dump(mode="json")
         item["issue_id"] = f"{alert.node_code}-{alert.alert_type}"
@@ -23,21 +24,25 @@ def list_alerts():
 
 @router.get("/commands")
 def list_commands():
+    store.refresh_primary_projection()
     return store.commands
 
 
 @router.get("/incident-events")
 def list_incident_events():
+    store.refresh_primary_projection()
     return store.incident_events
 
 
 @router.get("/audit-logs")
 def list_audit_logs():
+    store.refresh_primary_projection()
     return store.audit_logs
 
 
 @router.get("/diagnoses")
 def list_diagnoses():
+    store.refresh_primary_projection()
     return store.ai_diagnoses
 
 
@@ -76,6 +81,7 @@ def _event_entry(
 
 
 def _collect_all_events() -> list[dict]:
+    store.refresh_primary_projection()
     events: list[dict] = []
 
     for a in store.alerts:
@@ -161,7 +167,13 @@ def _collect_all_events() -> list[dict]:
             },
         ))
 
-    events.sort(key=lambda x: x["timestamp"], reverse=True)
+    def event_time(entry: dict) -> float:
+        value = datetime.fromisoformat(str(entry["timestamp"]))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.timestamp()
+
+    events.sort(key=event_time, reverse=True)
     return events
 
 

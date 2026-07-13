@@ -39,6 +39,23 @@ def reject_command(command_id: int, reason: str = Query(default=""), actor: Acto
     return store.reject_command(command_id, actor.role, reason)
 
 
+@router.post("/commands/{command_id}/cancel")
+def cancel_command(
+    command_id: int,
+    reason: str = Query(default=""),
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_REJECT)),
+):
+    return store.cancel_command(command_id, actor.username or actor.role, reason)
+
+
+@router.post("/commands/{command_id}/retry")
+def retry_command(
+    command_id: int,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
+    return store.retry_command(command_id, actor.username or actor.role)
+
+
 @router.get("/escalations")
 def list_escalations():
     rows = []
@@ -48,6 +65,7 @@ def list_escalations():
                 item for item in reversed(store.alerts)
                 if item.node_code == event.node_code
                 and item.status not in {"closed", "resolved"}
+                and store.alert_in_current_run(item)
                 and f"{item.alert_type}:" in event.message
             ),
             None,
@@ -71,12 +89,16 @@ def issue_command(
     payload: ControlCommandRequest,
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
 ) -> ControlCommandResponse:
-    plan, used_deepseek = plan_command(payload.text)
+    plan, provider = plan_command(payload.text)
+    used_deepseek = provider == "deepseek"
+    source = "api" if provider not in {"rule_engine", "rule_fallback"} else "rule_engine"
     if not payload.execute:
         return ControlCommandResponse(
             accepted=True,
             executed=False,
             used_deepseek=used_deepseek,
+            provider=provider,
+            source=source,
             status="planned",
             plan=plan,
             result=None,
@@ -91,11 +113,14 @@ def issue_command(
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirm,
     )
+    store.record_safety_decision(decision)
     if not decision.allow:
         return ControlCommandResponse(
             accepted=True,
             executed=False,
             used_deepseek=used_deepseek,
+            provider=provider,
+            source=source,
             status="blocked-confirmation-required" if decision.confirmation_required else "blocked-safety-governor",
             plan=plan,
             result=None,
@@ -103,11 +128,13 @@ def issue_command(
             safety=decision.model_dump(mode="json"),
         )
 
-    result = execute_plan(plan, actor.role)
+    result = execute_plan(plan, actor.role, decision)
     return ControlCommandResponse(
         accepted=True,
         executed=True,
         used_deepseek=used_deepseek,
+        provider=provider,
+        source=source,
         status="executed",
         plan=plan,
         result=result,

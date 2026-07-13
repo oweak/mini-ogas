@@ -1,9 +1,11 @@
 from datetime import timedelta
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity, utc_now
 from app.core.config import settings
+from app.safety_governor import SafetyDecision
 import app.store as store_module
 from app.store import MemoryStore, canonical_product_code, product_name, product_route
 
@@ -11,6 +13,20 @@ from app.store import MemoryStore, canonical_product_code, product_name, product
 @pytest.fixture()
 def store() -> MemoryStore:
     return MemoryStore()
+
+
+def approved_safety(action: str, node_code: str, actor: str = "system_admin") -> SafetyDecision:
+    return SafetyDecision(
+        allow=True,
+        requires_human=True,
+        confirmation_required=False,
+        reason_code="allowed",
+        message="approved by test safety gate",
+        action=action,
+        target_node=node_code,
+        risk_level="high",
+        actor_role=actor,
+    )
 
 
 def test_record_metric_creates_new_node(store: MemoryStore) -> None:
@@ -32,6 +48,64 @@ def test_record_metric_creates_new_node(store: MemoryStore) -> None:
     assert store.nodes["quality-cloud-01"].workshop_type == "cloud"
 
 
+def test_heartbeat_rejects_run_and_scenario_identity_conflicts_before_state_mutation(store: MemoryStore) -> None:
+    base = {
+        "status": "running",
+        "metrics": {},
+        "production": {"workshop_type": "turning"},
+        "runtime": {
+            "run_id": "RUN-IDENTITY-001",
+            "scenario_id": "SCN-IDENTITY-001",
+            "simulation_engine": "simpy",
+            "random_seed": 42,
+        },
+    }
+    store.record_node_heartbeat_v2({**base, "node_code": "identity-node-a"})
+
+    conflicting_run = {
+        **base,
+        "node_code": "identity-node-b",
+        "runtime": {**base["runtime"], "scenario_id": "SCN-OTHER"},
+    }
+    with pytest.raises(ValueError, match="cannot mix multiple scenario_id"):
+        store.record_node_heartbeat_v2(conflicting_run)
+
+    conflicting_seed = {
+        **base,
+        "node_code": "identity-node-c",
+        "runtime": {**base["runtime"], "run_id": "RUN-IDENTITY-002", "random_seed": 99},
+    }
+    with pytest.raises(ValueError, match="scenario .* cannot mix multiple random_seed"):
+        store.record_node_heartbeat_v2(conflicting_seed)
+
+    assert "identity-node-b" not in store.nodes
+    assert "identity-node-c" not in store.nodes
+
+
+def test_live_alert_projection_excludes_previous_runs(store: MemoryStore) -> None:
+    node_code = "turning-workshop-01"
+    store.record_node_heartbeat_v2({
+        "node_code": node_code,
+        "status": "running",
+        "metrics": {},
+        "production": {"workshop_type": "turning"},
+        "runtime": {
+            "run_id": "RUN-CURRENT",
+            "scenario_id": "SCN-CURRENT",
+            "simulation_engine": "simpy",
+            "random_seed": 42,
+        },
+    })
+    current = store.create_alert(node_code, "current_fault", Severity.medium, "current run")
+    previous = current.model_copy(update={"id": current.id + 1, "run_id": "RUN-PREVIOUS"})
+    store.alerts.append(previous)
+
+    assert store.alert_in_current_run(current) is True
+    assert store.alert_in_current_run(previous) is False
+    assert store.summary().alert_count == 1
+    assert [item.id for item in store.management_snapshot()["alerts"]] == [current.id]
+
+
 def test_product_catalog_uses_shared_microservice_codes(store: MemoryStore) -> None:
     assert list(store_module.PRODUCTS) == ["P1", "P2", "P3", "P4", "P5"]
     assert canonical_product_code("A3") == "P3"
@@ -40,6 +114,75 @@ def test_product_catalog_uses_shared_microservice_codes(store: MemoryStore) -> N
     assert all(item.product_code.startswith("P") for item in store.market_signals)
     assert all(item.product_code.startswith("P") for item in store.inventory)
     assert store.allocation_orders[0].product_code == "P3"
+
+
+def test_incident_event_ids_remain_unique_after_retention_window(store: MemoryStore) -> None:
+    generated = [
+        store.add_event("turning-workshop-01", "retention-check", Severity.info, str(index))
+        for index in range(220)
+    ]
+
+    generated_ids = [event.id for event in generated]
+    assert generated_ids == sorted(generated_ids)
+    assert len(generated_ids) == len(set(generated_ids))
+    assert len(store.incident_events) == 160
+
+
+def test_escalation_reuses_existing_open_alert(store: MemoryStore) -> None:
+    alert = store.create_alert(
+        "milling-workshop-01",
+        "SPINDLE_TEMP_HIGH",
+        Severity.high,
+        "existing spindle alert",
+    )
+    alerts_before = len(store.alerts)
+
+    result = store.escalate_to_human(
+        alert.node_code,
+        alert.alert_type,
+        "dispatch technician and stop machine",
+    )
+
+    assert len(store.alerts) == alerts_before
+    assert alert.handled_by == "human-required"
+    assert result["alert_id"] == alert.id
+    assert result["issue_id"] == f"{alert.node_code}-{alert.alert_type}"
+
+
+def test_heartbeat_resolves_cleared_non_escalated_alarm(store: MemoryStore) -> None:
+    payload = {
+        "node_code": "milling-workshop-01",
+        "status": "warning",
+        "production": {"machine_code": "MILL-02", "workshop_type": "milling"},
+        "alarms": [{"type": "COOLANT_FLOW_LOW", "severity": "medium", "status": "open"}],
+    }
+
+    created = store.record_node_heartbeat_v2(payload)
+    alert = next(item for item in store.alerts if item.alert_type == "COOLANT_FLOW_LOW")
+    cleared = store.record_node_heartbeat_v2({**payload, "status": "running", "alarms": []})
+
+    assert created["alarms_accepted"] == 1
+    assert alert.source == "node-heartbeat"
+    assert cleared["alarms_resolved"] == 1
+    assert alert.status == "resolved"
+
+
+def test_heartbeat_does_not_auto_resolve_human_required_alarm(store: MemoryStore) -> None:
+    payload = {
+        "node_code": "milling-workshop-01",
+        "status": "fault",
+        "production": {"machine_code": "MILL-02", "workshop_type": "milling"},
+        "alarms": [{"type": "SPINDLE_TEMP_HIGH", "severity": "high", "status": "open"}],
+    }
+    store.record_node_heartbeat_v2(payload)
+    store.escalate_to_human("milling-workshop-01", "SPINDLE_TEMP_HIGH", "dispatch technician")
+
+    cleared = store.record_node_heartbeat_v2({**payload, "status": "running", "alarms": []})
+    alert = next(item for item in store.alerts if item.alert_type == "SPINDLE_TEMP_HIGH")
+
+    assert cleared["alarms_resolved"] == 0
+    assert alert.status != "resolved"
+    assert alert.handled_by == "human-required"
 
 
 def test_refresh_market_via_service_consumes_signals(monkeypatch, store: MemoryStore) -> None:
@@ -377,6 +520,93 @@ def test_command_manager_accepts_duplicate_result_idempotently(store: MemoryStor
     assert len(store.incident_events) == before_events
 
 
+def test_command_manager_idempotency_key_prevents_reexecution_after_terminal_result(store: MemoryStore) -> None:
+    parameters = {"target_rate": 0.72, "idempotency_key": "rate-change-20260713-001"}
+    first = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters=parameters,
+    )
+    store.claim_pending_commands_for_node("milling-workshop-01", "pytest-agent")
+    store.record_command_result("milling-workshop-01", first.id, "executed", "applied")
+
+    duplicate = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters=parameters,
+    )
+
+    assert duplicate is first
+    assert len([item for item in store.commands if item.parameters.get("idempotency_key") == parameters["idempotency_key"]]) == 1
+
+
+def test_command_manager_claim_is_atomic_across_concurrent_agents(store: MemoryStore) -> None:
+    command = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.77},
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda agent: store.claim_pending_commands_for_node("milling-workshop-01", agent),
+            ["agent-a", "agent-b"],
+        ))
+
+    claimed = [item for batch in results for item in batch]
+    assert [item.id for item in claimed] == [command.id]
+    assert command.status == "claimed"
+    assert command.claimed_by in {"agent-a", "agent-b"}
+
+
+def test_command_manager_cancels_pending_command(store: MemoryStore) -> None:
+    command = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.7},
+    )
+
+    cancelled = store.cancel_command(command.id, actor="pytest", reason="operator changed plan")
+
+    assert cancelled.status == "cancelled"
+    assert "operator changed plan" in cancelled.result_message
+    assert store.pending_commands_for_node("milling-workshop-01") == []
+    assert any(event.stage == "command-cancelled" for event in store.incident_events)
+
+
+def test_command_manager_retries_failed_command_as_new_command(store: MemoryStore) -> None:
+    command = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.7},
+    )
+    store.record_command_result(command.node_code, command.id, "failed", "temporary actuator error")
+
+    retried = store.retry_command(command.id, actor="pytest")
+
+    assert command.status == "failed"
+    assert retried.id != command.id
+    assert retried.status == "pending"
+    assert retried.parameters["retry_of"] == command.id
+    assert retried.parameters["target_rate"] == 0.7
+    assert any(event.stage == "command-retried" for event in store.incident_events)
+
+
 def test_record_metric_disk_90_generates_alert(store: MemoryStore) -> None:
     alerts = store.record_metric(
         MetricIn(
@@ -412,6 +642,39 @@ def test_record_metric_cpu_92_and_latency_800_triggers_ai_diagnosis(store: Memor
     assert any(alert.alert_type == "cpu_latency_correlation" for alert in alerts)
     assert len(store.ai_diagnoses) >= 1
     assert store.nodes["milling-workshop-01"].status == NodeStatus.degraded
+
+
+def test_record_metric_persists_actual_ai_fallback_provenance(store: MemoryStore, monkeypatch) -> None:
+    from app.core.ai.base import DiagnosisResult
+    from app import store as store_module
+
+    fallback = DiagnosisResult("rule root cause", "manual review", 0.55)
+    monkeypatch.setattr(store_module.registry, "diagnose", lambda *_args, **_kwargs: fallback)
+    monkeypatch.setattr(
+        store_module.registry,
+        "diagnose_with_provenance",
+        lambda *_args, **_kwargs: (fallback, "rule_fallback", ["deepseek: timeout"]),
+    )
+    monkeypatch.setattr(
+        store_module.registry,
+        "first_available",
+        lambda: type("Provider", (), {"name": "deepseek"})(),
+    )
+
+    store.record_metric(
+        MetricIn(
+            node_code="milling-workshop-01",
+            cpu_usage=95,
+            memory_usage=70,
+            disk_usage=60,
+            network_in=1_000_000,
+            network_out=900_000,
+            db_latency_ms=100,
+            api_latency_ms=900,
+        )
+    )
+
+    assert store.ai_diagnoses[-1].model_name == "local-fallback"
 
 
 def test_record_metric_network_100m_isolates_node(store: MemoryStore) -> None:
@@ -494,7 +757,11 @@ def test_simulation_step_does_not_inject_anomalies_into_control_plane_nodes(stor
 
 
 def test_isolate_node_changes_topology_edges(store: MemoryStore) -> None:
-    store.isolate_node("turning-workshop-01", "pytest")
+    store.isolate_node(
+        "turning-workshop-01",
+        "system_admin",
+        approved_safety("isolate_node", "turning-workshop-01"),
+    )
 
     edge = next(edge for edge in store.topology_edges if edge.target == "turning-workshop-01")
     assert edge.status == "isolated"
@@ -502,23 +769,42 @@ def test_isolate_node_changes_topology_edges(store: MemoryStore) -> None:
 
 
 def test_restore_node_regenerates_plan(store: MemoryStore) -> None:
-    store.isolate_node("turning-workshop-01", "pytest")
+    store.isolate_node(
+        "turning-workshop-01",
+        "system_admin",
+        approved_safety("isolate_node", "turning-workshop-01"),
+    )
     store.production_plans.clear()
 
-    node = store.restore_node("turning-workshop-01", "pytest")
+    node = store.restore_node(
+        "turning-workshop-01",
+        "system_admin",
+        approved_safety("restore_node", "turning-workshop-01"),
+    )
 
     assert node.status == NodeStatus.online
     assert len(store.production_plans) > 0
 
 
 def test_apply_scenario_normal_resets_data(store: MemoryStore) -> None:
-    store.isolate_node("turning-workshop-01", "pytest")
+    store.isolate_node(
+        "turning-workshop-01",
+        "system_admin",
+        approved_safety("isolate_node", "turning-workshop-01"),
+    )
 
     result = store.apply_scenario("normal")
 
     assert result["scenario"] == "normal"
     assert store.nodes["turning-workshop-01"].status == NodeStatus.online
     assert len(store.dispatch_tasks) > 0
+
+
+def test_direct_high_risk_store_action_requires_approved_safety_decision(store: MemoryStore) -> None:
+    with pytest.raises(PermissionError, match="approved safety decision required"):
+        store.isolate_node("turning-workshop-01", "system_admin")
+
+    assert store.nodes["turning-workshop-01"].status != NodeStatus.isolated
 
 
 def test_apply_scenario_unknown_raises_value_error(store: MemoryStore) -> None:

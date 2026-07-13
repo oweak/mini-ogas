@@ -81,9 +81,13 @@ def test_sqlite_init_migrates_legacy_shadow_tables_with_run_id(tmp_path, monkeyp
     with sqlite3.connect(db_path) as connection:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(command_shadow)").fetchall()}
         indexes = {row[1] for row in connection.execute("PRAGMA index_list(command_shadow)").fetchall()}
+        migration_versions = {
+            row[0] for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+        }
 
     assert "run_id" in columns
     assert "idx_command_shadow_run_updated" in indexes
+    assert database.SCHEMA_VERSION in migration_versions
 
 
 def test_shadow_consistency_report_is_explicit_when_persistence_is_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,6 +96,186 @@ def test_shadow_consistency_report_is_explicit_when_persistence_is_disabled(monk
     monkeypatch.setattr(settings, "persist_enabled", False)
 
     assert store.shadow_consistency_report()["status"] == "disabled"
+
+
+def test_primary_projection_refreshes_all_durable_read_models(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import store as store_module
+    from app.store import store
+
+    calls: list[str] = []
+    store._persistence_write_failures.clear()
+
+    class _Cursor:
+        def fetchone(self):
+            return {"ok": 1}
+
+    class _Db:
+        def execute(self, _sql, _params=()):
+            return _Cursor()
+
+    class _DbContext:
+        def __enter__(self):
+            return _Db()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "central_fact_source", "postgresql")
+    monkeypatch.setattr(store_module, "persistence_backend", lambda: "postgres")
+    monkeypatch.setattr(store_module, "get_db", lambda: _DbContext())
+    for name in (
+        "load_heartbeat_shadow",
+        "load_command_shadow",
+        "load_part_queue_shadow",
+        "load_alert_shadow",
+        "load_ai_diagnosis_shadow",
+        "load_audit_log_shadow",
+        "load_allocation_order_shadow",
+        "load_production_plan_shadow",
+        "load_dispatch_task_shadow",
+    ):
+        monkeypatch.setattr(store, name, lambda *args, _name=name, **kwargs: calls.append(_name) or 1)
+
+    result = store.refresh_primary_projection(force=True)
+
+    assert result["status"] == "ok"
+    assert result["fact_source"] == "postgresql"
+    assert result["read_model"] == "database_projection"
+    assert calls == [
+        "load_heartbeat_shadow",
+        "load_command_shadow",
+        "load_part_queue_shadow",
+        "load_alert_shadow",
+        "load_ai_diagnosis_shadow",
+        "load_audit_log_shadow",
+        "load_allocation_order_shadow",
+        "load_production_plan_shadow",
+        "load_dispatch_task_shadow",
+    ]
+
+
+def test_primary_projection_reports_loader_failure_as_degraded(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import store as store_module
+    from app.store import store
+
+    class _Cursor:
+        def fetchone(self):
+            return {"ok": 1}
+
+    class _Db:
+        def execute(self, _sql, _params=()):
+            return _Cursor()
+
+    class _DbContext:
+        def __enter__(self):
+            return _Db()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "central_fact_source", "postgresql")
+    monkeypatch.setattr(store_module, "persistence_backend", lambda: "postgres")
+    monkeypatch.setattr(store_module, "get_db", lambda: _DbContext())
+    monkeypatch.setattr(store, "load_heartbeat_shadow", lambda **_kwargs: 1)
+    monkeypatch.setattr(store, "load_command_shadow", lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("query failed")))
+
+    result = store.refresh_primary_projection(force=True)
+
+    assert result["status"] == "degraded"
+    assert result["fact_source"] == "memory-cache"
+    assert result["read_model"] == "stale_cache"
+    assert "query failed" in result["last_error"]
+
+
+def test_unreconciled_write_failure_degrades_primary_projection(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app import store as store_module
+    from app.store import store
+
+    class _Cursor:
+        def fetchone(self):
+            return {"ok": 1}
+
+    class _Db:
+        def execute(self, _sql, _params=()):
+            return _Cursor()
+
+    class _DbContext:
+        def __enter__(self):
+            return _Db()
+
+        def __exit__(self, *_args):
+            return False
+
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "central_fact_source", "postgresql")
+    monkeypatch.setattr(store_module, "persistence_backend", lambda: "postgres")
+    monkeypatch.setattr(store_module, "get_db", lambda: _DbContext())
+    for name in (
+        "load_heartbeat_shadow",
+        "load_command_shadow",
+        "load_part_queue_shadow",
+        "load_alert_shadow",
+        "load_ai_diagnosis_shadow",
+        "load_audit_log_shadow",
+        "load_allocation_order_shadow",
+        "load_production_plan_shadow",
+        "load_dispatch_task_shadow",
+    ):
+        monkeypatch.setattr(store, name, lambda **_kwargs: 1)
+
+    store._persistence_write_failures.clear()
+    store._record_persistence_write_failure("command_shadow", RuntimeError("database unavailable"))
+    try:
+        result = store.refresh_primary_projection(force=True)
+    finally:
+        store._persistence_write_failures.clear()
+
+    assert result["status"] == "degraded"
+    assert result["fact_source"] == "postgresql"
+    assert result["write_failures"][0]["operation"] == "command_shadow"
+
+
+def test_command_and_audit_event_transaction_rolls_back_together(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.persistence_repository import central_fact_repository
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "command-event-transaction.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
+    transactional_store = MemoryStore()
+
+    def fail_event_insert(*_args, **_kwargs):
+        raise RuntimeError("audit insert failed")
+
+    monkeypatch.setattr(central_fact_repository, "_insert_event", fail_event_insert)
+    command = transactional_store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.73},
+    )
+
+    with database.get_db() as db:
+        base_count = int(db.execute("SELECT COUNT(*) AS count FROM commands").fetchone()["count"])
+        shadow_count = int(db.execute(
+            "SELECT COUNT(*) AS count FROM command_shadow WHERE command_id = ?",
+            (command.id,),
+        ).fetchone()["count"])
+        event_count = int(db.execute(
+            "SELECT COUNT(*) AS count FROM audit_logs WHERE resource_type = ? AND resource_id = ?",
+            ("incident_event", str(transactional_store.incident_events[-1].id)),
+        ).fetchone()["count"])
+
+    assert base_count == 0
+    assert shadow_count == 0
+    assert event_count == 0
+    assert transactional_store._persistence_write_failures["command_event_transaction"]["count"] == 1
 
 
 def test_heartbeat_shadow_restores_runtime_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -417,6 +601,46 @@ def test_heartbeat_shadow_retention_keeps_latest_rows_per_node(tmp_path, monkeyp
     assert status["replay_readiness"]["status"] == "ok"
 
 
+def test_heartbeat_upserts_scenario_and_run_entities(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+
+    store = MemoryStore()
+    store.record_node_heartbeat_v2({
+        "node_code": "turning-workshop-01",
+        "status": "running",
+        "runtime": {
+            "run_id": "RUN-ENTITY-001",
+            "scenario_id": "SCN-ENTITY-001",
+            "simulation_engine": "simpy",
+            "simulation_mode": "normal",
+            "random_seed": 260713,
+        },
+        "metrics": {"cpu_usage": 20, "memory_usage": 30, "disk_usage": 40},
+        "production": {"machine_code": "LATHE-01", "workshop_type": "turning"},
+    })
+
+    with database.get_db() as db:
+        scenario = dict(db.execute(
+            "SELECT * FROM scenarios WHERE scenario_id = ?",
+            ("SCN-ENTITY-001",),
+        ).fetchone())
+        run = dict(db.execute(
+            "SELECT * FROM runs WHERE run_id = ?",
+            ("RUN-ENTITY-001",),
+        ).fetchone())
+
+    assert scenario["simulation_engine"] == "simpy"
+    assert scenario["random_seed"] == 260713
+    assert run["scenario_id"] == "SCN-ENTITY-001"
+    assert run["status"] == "running"
+    assert run["random_seed"] == 260713
+
+
 def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from fastapi.testclient import TestClient
 
@@ -485,6 +709,12 @@ def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch
         },
     })
 
+    state_before_replay = {
+        "heartbeats": json.dumps(store.node_heartbeats_v2, sort_keys=True, default=str),
+        "commands": [(item.id, item.status, item.updated_at) for item in store.commands],
+        "parts": [(item.part_id, item.status, item.updated_at) for item in store.part_queue],
+        "alerts": [(item.id, item.status) for item in store.alerts],
+    }
     with TestClient(app) as client:
         runs = client.get("/api/replay/runs", headers={"X-OGAS-Token": "mini-ogas-dev-token"})
         detail = client.get(f"/api/replay/runs/{run_id}", headers={"X-OGAS-Token": "mini-ogas-dev-token"})
@@ -497,6 +727,8 @@ def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch
 
     payload = detail.json()
     assert payload["status"] == "ok"
+    assert payload["data_source"] == "replay"
+    assert payload["read_only"] is True
     assert payload["run_id"] == run_id
     assert payload["counts"]["heartbeats"] == 2
     assert payload["counts"]["commands"] >= 1
@@ -509,6 +741,12 @@ def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch
     assert {"heartbeat", "command", "part_queue", "audit", "alert", "ai_diagnosis"}.issubset(
         {item["kind"] for item in payload["timeline"]}
     )
+    assert state_before_replay == {
+        "heartbeats": json.dumps(store.node_heartbeats_v2, sort_keys=True, default=str),
+        "commands": [(item.id, item.status, item.updated_at) for item in store.commands],
+        "parts": [(item.part_id, item.status, item.updated_at) for item in store.part_queue],
+        "alerts": [(item.id, item.status) for item in store.alerts],
+    }
 
 
 def test_replay_run_uses_full_bounds_and_latest_heartbeat_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

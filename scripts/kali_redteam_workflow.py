@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -213,6 +214,8 @@ def build_attack_heartbeat(
     selected_node = node_code or str(config["node_code"])
     selected_machine = machine_code or str(config["machine_code"])
     selected_attack_id = attack_id or f"KALI-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    scenario_slug = scenario.replace("_", "-").upper()
+    scenario_seed = int(hashlib.sha256(scenario.encode("utf-8")).hexdigest()[:8], 16)
     production = {
         "active_order": f"WO-KALI-{selected_attack_id[-6:]}",
         "machine_code": selected_machine,
@@ -229,8 +232,15 @@ def build_attack_heartbeat(
         "sync": {"pending_records": 0},
         "runtime": {
             "source": "kali-redteam",
+            "runtime_source": "kali-redteam",
             "deployment_mode": "kali-adversary-lab",
             "simulation_mode": "authorized-process-test",
+            "simulation_engine": "scripted-attack-lab",
+            "simulation_time": datetime.now(timezone.utc).isoformat(),
+            "run_id": f"RUN-ATTACK-LAB-{selected_attack_id}",
+            "scenario_id": f"SCN-ATTACK-LAB-{scenario_slug}",
+            "random_seed": scenario_seed,
+            "run_status": "running",
             "attack_id": selected_attack_id,
             "scenario": scenario,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -245,6 +255,8 @@ def build_recovery_heartbeat(attack_heartbeat: dict[str, Any]) -> dict[str, Any]
         production["tool_wear_level"] = min(float(production["tool_wear_level"]), 58.0)
     runtime = dict(attack_heartbeat.get("runtime") or {})
     runtime["recovery"] = "script-restored-process-window"
+    runtime["run_status"] = "completed"
+    runtime["simulation_time"] = datetime.now(timezone.utc).isoformat()
     return {
         **attack_heartbeat,
         "status": "running",

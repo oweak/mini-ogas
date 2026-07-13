@@ -8,7 +8,15 @@ from typing import Any
 
 from .config import settings
 
+SCHEMA_VERSION = "2026.07.13-v2.5-primary-facts"
+
 SQLITE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS metrics (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     node_code TEXT NOT NULL,
@@ -160,6 +168,25 @@ CREATE TABLE IF NOT EXISTS heartbeat_shadow (
     received_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scenarios (
+    scenario_id TEXT PRIMARY KEY,
+    simulation_engine TEXT NOT NULL DEFAULT '',
+    random_seed INTEGER NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'normal',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    random_seed INTEGER NOT NULL DEFAULT 0,
+    started_at TEXT NOT NULL,
+    last_event_at TEXT NOT NULL,
+    ended_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
     ON heartbeat_shadow(node_code, received_at);
 
@@ -197,6 +224,12 @@ CREATE TABLE IF NOT EXISTS role_permissions (
 """
 
 POSTGRES_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version TEXT PRIMARY KEY,
+    description TEXT NOT NULL,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS metrics (
     id BIGSERIAL PRIMARY KEY,
     node_code TEXT NOT NULL,
@@ -348,6 +381,25 @@ CREATE TABLE IF NOT EXISTS heartbeat_shadow (
     received_at TIMESTAMPTZ NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS scenarios (
+    scenario_id TEXT PRIMARY KEY,
+    simulation_engine TEXT NOT NULL DEFAULT '',
+    random_seed BIGINT NOT NULL DEFAULT 0,
+    mode TEXT NOT NULL DEFAULT 'normal',
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS runs (
+    run_id TEXT PRIMARY KEY,
+    scenario_id TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'running',
+    random_seed BIGINT NOT NULL DEFAULT 0,
+    started_at TIMESTAMPTZ NOT NULL,
+    last_event_at TIMESTAMPTZ NOT NULL,
+    ended_at TIMESTAMPTZ
+);
+
 CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
     ON heartbeat_shadow(node_code, received_at);
 
@@ -488,6 +540,15 @@ def _ensure_run_id_indexes(connection: Any) -> None:
         connection.execute(statement)
 
 
+def _record_schema_version(connection: Any) -> None:
+    connection.execute(
+        """INSERT INTO schema_migrations (version, description)
+           VALUES (?, ?)
+           ON CONFLICT(version) DO NOTHING""",
+        (SCHEMA_VERSION, "v2.5 PostgreSQL primary facts, formal runs/scenarios, and replay schema"),
+    )
+
+
 def init_db() -> None:
     if persistence_backend() == "postgres":
         with _connect_postgres() as connection:
@@ -495,6 +556,7 @@ def init_db() -> None:
                 connection.execute(statement)
             _ensure_postgres_run_id_columns(connection)
             _ensure_run_id_indexes(connection)
+            _record_schema_version(connection)
             connection.commit()
         return
 
@@ -504,6 +566,7 @@ def init_db() -> None:
         connection.executescript(SQLITE_SCHEMA_SQL)
         _ensure_sqlite_run_id_columns(connection)
         _ensure_run_id_indexes(connection)
+        _record_schema_version(connection)
         connection.commit()
 
 

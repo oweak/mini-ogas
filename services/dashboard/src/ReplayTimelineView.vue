@@ -150,7 +150,7 @@ onMounted(() => {
             <h2>{{ selectedRun ? selectedRun.run_id : '等待选择运行批次' }}</h2>
           </div>
           <span class="state-pill" :class="detail?.status === 'ok' ? 'running' : 'warning'">
-            {{ detail?.status || (detailLoading ? 'loading' : 'idle') }}
+            {{ detail ? `${detail.data_source || 'replay'} / ${detail.read_only ? '只读' : detail.status}` : (detailLoading ? 'loading' : 'idle') }}
           </span>
         </div>
 
@@ -203,6 +203,10 @@ onMounted(() => {
           <div>
             <dt>持久化</dt>
             <dd>{{ detail.backend || '-' }}</dd>
+          </div>
+          <div>
+            <dt>数据源</dt>
+            <dd>{{ detail.data_source || 'replay' }} / {{ detail.read_only ? '只读' : '未知' }}</dd>
           </div>
           <div>
             <dt>样本</dt>

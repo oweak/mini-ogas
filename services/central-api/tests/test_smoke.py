@@ -1,8 +1,10 @@
+from datetime import datetime, timedelta, timezone
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.main import app, setup_middleware
-from app.models import DispatchTask, Severity
+from app.models import DispatchTask, IncidentEvent, Severity
 from app.store import store
 
 AUTH_HEADERS = {"X-OGAS-Token": "mini-ogas-dev-token"}
@@ -91,10 +93,10 @@ def test_health_supervisor_session_mismatch(monkeypatch) -> None:
 
 
 def test_preflight_includes_supervisor_ownership(monkeypatch) -> None:
-    from app import store as store_module
+    from app import preflight_service
 
     monkeypatch.setattr(
-        store_module,
+        preflight_service,
         "supervisor_health",
         lambda session_token: {
             "status": "ok",
@@ -120,6 +122,81 @@ def test_preflight_includes_supervisor_ownership(monkeypatch) -> None:
     assert result.steps[0].key == "supervisor"
     assert result.steps[0].status == "pass"
     assert "8/8" in result.steps[0].detail
+
+
+def test_preflight_is_read_only_and_defers_ai_until_login(monkeypatch) -> None:
+    from app import preflight_service
+    from app.core.config import settings
+
+    expected = list(settings.expected_production_nodes)
+    monkeypatch.setattr(settings, "ai_enabled", True)
+    monkeypatch.setattr(settings, "microservices_enabled", False)
+    monkeypatch.setattr(preflight_service, "vault_present", lambda: True)
+    monkeypatch.setattr(
+        preflight_service,
+        "supervisor_health",
+        lambda _session: {
+            "status": "ok",
+            "healthy_processes": 8,
+            "expected_processes": [str(index) for index in range(8)],
+            "missing_processes": [],
+            "unhealthy_processes": [],
+        },
+    )
+    monkeypatch.setattr(
+        store,
+        "production_node_readiness",
+        lambda: {
+            "expected": expected,
+            "healthy": expected,
+            "missing": [],
+            "stale": [],
+            "unavailable": [],
+        },
+    )
+    monkeypatch.setattr(
+        store,
+        "persistence_status",
+        lambda: {"status": "disabled", "backend": "memory"},
+    )
+    monkeypatch.setattr(
+        store,
+        "simulation_step",
+        lambda: (_ for _ in ()).throw(AssertionError("preflight must not advance simulation")),
+    )
+
+    result = store.run_preflight()
+
+    assert result.all_pass is True
+    ai_step = next(step for step in result.steps if step.key == "ai-runtime")
+    assert "登录前不调用模型" in ai_step.detail
+    assert next(step for step in result.steps if step.key == "dry_run").status == "pass"
+
+
+def test_production_node_readiness_requires_every_expected_node(monkeypatch) -> None:
+    from app.core.config import settings
+    from app.models import Node, NodeStatus, utc_now
+
+    expected = ["turning-workshop-01", "milling-workshop-01"]
+    monkeypatch.setattr(settings, "expected_production_nodes", expected)
+    monkeypatch.setattr(
+        store,
+        "nodes",
+        {
+            expected[0]: Node(
+                node_code=expected[0],
+                node_name="turning",
+                workshop_type="turning",
+                status=NodeStatus.online,
+                last_heartbeat=utc_now(),
+            ),
+        },
+    )
+
+    readiness = store.production_node_readiness()
+
+    assert readiness["healthy"] == [expected[0]]
+    assert readiness["missing"] == [expected[1]]
 
 
 def test_summary_has_required_dashboard_fields() -> None:
@@ -500,6 +577,34 @@ def test_v2_node_heartbeat_flows_into_dashboard_state() -> None:
     assert any(alert["alert_type"] == "COOLANT_FLOW_LOW" for alert in milling["alarms"])
 
 
+def test_canonical_agent_heartbeat_and_legacy_deprecation_headers() -> None:
+    node_code = "turning-workshop-01"
+    payload = {
+        "node_code": node_code,
+        "status": "running",
+        "schema_version": "2.2",
+        "runtime": {"simulation_engine": "simpy", "run_id": "RUN-CANONICAL"},
+        "metrics": {"cpu_usage": 30, "memory_usage": 40, "disk_usage": 50},
+        "production": {"machine_code": "LATHE-01", "workshop_type": "turning"},
+    }
+    with TestClient(app) as client:
+        canonical = client.post(
+            f"/api/agents/{node_code}/heartbeat",
+            headers=AUTH_HEADERS,
+            json=payload,
+        )
+        legacy = client.post("/api/node-heartbeats", headers=AUTH_HEADERS, json=payload)
+        dashboard_legacy = client.get("/api/dashboard-state", headers=AUTH_HEADERS)
+
+    assert canonical.status_code == 200
+    assert "deprecation" not in canonical.headers
+    assert legacy.status_code == 200
+    assert legacy.headers["deprecation"] == "true"
+    assert f"/agents/{node_code}/heartbeat" in legacy.headers["link"]
+    assert dashboard_legacy.headers["deprecation"] == "true"
+    assert "/dashboard/snapshot" in dashboard_legacy.headers["link"]
+
+
 def test_dashboard_snapshot_exposes_v2_contract() -> None:
     store.create_alert(
         "cloud-workshop-01",
@@ -562,6 +667,10 @@ def test_dashboard_snapshot_exposes_v2_contract() -> None:
     assert payload["run"]["scenario_id"] == "SCN-TURNING-NORMAL-001"
     assert payload["system"]["nodes_expected"] >= 3
     assert "ai_runtime" in payload["system"]
+    assert payload["system"]["persistence"]["read_model"] in {
+        "in_process_cache",
+        "database_projection",
+    }
     turning = next(node for node in payload["nodes"] if node["node_code"] == "turning-workshop-01")
     assert turning["machine_code"] == "LATHE-01"
     assert turning["active_order"] == "WO-SNAPSHOT"
@@ -592,6 +701,18 @@ def test_dashboard_state_is_snapshot_wrapper() -> None:
     assert payload["work_orders"] == snapshot["work_orders"]
     assert payload["dispatch_plan"] == snapshot["dispatch_plan"]
     assert payload["logs"] == snapshot["timeline"]["recent_logs"]
+
+
+def test_dashboard_notifications_are_scoped_to_the_current_run() -> None:
+    from app.routers.demo import _current_run_notifications
+
+    notifications = [
+        {"id": "HUMAN-CURRENT", "run_id": "RUN-CURRENT"},
+        {"id": "HUMAN-OLD", "run_id": "RUN-OLD"},
+        {"id": "HUMAN-LEGACY", "run_id": ""},
+    ]
+
+    assert _current_run_notifications(notifications, "RUN-CURRENT") == [notifications[0]]
 
 
 def test_rules_conclusions_endpoint_uses_snapshot_contract() -> None:
@@ -639,6 +760,68 @@ def test_cors_preflight_allows_dashboard_origin() -> None:
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+def test_cors_uses_configured_origin(monkeypatch) -> None:
+    from app.core.config import settings
+
+    custom_origin = "http://dashboard.internal:5300"
+    monkeypatch.setattr(settings, "cors_origins", [custom_origin])
+    local_app = FastAPI()
+    setup_middleware(local_app)
+
+    @local_app.get("/configured")
+    def configured():
+        return {"ok": True}
+
+    with TestClient(local_app) as client:
+        response = client.options(
+            "/configured",
+            headers={
+                "Origin": custom_origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == custom_origin
+
+
+def test_audit_events_sort_mixed_timezones_by_actual_instant(monkeypatch) -> None:
+    older_local = datetime(2026, 7, 10, 12, 0, tzinfo=timezone(timedelta(hours=8)))
+    newer_utc = datetime(2026, 7, 10, 5, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(store, "alerts", [])
+    monkeypatch.setattr(store, "commands", [])
+    monkeypatch.setattr(store, "audit_logs", [])
+    monkeypatch.setattr(store, "ai_diagnoses", [])
+    monkeypatch.setattr(
+        store,
+        "incident_events",
+        [
+            IncidentEvent(
+                id=1,
+                node_code="older-node",
+                stage="older",
+                severity=Severity.info,
+                message="older local offset",
+                created_at=older_local,
+            ),
+            IncidentEvent(
+                id=2,
+                node_code="newer-node",
+                stage="newer",
+                severity=Severity.info,
+                message="newer UTC instant",
+                created_at=newer_utc,
+            ),
+        ],
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/events?limit=1", headers=AUTH_HEADERS)
+
+    assert response.status_code == 200
+    assert response.json()["events"][0]["id"] == "event-2"
 
 
 def test_value_error_handler_returns_400() -> None:
@@ -689,6 +872,39 @@ def test_ops_pending_approve_and_reject_flow() -> None:
     assert rejected.json()["status"] == "rejected"
 
 
+def test_ops_command_cancel_and_retry_lifecycle() -> None:
+    cancel_target = store.add_command(
+        "milling-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.71},
+    )
+    retry_target = store.add_command(
+        "grinding-workshop-01",
+        "set_target_rate",
+        "low",
+        "pending",
+        "pytest",
+        parameters={"target_rate": 0.69},
+    )
+    store.record_command_result(retry_target.node_code, retry_target.id, "failed", "temporary failure")
+
+    with TestClient(app) as client:
+        cancelled = client.post(
+            f"/ops/commands/{cancel_target.id}/cancel?reason=plan-changed",
+            headers=AUTH_HEADERS,
+        )
+        retried = client.post(f"/ops/commands/{retry_target.id}/retry", headers=AUTH_HEADERS)
+
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    assert retried.status_code == 200
+    assert retried.json()["status"] == "pending"
+    assert retried.json()["parameters"]["retry_of"] == retry_target.id
+
+
 def test_ops_escalation_and_metrics_history() -> None:
     with TestClient(app) as client:
         escalated = client.post(
@@ -724,6 +940,8 @@ def test_ops_issue_command_uses_control_contract() -> None:
     assert payload["accepted"] is True
     assert payload["status"] == "planned"
     assert payload["plan"]["action"] == "refresh_status"
+    assert payload["provider"] == "rule_engine"
+    assert payload["source"] == "rule_engine"
 
 
 def test_ops_issue_command_uses_safety_governor() -> None:
@@ -805,7 +1023,13 @@ def test_dispatch_approval_executes_and_archives_blocked_tasks() -> None:
         assert payload["dispatch_plan"]["status"] == "approved_executed"
         assert payload["dispatch_plan"]["result"].startswith("Approved and rerouted")
         assert all(task.status != "blocked" for task in store.dispatch_tasks)
-        assert len(store.audit_logs) == audit_count + 1
+        assert len(store.audit_logs) == audit_count + 3
+        safety_results = [
+            item.result
+            for item in store.audit_logs[audit_count:]
+            if item.action == "safety:dispatch_plan_approve"
+        ]
+        assert safety_results == ["denied:confirmation_code_required", "allowed"]
         assert store.audit_logs[-1].action == "dispatch:approve"
     finally:
         store.dispatch_tasks = original_tasks

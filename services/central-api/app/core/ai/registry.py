@@ -77,7 +77,15 @@ class ProviderRegistry:
     # ------------------------------------------------------------------
 
     def diagnose(self, prompt: str, timeout: float | None = None) -> DiagnosisResult:
-        """Try each provider in chain order; return first success."""
+        result, _, _ = self.diagnose_with_provenance(prompt, timeout=timeout)
+        return result
+
+    def diagnose_with_provenance(
+        self,
+        prompt: str,
+        timeout: float | None = None,
+    ) -> tuple[DiagnosisResult, str, list[str]]:
+        """Return the diagnosis, actual serving provider, and bounded failures."""
         errors: list[str] = []
         for provider in self._providers:
             if not provider.is_available():
@@ -86,18 +94,20 @@ class ProviderRegistry:
             try:
                 result = provider.diagnose(prompt, timeout=timeout)
                 logger.debug("AI diagnose served by %s (confidence=%.2f)", provider.name, result.confidence)
-                return result
+                self._verified_provider = provider.name if provider.name != "rule_fallback" else None
+                return result, provider.name, errors[-8:]
             except Exception as exc:
                 errors.append(f"{provider.name}: {exc}")
                 logger.warning("AI provider %s failed: %s", provider.name, exc)
-        # Should never reach here — RuleFallbackProvider is always available
+        self._verified_provider = None
         logger.error("All providers exhausted. Errors: %s", "; ".join(errors))
-        return DiagnosisResult(
+        result = DiagnosisResult(
             root_cause="所有 AI 后端均不可用，请检查配置。",
             recommended_action="检查 /api/ai/status 了解各 Provider 状态。",
             confidence=0.0,
             raw_text="total failure",
         )
+        return result, "rule_fallback", errors[-8:]
 
     def chat_with_provenance(
         self, messages: list[dict[str, str]], timeout: float | None = None
@@ -137,6 +147,12 @@ class ProviderRegistry:
 
     def verified_provider(self) -> Optional[str]:
         return self._verified_provider
+
+    def model_for(self, provider_name: str) -> str:
+        provider = next((item for item in self._providers if item.name == provider_name), None)
+        if provider is None:
+            return ""
+        return str(getattr(provider, "_model", ""))
 
     def status_list(self) -> list[dict[str, object]]:
         result: list[dict[str, object]] = []

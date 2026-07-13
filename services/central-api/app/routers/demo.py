@@ -1,15 +1,36 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..core.config import settings
+from ..core.security import PERM_SIMULATION_CONTROL, ActorInfo, require_permission
 from ..models import DemoScenario, IncidentEvent, Alert, utc_now
 from ..rules import evaluate_snapshot_rules
+from ..safety_governor import safety_governor
 from ..store import store, product_name
 
 router = APIRouter(tags=["demo"])
 
 
 @router.post("/demo/scenario")
-def apply_demo_scenario(payload: DemoScenario):
+def apply_demo_scenario(
+    payload: DemoScenario,
+    actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
+):
+    action = "simulate_hostile_attack" if payload.scenario == "hostile_attack" else f"simulate_{payload.scenario}"
+    target = "turning-workshop-01" if payload.scenario == "hostile_attack" else ""
+    decision = safety_governor.review_control_action(
+        action=action,
+        target_node=target,
+        risk_level="high" if payload.scenario == "hostile_attack" else "low",
+        actor_role=actor.role,
+        known_nodes=set(store.nodes),
+        confirmation_code=payload.confirmation_code,
+    )
+    store.record_safety_decision(decision)
+    if not decision.allow:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")},
+        )
     try:
         return store.apply_scenario(payload.scenario)
     except ValueError as exc:
@@ -32,6 +53,7 @@ def _alert_to_issue(alert: Alert) -> dict:
         "detail": alert.description,
         "actions": actions,
         "status": alert.status or "unacknowledged",
+        "run_id": alert.run_id,
     }
 
 
@@ -87,7 +109,11 @@ def _enrich_node(node, store) -> dict:
     data["alarms"] = [
         a.model_dump(mode="json")
         for a in store.alerts
-        if a.node_code == node.node_code and a.status not in {"closed", "resolved"}
+        if (
+            a.node_code == node.node_code
+            and a.status not in {"closed", "resolved"}
+            and store.alert_in_current_run(a)
+        )
     ][-5:]
 
     # Sync status (Node model has no sync field; backends signal online via heartbeat)
@@ -248,6 +274,7 @@ def _snapshot_alert(issue: dict) -> dict:
         "detail": issue.get("detail"),
         "status": issue.get("status"),
         "actions": issue.get("actions", []),
+        "run_id": issue.get("run_id", ""),
     }
 
 
@@ -314,6 +341,7 @@ def _apply_rule_demo_mode(mode: str, nodes: list[dict]) -> list[dict]:
 
 
 def _build_dashboard_snapshot(mode: str = "normal") -> dict:
+    projection = store.refresh_primary_projection()
     state = _build_legacy_dashboard_state(mode)
     expected_node_codes = set(settings.expected_production_nodes)
     nodes = [
@@ -329,17 +357,21 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
     except Exception:
         ai_runtime = {"status": "unknown", "provider": "unknown", "model": "unknown"}
     snapshot_nodes = _apply_rule_demo_mode(mode, [_snapshot_node(node) for node in nodes])
+    snapshot_run = _snapshot_run(nodes)
+    active_run_id = str(snapshot_run.get("run_id") or "")
+    current_notifications = _current_run_notifications(state.get("notifications", []), active_run_id)
     snapshot = {
         "schema_version": "2.2",
         "generated_at": utc_now().isoformat(),
         "data_source": _snapshot_data_source(nodes),
-        "run": _snapshot_run(nodes),
+        "run": snapshot_run,
         "system": {
             "status": "ok" if connected == len(expected_node_codes) and nodes else "degraded",
             "nodes_connected": connected,
             "nodes_expected": len(expected_node_codes),
             "logical_nodes_registered": len(state.get("nodes", [])),
             "ai_runtime": ai_runtime,
+            "persistence": projection,
         },
         "nodes": snapshot_nodes,
         "work_orders": work_orders,
@@ -349,7 +381,7 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
             for issue in state.get("issues", [])
             if any(node_code and node_code in str(issue.get("title", "")) for node_code in node_codes)
         ],
-        "notifications": state.get("notifications", []),
+        "notifications": current_notifications,
         "dispatch_plan": _snapshot_dispatch_plan(work_orders),
         "audit": {
             "recent_events": [
@@ -365,8 +397,21 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
     return snapshot
 
 
+def _current_run_notifications(notifications: list[dict], active_run_id: str) -> list[dict]:
+    """Keep result acknowledgements in the live run; history remains available via audit/replay."""
+    return [
+        notification
+        for notification in notifications
+        if not active_run_id or str(notification.get("run_id") or "") == active_run_id
+    ]
+
+
 def _build_legacy_dashboard_state(mode: str = "normal") -> dict:
-    alerts = [a for a in store.alerts if a.status not in {"closed", "resolved"}][-10:]
+    alerts = [
+        alert
+        for alert in store.alerts
+        if alert.status not in {"closed", "resolved"} and store.alert_in_current_run(alert)
+    ][-10:]
     issues = [_alert_to_issue(a) for a in alerts if a.handled_by != "system"]
 
     events = store.incident_events[-30:]
@@ -388,6 +433,7 @@ def _build_legacy_dashboard_state(mode: str = "normal") -> dict:
             "message": event.message,
             "actions": ["关闭结果通知"],
             "status": "unacknowledged",
+            "run_id": event.run_id,
         }
         for event in events
         if event.stage == "human-escalation" and f"HUMAN-{event.id}" not in acknowledged_notifications
@@ -430,7 +476,9 @@ def _dashboard_state_from_snapshot(snapshot: dict) -> dict:
 
 
 @router.get("/dashboard-state")
-def get_dashboard_state(mode: str = Query("normal")):
+def get_dashboard_state(response: Response, mode: str = Query("normal")):
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = '</dashboard/snapshot>; rel="successor-version"'
     return _dashboard_state_from_snapshot(_build_dashboard_snapshot(mode))
 
 

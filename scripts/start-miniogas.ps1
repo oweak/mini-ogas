@@ -5,7 +5,9 @@ param(
   [switch]$UseScriptLauncher,
   [switch]$CheckOnly,
   [switch]$RequireAiApi,
-  [switch]$StartKali
+  [switch]$StartKali,
+  [ValidateSet("postgresql", "memory")]
+  [string]$FactSource = "postgresql"
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +20,7 @@ if ($UseScriptLauncher -or $CheckOnly -or $StartKali) {
     "-File", (Join-Path $ProjectRoot "scripts\start-system.ps1"),
     "-RuntimeRoot", $RuntimeRoot
   )
+  $args += @("-FactSource", $FactSource)
   if ($CheckOnly) { $args += "-CheckOnly" }
   if ($RequireAiApi) { $args += "-RequireAiApi" }
   if ($StartKali) { $args += "-StartKali" }
@@ -31,6 +34,7 @@ $supervisorArgs = @(
   "-File", (Join-Path $ProjectRoot "scripts\start-supervisor.ps1"),
   "-RuntimeRoot", $RuntimeRoot
 )
+$supervisorArgs += @("-FactSource", $FactSource)
 if ($ReplaceRunning) { $supervisorArgs += "-ReplaceRunning" }
 if ($Foreground) { $supervisorArgs += "-Foreground" }
 

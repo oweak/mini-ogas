@@ -27,3 +27,41 @@
 - Added process-freshness proof to all runtime health endpoints: session token, process PID, and UTC process start time. `mogas up` now delegates to the strict startup script using the same session token and validates the returned proof instead of trusting a listening port.
 - P0 runtime verification completed: a real `mogas up --all` run produced a fresh central API PID/start time, and Playwright logged into the running dashboard and confirmed the live `3/3` node count in all three UI surfaces.
 - Implemented a real multi-provider chain inside ai-dispatcher. It now tries `AI_PROVIDER_CHAIN` in order, exposes non-secret provider status, records each attempted provider and failure, and falls back to local rules only after exhaustion. Unit fallback tests and a live DeepSeek dispatcher diagnosis both passed.
+
+## 2026-07-10
+- Started a full-system architecture, runtime, implementation, test, and documentation audit at the user's request.
+- Confirmed a clean worktree and completed the initial history/hotspot inventory. `central-api/app/store.py` is both the largest change hotspot and a bug magnet.
+- Inventoried all repository-owned services and source files while excluding generated runtime, virtual environments, caches, and node modules.
+- Found initial report/config drift: no current runtime was active, `.env.example` disagrees with supervisor microservice policy, README lists unimplemented Redis/NATS components, and some status documents contain corrupted text.
+- Logged tool errors and switched from denied `rg.exe`/broad recursion to targeted PowerShell-native scans.
+- Completed the automated baseline: 218 Python/TypeScript tests passed, the dashboard production build passed, and both Go modules passed when run with the project-local cache.
+- Confirmed the current verification script omits Go node-agent and supervisor tests and does not load the repository-local Go environment; logged this as a P0 acceptance gap.
+- Confirmed contract, login-gate, secret, and whitespace checks pass. Ruff is unavailable and not currently part of the enforced project verification path.
+- Completed dependency tracing for startup, supervisor, preflight, authentication, AI provider registry, persistence, nodes, and dashboard startup workflow.
+- Confirmed four high-impact truth defects: preflight mutates simulation state, preflight does not require all expected production nodes, preflight calls AI before login, and AI responses can report configured-provider availability instead of the provider that actually served the request.
+- Moved Phase 11 to complete and started P0/P1 remediation with an explicit architecture extraction for side-effect-free preflight.
+- Extracted preflight from `MemoryStore`, made it side-effect-free, deferred all model calls until authenticated login, and made production-node readiness require all configured workshop nodes.
+- Corrected AI request provenance across login smoke, diagnosis, chat, and shortcut paths; responses now identify the actual serving provider/model and rule fallback cannot be labeled as live AI.
+- Unified CORS configuration, changed the example runtime to PostgreSQL/microservices by default, disabled unusable pytest cache writes, and expanded the canonical verification script to all supported Python/Go/TypeScript components.
+- Full serial verification passed with 223 Python/TypeScript test cases plus Go package tests and 9 workflow subtests; production dashboard build passed.
+
+## 2026-07-13
+- Resumed the full-system audit against the original v2.5.0-v2.5.8 acceptance text rather than existing completion claims.
+- Removed remaining false AI provenance from compatibility diagnosis, metric-triggered diagnosis, and both command gateways.
+- Added command retry/cancel lifecycle operations, permanent idempotency-key deduplication, and concurrent claim verification.
+- Added the canonical agent heartbeat route and deprecation headers/logging for old heartbeat and dashboard-state APIs.
+- Added node-runtime publisher/adapter abstractions, formal scenario/run persistence, and deterministic seed reporting.
+- Enforced Safety Governor decisions at Store boundaries and all high-risk HTTP entry points; added denial auditing and emergency-containment-only automatic isolation.
+- Made PostgreSQL loader/write faults visible as degraded projection state and changed primary heartbeat writes to occur before cache publication.
+- Made replay explicitly read-only and added a non-mutation integration proof plus formal run-entity discovery.
+- Found and fixed conflicting scenario/seed identities across the three supervised nodes; added central rejection tests and isolated Kali attack-lab runs.
+- Current focused evidence: central-api 130/130, Kali workflow 12 tests plus 5 subtests, dashboard 60/60, and production build passed. Full canonical and live/browser acceptance remain pending.
+# 2026-07-13 Final acceptance
+
+- Completed cross-run fact isolation for alerts, events, notifications and part queue.
+- Added audit-response normalization and frontend tests; Dashboard now has 63 passing tests.
+- Full verification passed with central-api 133, simulator 26, AI dispatcher 4, CLI/workflow 30 plus 9 subtests, Go tests and production build.
+- Strict live verification passed: 8/8 supervised processes, 3/3 SimPy nodes, PostgreSQL primary projection and real DeepSeek API.
+- Fault-to-archive runtime workflow passed end to end.
+- Desktop/mobile browser QA and read-only replay checks passed.
+- Updated README, issue/status/debt/compatibility reports and added the full-system audit report.
