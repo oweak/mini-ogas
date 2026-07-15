@@ -56,7 +56,7 @@ try {
     try { & $aiDispatcherPython -m pytest .\tests -q } finally { Pop-Location }
   }
   Invoke-Step "CLI and workflow tests" {
-    python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py -q
+    python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py .\scripts\test_runtime_workflow_auth.py -q
   }
   Invoke-Step "dashboard tests and build" {
     Push-Location .\services\dashboard

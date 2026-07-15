@@ -8,9 +8,7 @@ import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
-
 API_URL = os.environ.get("MINIOGAS_API_URL", "http://127.0.0.1:8080").rstrip("/")
-TOKEN_PATH = Path(os.environ.get("MINIOGAS_TOKEN_PATH", r"D:\MiniOGAS-VMs\miniogas-token.txt"))
 AUTH_ENV_PATH = Path(os.environ.get("MINIOGAS_AUTH_ENV_PATH", r"D:\MiniOGAS-VMs\auth.env"))
 NODE_CODE = os.environ.get("MINIOGAS_WORKFLOW_NODE", f"workflow-check-node-{int(time.time())}")
 ISSUE_TYPE = "SPINDLE_TEMP_HIGH"
@@ -18,16 +16,9 @@ ISSUE_ID = f"{NODE_CODE}-{ISSUE_TYPE}"
 REQUEST_TIMEOUT_SEC = int(os.environ.get("MINIOGAS_WORKFLOW_TIMEOUT_SEC", "45"))
 
 
-def load_token() -> str:
-    if "OGAS_API_TOKEN" in os.environ and os.environ["OGAS_API_TOKEN"].strip():
-        return os.environ["OGAS_API_TOKEN"].strip()
-    if not TOKEN_PATH.exists():
-        raise RuntimeError(f"token file not found: {TOKEN_PATH}")
-    return TOKEN_PATH.read_text(encoding="utf-8").strip()
-
-
-TOKEN = load_token()
 ACCESS_TOKEN = ""
+NODE_TOKEN = ""
+NODE_CREDENTIAL_ISSUED = False
 
 
 def load_auth_env() -> dict[str, str]:
@@ -77,6 +68,24 @@ def login() -> None:
     ACCESS_TOKEN = str(token)
 
 
+def provision_workflow_node_credential() -> None:
+    global NODE_CREDENTIAL_ISSUED, NODE_TOKEN
+    issued = request(
+        "POST",
+        f"/api/security/node-credentials/{urllib.parse.quote(NODE_CODE, safe='')}/rotate",
+        {},
+        auth="bearer",
+    )
+    node_token = str(issued.get("token") or "") if isinstance(issued, dict) else ""
+    require(
+        bool(node_token) and issued.get("node_code") == NODE_CODE,
+        "temporary workflow Principal did not return a bound node credential",
+        issued,
+    )
+    NODE_TOKEN = node_token
+    NODE_CREDENTIAL_ISSUED = True
+
+
 def request(
     method: str,
     path: str,
@@ -91,7 +100,9 @@ def request(
         "X-Request-ID": f"runtime-workflow-{int(time.time() * 1000)}",
     }
     if auth == "node":
-        headers["X-OGAS-Token"] = TOKEN
+        if not NODE_TOKEN:
+            raise RuntimeError("temporary node credential is not initialized")
+        headers["X-OGAS-Token"] = NODE_TOKEN
     elif auth == "bearer":
         if not ACCESS_TOKEN:
             raise RuntimeError("bearer access token is not initialized")
@@ -126,6 +137,7 @@ def find_alert(issue_id: str) -> dict | None:
 
 def main() -> None:
     login()
+    provision_workflow_node_credential()
     now = datetime.now(UTC).isoformat()
     snapshot = request("GET", "/api/dashboard/snapshot", params={"mode": "normal"})
     active_run = snapshot.get("run", {}) if isinstance(snapshot, dict) else {}
@@ -406,6 +418,29 @@ def retire_workflow_node() -> None:
         print(f"warning: workflow node cleanup failed: {exc}", file=sys.stderr)
 
 
+def revoke_workflow_node_credential() -> None:
+    global NODE_CREDENTIAL_ISSUED, NODE_TOKEN
+    if not NODE_CREDENTIAL_ISSUED or not ACCESS_TOKEN:
+        return
+    try:
+        revoked = request(
+            "POST",
+            f"/api/security/node-credentials/{urllib.parse.quote(NODE_CODE, safe='')}/revoke",
+            {},
+            auth="bearer",
+        )
+        require(
+            int(revoked.get("revoked_credentials") or 0) >= 1,
+            "temporary workflow Principal credential was not revoked",
+            revoked,
+        )
+    except Exception as exc:
+        print(f"warning: workflow node credential cleanup failed: {exc}", file=sys.stderr)
+    finally:
+        NODE_TOKEN = ""
+        NODE_CREDENTIAL_ISSUED = False
+
+
 if __name__ == "__main__":
     try:
         main()
@@ -414,3 +449,4 @@ if __name__ == "__main__":
         raise
     finally:
         retire_workflow_node()
+        revoke_workflow_node_credential()
