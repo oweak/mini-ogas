@@ -8,12 +8,24 @@ from ..core.security import (
     ActorInfo,
     require_permission,
 )
+from ..core.config import settings
 from ..models import ControlCommandRequest, ControlCommandResponse
 from ..safety_governor import safety_governor
 from ..store import store
 from .control import execute_plan, plan_command
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+
+def _require_operator_control() -> None:
+    if settings.control_mode == "read_only":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "control_mode_read_only",
+                "message": "The configured CONTROL_MODE does not permit control actions.",
+            },
+        )
 
 
 class OperatorAgentCommandIn(BaseModel):
@@ -27,6 +39,7 @@ def issue_agent_command(
     payload: OperatorAgentCommandIn,
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
 ):
+    _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     if payload.command_type != "set_target_rate":

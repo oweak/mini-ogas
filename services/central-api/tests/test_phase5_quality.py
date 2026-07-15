@@ -10,6 +10,9 @@ from app.core.outbox import outbox_repository
 from app.main import app
 from fastapi.testclient import TestClient
 
+P5_EVENT_TIME = datetime(2026, 7, 14, tzinfo=UTC)
+P5_EVENT_AT = P5_EVENT_TIME.isoformat()
+
 
 def _post(
     context: dict,
@@ -52,7 +55,7 @@ def _movement(
             "source": "manual",
             "reason": "Phase 5 quality acceptance",
             "evidence_reference": f"EVIDENCE-{movement_id}",
-            "occurred_at": "2026-07-14T00:00:00+00:00",
+            "occurred_at": P5_EVENT_AT,
         },
         expected=expected,
     )
@@ -69,7 +72,7 @@ def quality_context() -> dict:
     assert login.status_code == 200
     headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     context = {"client": client, "headers": headers}
-    now = datetime.now(UTC)
+    now = P5_EVENT_TIME
 
     for code, name, dimension in (
         ("P5-EA", "Each", "count"),
@@ -284,7 +287,7 @@ def _measurement(
             "method": method,
             "gauge_code": gauge_code,
             "personnel_code": personnel_code,
-            "occurred_at": "2026-07-14T00:00:00+00:00",
+            "occurred_at": P5_EVENT_AT,
             "evidence_reference": f"EVIDENCE-{measurement_id}",
         },
         expected=expected,
@@ -335,7 +338,7 @@ def test_failed_measurement_places_hold_and_creates_nonconformance(
             "source": "manual",
             "reason": "must stay held",
             "evidence_reference": "P5-HOLD-PROBE",
-            "occurred_at": "2026-07-14T00:00:00+00:00",
+            "occurred_at": P5_EVENT_AT,
         },
     )
     assert blocked.status_code == 409
@@ -355,7 +358,7 @@ def test_failed_measurement_places_hold_and_creates_nonconformance(
             "method": "digital-micrometer",
             "gauge_code": "P5-GAUGE-VALID",
             "personnel_code": "P5-INSPECTOR",
-            "occurred_at": "2026-07-14T00:00:00+00:00",
+            "occurred_at": P5_EVENT_AT,
             "evidence_reference": "CHANGED",
         },
     )
@@ -399,7 +402,7 @@ def test_measurement_requires_matching_method_unit_gauge_and_qualification(
                 "method": overrides.get("method", "digital-micrometer"),
                 "gauge_code": overrides.get("gauge_code", "P5-GAUGE-VALID"),
                 "personnel_code": overrides.get("personnel_code", "P5-INSPECTOR"),
-                "occurred_at": "2026-07-14T00:00:00+00:00",
+                "occurred_at": P5_EVENT_AT,
                 "evidence_reference": f"P5-META-{suffix}-EVIDENCE",
             },
         )
@@ -620,7 +623,7 @@ def test_measurement_rolls_back_when_outbox_enqueue_fails(
             "method": "digital-micrometer",
             "gauge_code": "P5-GAUGE-VALID",
             "personnel_code": "P5-INSPECTOR",
-            "occurred_at": "2026-07-14T00:00:00+00:00",
+            "occurred_at": P5_EVENT_AT,
             "evidence_reference": "P5-ROLLBACK-EVIDENCE",
         },
     )

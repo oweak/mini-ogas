@@ -34,6 +34,15 @@ $MinioHealthUrl = "http://127.0.0.1:9000/minio/health/live"
 $RuntimeLogRoot = Join-Path $ProjectRoot ".runtime\logs"
 New-Item -ItemType Directory -Force -Path $RuntimeLogRoot | Out-Null
 
+function Get-ServicePython {
+  param([Parameter(Mandatory = $true)][string]$ServiceName)
+  $python = Join-Path $ProjectRoot "services\$ServiceName\.venv\Scripts\python.exe"
+  if (-not (Test-Path -LiteralPath $python)) {
+    throw "$ServiceName virtual environment is missing: $python"
+  }
+  return $python
+}
+
 function Get-PostgresDsn {
   if (-not (Test-Path -LiteralPath $PostgresConfigPath)) {
     throw "PostgreSQL runtime configuration is missing: $PostgresConfigPath"
@@ -256,6 +265,7 @@ try {
       }
       if (-not (Test-PortListening $service.port)) {
         $serviceLog = Join-Path $RuntimeLogRoot "$($service.name).out.log"
+        $servicePython = Get-ServicePython $service.directory
         $serviceCommand = @"
 `$env:API_ACCESS_TOKEN = '$token'
 `$env:OGAS_SESSION_TOKEN = '$LaunchSessionToken'
@@ -263,7 +273,7 @@ try {
 `$env:DEEPSEEK_BASE_URL = '$env:DEEPSEEK_BASE_URL'
 `$env:DEEPSEEK_MODEL = '$env:DEEPSEEK_MODEL'
 Set-Location -LiteralPath '$ProjectRoot\services\$($service.directory)'
-python -m uvicorn app.main:app --host 127.0.0.1 --port $($service.port) *> '$serviceLog'
+& '$servicePython' -m uvicorn app.main:app --host 127.0.0.1 --port $($service.port) *> '$serviceLog'
 "@
         Start-HiddenPowerShell $service.name $serviceCommand (Join-Path $ProjectRoot "services\$($service.directory)")
       }
@@ -289,6 +299,7 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port $($service.port) *> '$ser
       $checks.Add((New-CheckResult "central-api-process" $false "Port $ApiPort is not listening."))
     } else {
       $apiLog = Join-Path $RuntimeLogRoot "central-api.out.log"
+      $centralPython = Get-ServicePython "central-api"
 $apiCommand = @"
 `$env:OGAS_API_TOKEN = '$token'
 `$env:API_ACCESS_TOKEN = '$token'
@@ -310,7 +321,7 @@ $apiCommand = @"
 `$env:JWT_SECRET = '$($authConfig.jwt_secret)'
 `$env:AUTH_BOOTSTRAP_PASSWORD = '$($authConfig.bootstrap_password)'
 Set-Location -LiteralPath '$ProjectRoot\services\central-api'
-python -m uvicorn app.main:app --host 127.0.0.1 --port $ApiPort *> '$apiLog'
+& '$centralPython' -m uvicorn app.main:app --host 127.0.0.1 --port $ApiPort *> '$apiLog'
 "@
       Start-HiddenPowerShell "central-api" $apiCommand (Join-Path $ProjectRoot "services\central-api")
       $health = Wait-JsonEndpoint "central-api /health" "$ApiUrl/health" @{} 40

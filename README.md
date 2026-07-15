@@ -18,12 +18,17 @@ machining factory with turning, milling, and grinding workshops.
 
 - Central host: one Windows workstation running the Go supervisor.
 - Central facts: PostgreSQL primary database.
+- Runtime projection: authenticated Redis, rebuildable from PostgreSQL authority.
+- Object storage: local MinIO service for document and evidence objects.
 - Workshop nodes: three supervised SimPy processes (`turning`, `milling`, `grinding`).
 - Authoritative transport: authenticated HTTP heartbeat, command polling and REST management.
 - Shadow transport: local NATS Server + JetStream with schema-valid v3 envelopes and a PostgreSQL receipt worker.
 - Optional attack lab: prepared Kali disk/tooling, not a production availability dependency.
 
-Separate edge hosts, Redis projection and a registered Kali lab remain later v3.0 work and are not current runtime claims. NATS is currently a loopback-only v3.0.1 shadow path; it is not yet the authoritative edge transport.
+Separate edge hosts and a registered Kali lab remain later v3.0 work and are not
+current runtime claims. NATS is currently a loopback-only shadow path; it is not yet
+the authoritative edge transport. Redis is active only as a rebuildable projection,
+not as a business fact source.
 
 ## Architecture
 
@@ -35,8 +40,10 @@ central-control
 |-- market-simulator
 |-- production-planner
 |-- postgres (primary facts)
+|-- redis (rebuildable runtime projection)
 |-- nats-server + JetStream (shadow messages)
 |-- nats-event-worker (idempotent PostgreSQL receipts)
+|-- minio (object/evidence storage)
 `-- go-supervisor
 
 workshop-node
@@ -96,7 +103,8 @@ mini-ogas/
 The current implementation is a Python FastAPI `central-api`, Vue 3 dashboard,
 Python `node-agent`, SimPy process-mode workshop nodes, and optional isolated
 Kali/VirtualBox red-team lab support. Install the pinned NATS Server runtime once,
-then start the local system through the supervisor entrypoint:
+then start the local system through the supervisor entrypoint. Redis and MinIO are
+resolved by the runtime bootstrap path:
 
 ```powershell
 .\scripts\install-nats.ps1
@@ -151,3 +159,7 @@ AI model calls are only proven when the runtime check is run with:
 
 If that fails with `AI vault is present but locked`, the system is using rule
 fallback and must not be described as having live DeepSeek participation.
+
+The current Windows host does not have Docker/Compose installed. Source Dockerfiles
+and Compose manifests are present, but clean image build and container startup remain
+unverified and must not be presented as available deployment evidence.

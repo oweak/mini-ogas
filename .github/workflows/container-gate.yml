@@ -1,0 +1,24 @@
+name: Container Gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+      - "codex/**"
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build images and verify container startup
+        run: bash scripts/container-smoke.sh

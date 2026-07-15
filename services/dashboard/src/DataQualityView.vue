@@ -113,6 +113,9 @@ onUnmounted(() => {
         <div class="quality-source-line">
           <span class="source-chip authority">事实源 {{ summary?.source_of_truth ?? '未连接' }}</span>
           <span v-for="source in sourceLabels" :key="source" class="source-chip">{{ source }}</span>
+          <span v-if="summary?.excluded_auxiliary_streams" class="source-chip auxiliary">
+            辅助流 {{ summary.excluded_auxiliary_streams }}（不计入生产质量）
+          </span>
           <span class="source-time">数据时间 {{ timeLabel(summary?.generated_at) }}</span>
         </div>
       </div>

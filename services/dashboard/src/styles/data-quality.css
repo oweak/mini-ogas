@@ -41,6 +41,12 @@
   color: #30455b;
 }
 
+.source-chip.auxiliary {
+  background: #fff7e6;
+  border-color: #dfb86c;
+  color: #795313;
+}
+
 .source-time {
   color: #637282;
   font-size: 13px;

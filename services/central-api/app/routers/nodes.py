@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from ..core.security import (
+    PERM_COMMAND_ISSUE,
     PERM_NODE_ISOLATE,
     PERM_NODE_RESTORE,
     ActorInfo,
@@ -216,7 +217,11 @@ def claim_agent_pending_commands(node_code: str):
 
 @router.post("/api/agents/{node_code}/commands")
 @router.post("/agents/{node_code}/commands")
-def create_agent_command(node_code: str, payload: AgentCommandCreateIn):
+def create_agent_command(
+    node_code: str,
+    payload: AgentCommandCreateIn,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
     _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
@@ -240,7 +245,7 @@ def create_agent_command(node_code: str, payload: AgentCommandCreateIn):
         "set_target_rate",
         "low",
         "pending",
-        payload.operator,
+        actor.username or actor.role or payload.operator,
         parameters={"target_rate": payload.target_rate},
     )
     return command

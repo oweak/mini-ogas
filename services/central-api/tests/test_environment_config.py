@@ -1,8 +1,13 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
 from app.core.config import LOCAL_DEVELOPMENT_JWT_SECRET, Settings, settings
 from app.store import MemoryStore
+
+
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def production_settings(**overrides) -> Settings:
@@ -39,6 +44,21 @@ def test_valid_read_only_production_environment_is_explicit() -> None:
         "tenant_id": "tenant-production",
         "site_id": "site-production-01",
     }
+
+
+def test_app_env_alias_dev_is_rejected_instead_of_silent_coercion() -> None:
+    with pytest.raises(ValidationError, match="app_env"):
+        Settings(app_env="dev")
+
+
+def test_direct_runtime_dependencies_are_declared_for_clean_install() -> None:
+    requirements = {
+        line.split("==", 1)[0].strip().lower()
+        for line in (SERVICE_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+    assert "psutil" in requirements
 
 
 @pytest.mark.parametrize(

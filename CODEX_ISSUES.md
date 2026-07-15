@@ -1,14 +1,15 @@
 # Mini-OGAS Issues Status
 
-Last verified: 2026-07-13
+Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 
 ## Acceptance Summary
 
 | Scope | Status | Evidence |
 | --- | --- | --- |
-| v2.2 trusted loop | Complete | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
-| v2.5 architecture cleanup | Complete for local multi-process scope | PostgreSQL primary projection, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass. |
-| v3.0 true distributed deployment | Not started as a production claim | Separate edge hosts, NATS transport, registered Kali lab and HA remain roadmap work. |
+| Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
+| Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
+| Current A-H hardening objective | In progress | Stage A local tests/runtime pass; Docker/Compose clean build is unverified. Stage B source fixes are present, but container proof remains open. |
+| True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
 
@@ -35,24 +36,44 @@ Last verified: 2026-07-13
 
 ## Current Supported Runtime Truth
 
-- Runtime owner: Go supervisor, 8 managed processes.
+- Runtime owner: Go supervisor, 11 healthy managed processes in the latest verified session.
 - Production nodes: three process-hosted SimPy nodes, counted only from fresh heartbeats.
 - Central fact source: PostgreSQL; memory is a cache/projection. SQLite is test/local fallback only.
 - Dashboard fact source: `/api/dashboard/snapshot`; legacy state is a wrapper.
-- AI: DeepSeek API is called only after administrator login; provider-chain fallback is explicit.
+- Runtime projection: authenticated Redis; it is rebuildable and not authoritative.
+- Object storage: local MinIO process.
+- Event transport: authenticated HTTP/REST remains authoritative; NATS JetStream is loopback-only Shadow with PostgreSQL receipts.
+- AI: the verified `-RequireAiUnlocked` run used DeepSeek after administrator unlock; locked/failed runs must be reported as fallback.
 - Replay: PostgreSQL-backed, formal `run_id`, read-only and isolated from live state.
 - Attack lab: script boundary is implemented; prepared Kali disk exists but the VM is not registered/running.
 
-## Remaining Roadmap, Not Current Bugs
+## Current Hardening Gate
+
+| ID | Requirement | Current evidence | Gate status |
+| --- | --- | --- | --- |
+| B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
+| B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
+| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; full suite 260 passed | Closed in source |
+| B4 | Complete Central API image inputs | Dockerfile copies service runtime helpers | Source fixed; image build unverified |
+| B5 | Complete Node Agent image inputs | Dockerfile copies direct imports and pins runtime packages | Source fixed; image build unverified |
+| B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
+| B7 | Use one controlled Phase 5 clock | Phase 5 suite: 9 passed | Closed |
+| B8 | Align status documents to evidence | README, project status, issues and baseline updated together | Closed |
+
+Stage B must not be described as fully accepted until B4/B5 are proven with a clean
+Docker build and startup. Docker Desktop/CLI and WSL are not installed on this host.
+
+## Remaining Work
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Freeze multi-host deployment and Agent Protocol contract. | v3.0.0 |
-| P1 | Deploy each workshop agent to a separate host/VM with certificate auth and time sync. | v3.0.1-v3.0.3 |
-| P1 | Implement `NATSPublisher` behind the existing interface. | v3.0.4 |
-| P1 | Register and network-isolate the Kali VM before attack execution. | v3.0.6 |
-| P2 | Split remaining Store projection into bounded repositories/services. | v3.0.x |
-| P2 | Add HA, backup/restore SLOs and production observability. | v3.x |
+| P0 | Install/provide Docker and prove clean Central API, Node Agent, Dashboard and Compose build/start. | Stage A/B gate |
+| P1 | Audit and complete the unified Principal/permission matrix for every sensitive write route. | Stage C |
+| P1 | Split command and node identity domains out of `MemoryStore`, then continue bounded-domain extraction. | Stage D |
+| P1 | Converge unique fact writers, one outbox publisher, idempotent consumers and NATS Shadow reconciliation. | Stage E |
+| P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
+| P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
+| P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |
 
 ## Verification
 
@@ -62,7 +83,8 @@ Last verified: 2026-07-13
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest result: all required tests and live checks passed. Canonical counts are
-central-api 162, node simulator 35, Dashboard 69 plus build, AI dispatcher 4,
-CLI/workflow 31 plus 9 subtests, and both Go modules. Ruff correctness lint is
-now part of the canonical gate and passes.
+Latest local non-container result: all verifier gates passed. Canonical counts are
+Central API 260, node simulator 39, Dashboard 73 across 16 files plus production
+build, AI dispatcher 4, CLI/workflow 31 plus 9 subtests, and both Go modules. Ruff
+correctness passes. Docker/Compose is explicitly excluded because no Docker runtime
+is installed; therefore the current A-H objective remains open.

@@ -73,6 +73,48 @@ def test_operator_command_gateway_uses_jwt_and_keeps_agent_channel_machine_only(
     assert machine_denied.status_code == 401
 
 
+def test_node_ingest_token_cannot_create_cross_node_command(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    source_node = "turning-workshop-01"
+    target_node = "milling-workshop-01"
+    with TestClient(app) as client:
+        for node_code in (source_node, target_node):
+            heartbeat = client.post(
+                "/node-heartbeats",
+                json={
+                    "node_code": node_code,
+                    "status": "running",
+                    "runtime": {"run_id": "RUN-RBAC-CROSS-NODE", "scenario_id": "SCN-NORMAL"},
+                    "production": {
+                        "machine_count": 1,
+                        "process_time_sec": 120,
+                        "nominal_capacity_per_hour": 30.0,
+                    },
+                },
+                headers={"X-OGAS-Token": settings.node_ingest_token},
+            )
+            assert heartbeat.status_code == 200
+
+        denied = client.post(
+            f"/agents/{target_node}/commands",
+            json={
+                "command_type": "set_target_rate",
+                "target_rate": 0.5,
+                "operator": source_node,
+            },
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+        pending = client.get(
+            f"/agents/{target_node}/commands/pending",
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+
+    assert denied.status_code == 403
+    assert "command:issue" in denied.json()["detail"]
+    assert pending.status_code == 200
+    assert pending.json() == []
+
+
 def test_production_snapshot_count_is_explicit_and_excludes_logical_cloud_nodes() -> None:
     with TestClient(app) as client:
         snapshot = client.get("/api/dashboard/snapshot", headers={"X-OGAS-Token": "mini-ogas-dev-token"})

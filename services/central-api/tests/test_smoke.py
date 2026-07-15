@@ -12,6 +12,15 @@ from app.store import store
 AUTH_HEADERS = {"X-OGAS-Token": "mini-ogas-dev-token"}
 
 
+def _operator_auth(client: TestClient) -> dict[str, str]:
+    login = client.post(
+        "/auth/login",
+        json={"operator": "admin", "password": "mini-ogas-dev-token"},
+    )
+    assert login.status_code == 200
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
 def test_health_endpoint() -> None:
     with TestClient(app) as client:
         response = client.get("/health")
@@ -363,6 +372,7 @@ def test_protected_api_401_keeps_dashboard_cors_visible() -> None:
 def test_agent_set_target_rate_command_lifecycle() -> None:
     node_code = "milling-workshop-01"
     with TestClient(app) as client:
+        operator_auth = _operator_auth(client)
         heartbeat = client.post(
             "/api/node-heartbeats",
             headers=AUTH_HEADERS,
@@ -410,8 +420,8 @@ def test_agent_set_target_rate_command_lifecycle() -> None:
                 current_step="grinding",
             )
         created = client.post(
-            f"/api/agents/{node_code}/commands",
-            headers=AUTH_HEADERS,
+            f"/ops/agents/{node_code}/commands",
+            headers=operator_auth,
             json={"command_type": "set_target_rate", "target_rate": 0.72, "operator": "pytest"},
         )
         claimed = client.get(f"/api/agents/{node_code}/commands/pending", headers=AUTH_HEADERS)
@@ -490,6 +500,7 @@ def test_agent_set_target_rate_command_lifecycle() -> None:
 def test_agent_command_rejects_target_above_reported_physical_capacity() -> None:
     node_code = "milling-workshop-01"
     with TestClient(app) as client:
+        operator_auth = _operator_auth(client)
         heartbeat = client.post(
             "/api/node-heartbeats",
             headers=AUTH_HEADERS,
@@ -516,8 +527,8 @@ def test_agent_command_rejects_target_above_reported_physical_capacity() -> None
             },
         )
         created = client.post(
-            f"/api/agents/{node_code}/commands",
-            headers=AUTH_HEADERS,
+            f"/ops/agents/{node_code}/commands",
+            headers=operator_auth,
             json={"command_type": "set_target_rate", "target_rate": 1.0, "operator": "pytest"},
         )
 
@@ -860,6 +871,7 @@ def test_dashboard_demo_overlay_is_never_labeled_live() -> None:
 
 def test_environment_boundary_rejects_source_mismatch_and_read_only_control(monkeypatch) -> None:
     with TestClient(app) as client:
+        operator_auth = _operator_auth(client)
         monkeypatch.setattr(settings, "data_source", "live")
         mismatch = client.post(
             "/api/node-heartbeats",
@@ -874,8 +886,8 @@ def test_environment_boundary_rejects_source_mismatch_and_read_only_control(monk
         monkeypatch.setattr(settings, "data_source", "simulated")
         monkeypatch.setattr(settings, "control_mode", "read_only")
         command = client.post(
-            "/api/agents/turning-workshop-01/commands",
-            headers=AUTH_HEADERS,
+            "/ops/agents/turning-workshop-01/commands",
+            headers=operator_auth,
             json={"command_type": "set_target_rate", "target_rate": 0.5, "operator": "pytest"},
         )
 

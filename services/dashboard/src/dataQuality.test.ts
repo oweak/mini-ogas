@@ -1,10 +1,18 @@
 import { describe, expect, it } from 'vitest'
-import { freshnessLabel, qualityPresentation, signalValueLabel } from './dataQuality'
+import { freshnessLabel, qualityPresentation, signalValueLabel, type QualitySummary } from './dataQuality'
 
 describe('data quality presentation', () => {
-  it('keeps stale telemetry distinct from bad measurements', () => {
+  it('keeps stale telemetry distinct from bad measurements with intact Chinese labels', () => {
+    expect(qualityPresentation('good')).toEqual({
+      label: '良好',
+      tone: 'good'
+    })
     expect(qualityPresentation('uncertain', 'stale')).toEqual({
       label: '数据陈旧',
+      tone: 'uncertain'
+    })
+    expect(qualityPresentation('uncertain')).toEqual({
+      label: '待确认',
       tone: 'uncertain'
     })
     expect(qualityPresentation('bad', 'range_violation')).toEqual({
@@ -33,5 +41,20 @@ describe('data quality presentation', () => {
       quality_code: 'good',
       quality_reason: ''
     })).toBe('61.25 Cel')
+  })
+
+  it('accepts scoped production quality metadata from the backend', () => {
+    const summary: QualitySummary = {
+      generated_at: '2026-07-14T00:00:00Z',
+      source_of_truth: 'postgresql-historian',
+      counts: { good: 15 },
+      signals: [],
+      scope: 'configured-production-sources',
+      expected_sources: ['turning-workshop-01'],
+      excluded_auxiliary_streams: 4
+    }
+
+    expect(summary.scope).toBe('configured-production-sources')
+    expect(summary.excluded_auxiliary_streams).toBe(4)
   })
 })

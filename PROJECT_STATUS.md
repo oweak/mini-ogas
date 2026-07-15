@@ -1,101 +1,83 @@
 # Mini-OGAS Project Status
 
-Verified: 2026-07-13
+Verified: 2026-07-15 on branch `codex/current-stage-hardening`
 
-## Progress
+## Current Position
 
-| Stage | Completion | Acceptance boundary |
-| --- | ---: | --- |
-| v2.2 compatible trusted loop | 100% | Local deterministic three-node runtime, trusted control loop and persistence. |
-| v2.5 architecture-debt cleanup | 100% | Local supervised multi-process architecture with PostgreSQL primary facts. |
-| v3.0 true distributed system | 0% production deployment | Multi-host edge nodes, NATS, registered attack lab and HA are not claimed. |
+Mini-OGAS has a verified local supervised runtime and broad functional coverage, but
+the current A-H hardening objective is not complete. Historical v2.2/v2.5 functional
+gates do not replace the current requirements for clean container builds, unified
+identity/control, PostgreSQL fact ownership, deployment convergence and end-to-end
+proof.
 
-## Current Architecture
+| Current stage | Status | Evidence boundary |
+| --- | --- | --- |
+| A - truthful baseline | Local path verified; container path open | Tests, production frontend build and 11-process Supervisor runtime pass. Docker/Compose cannot be run on this host. |
+| B - P0 source fixes | Seven closed; two image fixes await container proof | B1-B3 and B6-B8 are tested. B4/B5 are statically corrected but not clean-built. |
+| C - unified identity/control | Audit pending | JWT/RBAC, node token paths and Safety Governor exist, but all sensitive writes still require route-by-route proof. |
+| D - `MemoryStore` decomposition | Not accepted | Some repositories exist; a complete ownership map, duplicate-state removal and restart proof are still required. |
+| E - data/event convergence | Not accepted | PostgreSQL authority, Redis projection and NATS Shadow exist; unique writer/outbox/idempotency/reconciliation gates remain to be proved. |
+| F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
+| G - unified AI plane | Not accepted | Live DeepSeek and fallback evidence exist; sole model-call ownership and high-risk approval integration remain to be proved. |
+| H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
+
+## Verified Runtime Truth
 
 ```text
-Vue Dashboard :5173
+Vue Dashboard :5173 (Supervisor currently uses Vite development server)
         |
         | JWT + REST
         v
-FastAPI central-api :8080 ---- PostgreSQL primary facts
+FastAPI central-api :8080 ---- PostgreSQL authoritative facts
         |                         |-- scenarios / runs
         |                         |-- heartbeat history
         |                         |-- commands + audit transaction
-        |                         |-- alerts / diagnoses / WIP
+        |                         |-- production / quality / maintenance facts
         |
-        | HTTPPublisher / canonical heartbeat and command polling
-        +---- turning SimPy process
-        +---- milling SimPy process
-        +---- grinding SimPy process
-        |
-        +---- AI dispatcher :8081
-        +---- market simulator :8082
-        +---- production planner :8083
-
-Go supervisor :9099 owns all eight application processes.
+        |---- Redis rebuildable projection
+        |---- NATS JetStream Shadow + PostgreSQL receipts
+        |---- MinIO object/evidence storage
+        |---- AI dispatcher :8081
+        |---- market simulator :8082
+        |---- production planner :8083
+        |---- three SimPy workshop processes
+        `---- Go supervisor :9099
 ```
 
-The three workshop nodes are separate supervised processes on one Windows host. This is a real process/API/database integration, but it is not yet a multi-host deployment.
-
-## Completed v2.5 Requirements
-
-| Item | Result |
-| --- | --- |
-| v2.5.0 debt freeze | Every debt has status, owner and exit evidence in `docs/ARCHITECTURE_DEBT.md`. |
-| v2.5.1 Snapshot migration | Core Dashboard runtime uses snapshot; legacy state is a wrapper. |
-| v2.5.2 PostgreSQL primary facts | Repository/projection, schema migration, degraded state, rollback mode and restart recovery are implemented. |
-| v2.5.3 API wrappers | Canonical agent heartbeat exists; legacy heartbeat/dashboard routes are deprecated wrappers. |
-| v2.5.4 Command Manager | Complete lifecycle, idempotency, concurrency, retry, cancel, timeout and audit. |
-| v2.5.5 Safety Governor | Role, risk, confirmation and RunMode policies gate all supported high-risk actions. |
-| v2.5.6 Replay | Read-only database replay with formal run list and Dashboard timeline. |
-| v2.5.7 Scenario/Run | Formal tables, deterministic seed, identity validation and attack/normal isolation. |
-| v2.5.8 Adapters | `EventPublisher`/`HTTPPublisher` and `RuntimeAdapter`/SimPy implementations. |
-
-## Runtime Verification
-
-The latest strict check confirmed:
-
-- 8/8 supervisor-owned processes healthy and session-matched.
-- 3/3 fresh production node heartbeats.
-- one shared `SCN-NORMAL-SIMPY-FLOW-001` scenario and deterministic seed per normal run.
-- `data_source=live`, `simulation_engine=simpy`.
-- PostgreSQL primary projection healthy with no unreported write failure.
-- administrator login issued JWT and completed a real DeepSeek API smoke call.
-- current snapshot contained no historical alerts or notifications.
-- current WIP projection excluded historical runs.
-- live target-rate commands changed physical constrained output and were verified
-  from later heartbeat observations.
-- AI rule explanation polling was reduced to one semantic request while snapshots
-  continued to refresh every second.
-- reasoning-capable AI responses use a configurable 4096-token budget; empty or
-  unusable provider output is reported as rule fallback rather than live success.
-- replay listed formal runs and showed `replay / 只读`.
-- desktop and 390 px mobile browser checks had no horizontal overflow or clipped buttons.
+The three workshop nodes are separate processes on one Windows host. This is real
+process/API/PostgreSQL integration, but it is not an independently hosted distributed
+deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Automated Evidence
 
-| Suite | Result |
+| Suite or gate | Latest result |
 | --- | ---: |
-| central-api | 162 passed |
-| Python node simulator | 35 passed |
-| Dashboard | 69 passed |
+| Central API | 260 passed |
+| Python node simulator | 39 passed |
+| Dashboard | 16 files / 73 tests passed |
+| Dashboard production build | passed |
 | AI dispatcher | 4 passed |
 | CLI/workflow | 31 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
-| Dashboard production build | passed |
-| Real fault-to-archive workflow | passed |
-| Secret scan | passed |
-| Ruff correctness lint | passed |
+| API and generated contracts | passed |
+| Secret scan and ACL check | passed |
+| Ruff correctness | passed |
+| Strict Supervisor runtime | passed, 11 healthy processes and 3/3 fresh nodes |
+| Docker/Compose build and startup | not run: Docker/WSL unavailable |
 
-## Important Boundaries
+## Hard Boundaries
 
-1. PostgreSQL is the central source of truth; SQLite is not the normal central runtime.
-2. Historical open rows remain available to audit/replay but never enter a new live run.
-3. AI suggestions cannot directly bypass Command Manager or Safety Governor.
-4. NATS and Redis are not active components. NATS is a v3 transport option; Redis has no current requirement.
-5. Kali tooling is lab-only. The disk image being present does not mean the VM is registered or safe to run.
+1. PostgreSQL is the central source of truth. SQLite is only node-local/test fallback.
+2. Redis is a rebuildable projection and must never be described as authoritative.
+3. NATS is a loopback Shadow path and must never be described as authoritative edge transport.
+4. Live DeepSeek participation is proven only by an unlocked runtime verification result.
+5. Dashboard production build passes, but the current Supervisor path still serves Vite dev mode.
+6. Dockerfiles and Compose manifests existing in the repository do not prove container deployability.
+7. Kali tooling remains laboratory-only; no registered, isolated Kali VM is currently claimed.
 
-## Next Stage
+## Next Required Gate
 
-Start v3.0 only after freezing the multi-host deployment contract: host roles, network zones, certificates, time synchronization, agent protocol, backup/restore and attack-lab isolation. Do not add NATS or extra VMs before that contract is accepted.
+Provide a Docker-capable host, run clean image/Compose build and startup, and record the
+evidence in `docs/audits/current-stage-baseline.md`. Only then can Stage B be accepted
+and Stage C implementation proceed without violating the mandatory order.
