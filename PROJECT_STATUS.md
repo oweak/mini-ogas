@@ -15,7 +15,7 @@ proof.
 | A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 12-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
 | B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
 | C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
-| D - `MemoryStore` decomposition | In progress | The generated ownership map is current. Command and Node repositories have restart/transaction tests, periodic work runs only in a dedicated worker, and Runtime Simulation State now has one locked owner. Production, Quality, Event/Outbox and adapter boundaries remain open. |
+| D - `MemoryStore` decomposition | In progress | Command, Node, Production Execution, Quality and Runtime Simulation State have repository/restart/transaction evidence; periodic work has one dedicated owner. Event/Outbox and adapter boundaries remain open. |
 | E - data/event convergence | Not accepted | PostgreSQL authority, Redis projection and NATS Shadow exist; unique writer/outbox/idempotency/reconciliation gates remain to be proved. |
 | F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
 | G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
@@ -81,7 +81,6 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Next Required Gate
 
-Continue Stage D from the verified Command/Node/Scheduler/Simulation boundaries:
-confirm Production Execution and Quality/Calibration ownership, then extract
-Event/Outbox and adapter ownership. Stage E still owns the unique publisher and
-reconciliation gates; full Compose parity remains tracked for Stage F.
+Continue Stage D from the verified Command/Node/Production/Quality/Simulation
+boundaries: extract Event/Outbox and adapter ownership. Stage E still owns the unique
+publisher and reconciliation gates; full Compose parity remains tracked for Stage F.

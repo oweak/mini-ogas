@@ -77,8 +77,8 @@ Results:
 
 ## Remaining Stage D Work
 
-- Confirm and close Production Execution and Quality/Calibration ownership against
-  their existing PostgreSQL repositories and phase gates.
+- Production Execution and Quality/Calibration ownership is closed by
+  `docs/audits/stage-d-execution-quality-evidence.md`.
 - Extract Event/Outbox service ownership and isolate Redis/NATS/MinIO adapters from
   the compatibility facade.
 - Prove restart behavior for every remaining extracted domain.

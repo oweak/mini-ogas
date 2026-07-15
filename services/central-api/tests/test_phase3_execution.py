@@ -8,6 +8,7 @@ from app.core.auth import issue_access_token
 from app.core.database import get_db
 from app.core.outbox import outbox_repository
 from app.main import app
+from app.repositories.execution import ExecutionRepository
 from fastapi.testclient import TestClient
 
 
@@ -601,6 +602,18 @@ def test_execution_mutation_requires_permission(execution_master: dict) -> None:
         },
     )
     assert response.status_code == 403
+
+
+def test_execution_facts_survive_repository_recreation(execution_master: dict) -> None:
+    execution = _new_execution(execution_master, "REPOSITORY-RESTART", quantity=3)
+
+    restarted_repository = ExecutionRepository()
+    restored = restarted_repository.get_work_order_execution(execution["work_order_code"])
+    restored_task = restarted_repository.get_task(int(execution["task"]["id"]))
+
+    assert restored["work_order_code"] == execution["work_order_code"]
+    assert restored["tasks"][0]["id"] == execution["task"]["id"]
+    assert restored_task["status"] == "dispatched"
 
 
 def test_execution_write_rolls_back_when_transactional_outbox_fails(

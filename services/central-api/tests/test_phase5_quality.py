@@ -8,6 +8,7 @@ from app.core.auth import issue_access_token
 from app.core.database import get_db
 from app.core.outbox import outbox_repository
 from app.main import app
+from app.repositories.quality import QualityRepository
 from fastapi.testclient import TestClient
 
 P5_EVENT_TIME = datetime(2026, 7, 14, tzinfo=UTC)
@@ -154,6 +155,7 @@ def quality_context() -> dict:
         "P5-SCRAP",
         "P5-REWORK",
         "P5-ROLLBACK",
+        "P5-RESTART",
     )
     for lot_code in lot_codes:
         _post(
@@ -604,6 +606,17 @@ def test_quality_evidence_is_append_only(quality_context: dict) -> None:
                 "DELETE FROM quality_status_history WHERE id=?",
                 (int(dict(history)["id"]),),
             )
+
+
+def test_quality_facts_survive_repository_recreation(quality_context: dict) -> None:
+    created = _create_inspection(quality_context, "P5-RESTART")
+
+    restarted_repository = QualityRepository()
+    restored = restarted_repository.get_inspection(created["inspection_lot_code"])
+
+    assert restored["inspection_lot_code"] == "INSP-P5-RESTART"
+    assert restored["status"] == "open"
+    assert restored["quality_hold"]["status"] == "open"
 
 
 def test_measurement_rolls_back_when_outbox_enqueue_fails(

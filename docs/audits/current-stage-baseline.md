@@ -434,6 +434,11 @@ dedicated worker. The ownership inventory is now 34 fields / 132 methods, Centra
 passes 292 tests, authenticated public stepping produced `0 -> 1 -> 1`, and direct
 unauthenticated worker access returned 401.
 
-Stage D remains open for Production Execution, Quality/Calibration, Event/Outbox and
-Redis/NATS/MinIO adapter extraction. Stage E remains open for the single formal
-publisher and reconciliation thresholds.
+Production Execution and Quality/Calibration were subsequently accepted against
+their direct, stateless PostgreSQL repositories. Repository-recreation and route
+boundary tests pass, while the Phase 3 and Phase 5 production gates continue to prove
+transactional Outbox, invariant and authorization behavior. The complete Central API
+suite at this checkpoint passes 296 tests.
+
+Stage D remains open for Event/Outbox and Redis/NATS/MinIO adapter extraction. Stage E
+remains open for the single formal publisher and reconciliation thresholds.
