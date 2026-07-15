@@ -41,6 +41,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260715-06 | Command and node runtime projections were still owned directly by `MemoryStore`. | Added durable Command and Node repositories, compatibility projections, transaction/restart tests and a generated ownership map. |
 | FIX-20260715-07 | Every API worker started simulation, Outbox and NATS consumer loops. | Moved periodic work to one `background-worker` process; API lifespan now owns request-serving dependencies only and architecture tests reject task creation there. |
 | FIX-20260715-08 | Central liveness synchronously waited on Supervisor and worker readiness, creating a startup dependency cycle. | Bounded dependency probes to 250 ms, retained degraded readiness reporting and verified 195 ms Central health during a 12/12 supervised startup. |
+| FIX-20260715-09 | Simulation control and progress remained eight independently mutable fields on `MemoryStore`. | Added one locked `RuntimeSimulationState`, made progress read-only through the compatibility facade, regenerated the ownership map and proved public API/worker tick consistency after restart. |
 
 ## Current Supported Runtime Truth
 
@@ -91,7 +92,7 @@ startup is still a Stage F gap.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Continue after the completed Command/Node/Scheduler boundaries: extract Production, Quality, Event/Outbox, Simulation State and adapter ownership from `MemoryStore`. | Stage D |
+| P1 | Continue after the completed Command/Node/Scheduler/Simulation boundaries: confirm Production and Quality ownership, then extract Event/Outbox and adapter ownership from `MemoryStore`. | Stage D |
 | P1 | Converge unique fact writers, one outbox publisher, idempotent consumers and NATS Shadow reconciliation. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |

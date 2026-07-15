@@ -82,7 +82,7 @@ cd 'D:\New project\mini-ogas'
 
 Results:
 
-- Central API: 288 passed.
+- Central API: 292 passed after the Runtime Simulation State checkpoint.
 - Python simulator: 39 passed.
 - AI Dispatcher: 4 passed.
 - CLI/workflow: 36 passed plus 9 subtests.
@@ -106,6 +106,7 @@ Results:
 - Extract Production Execution ownership.
 - Extract Quality/Calibration ownership.
 - Extract Event/Outbox repository/service ownership.
-- Extract Runtime Simulation State ownership.
+- Runtime Simulation State ownership is closed by
+  `docs/audits/stage-d-simulation-runtime-evidence.md`.
 - Isolate Redis/NATS/MinIO adapters from `MemoryStore`.
 - Complete duplicate-state deletion and restart proof for every extracted domain.

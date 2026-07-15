@@ -35,7 +35,12 @@ def _fields(
 
 FIELD_OWNERSHIP: dict[str, FieldOwnership] = {
     **_fields("_lock", "infrastructure", "RuntimeStateCoordinator", "runtime only"),
-    **_fields("rng", "simulation", "RuntimeSimulationState", "runs, scenarios"),
+    **_fields(
+        "simulation_runtime",
+        "simulation",
+        "RuntimeSimulationState / SimulationService",
+        "runs, scenarios; volatile counters remain rebuildable",
+    ),
     **_fields(
         "node_repository",
         "node and telemetry",
@@ -73,13 +78,6 @@ FIELD_OWNERSHIP: dict[str, FieldOwnership] = {
         "topology and governance",
         "TopologyRepository / GovernanceService",
         "no durable legacy table",
-    ),
-    **_fields(
-        "simulation_running simulation_tick simulation_speed simulation_anomaly_rate "
-        "simulation_last_tick_at simulation_generated_orders simulation_generated_events",
-        "simulation",
-        "RuntimeSimulationState",
-        "runs, scenarios; volatile counters remain rebuildable",
     ),
     **_fields(
         "_suspend_persist _primary_projection_refreshed_at _primary_projection_last_error "
@@ -131,6 +129,7 @@ def method_domain(name: str) -> str:
     ) or normalized in {"_available_machine_for", "_planner_node_health"}:
         return "planning and dispatch"
     if any(token in normalized for token in ("simulation", "scenario")) or normalized in {
+        "rng",
         "seed_demo",
         "_initial_metric",
     }:

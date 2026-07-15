@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import threading
 import uuid
 from datetime import datetime, timedelta
@@ -18,6 +17,7 @@ from .core.config import settings
 from .core.database import get_db, init_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
 from .core.session import get_session_token
+from .domain.simulation import RuntimeSimulationState
 from .persistence_repository import central_fact_repository
 from .repositories.commands import CommandRepository
 from .repositories.nodes import NodeRepository
@@ -152,7 +152,7 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
-        self.rng = random.Random(260507)
+        self.simulation_runtime = RuntimeSimulationState(random_seed=260507)
         # Nodes (workshops + cloud) and their metrics
         self.node_repository = NodeRepository()
         # Market and inventory
@@ -184,14 +184,6 @@ class MemoryStore:
         self.ai_shortcuts: list[AiShortcut] = []
         self.authority_matrix: list[dict[str, object]] = []
         self.cloud_roles: list[dict[str, object]] = []
-        # Simulation
-        self.simulation_running = False
-        self.simulation_tick = 0
-        self.simulation_speed = 1.0
-        self.simulation_anomaly_rate = 0.12
-        self.simulation_last_tick_at: datetime | None = None
-        self.simulation_generated_orders = 0
-        self.simulation_generated_events = 0
         self._suspend_persist = False
         self._primary_projection_refreshed_at: datetime | None = None
         self._primary_projection_last_error = ""
@@ -299,6 +291,51 @@ class MemoryStore:
     @node_record_sync_ids.setter
     def node_record_sync_ids(self, value: set[str]) -> None:
         self.node_repository.record_sync_ids = value
+
+    @property
+    def rng(self):
+        """Compatibility access to the deterministic runtime random source."""
+        return self.simulation_runtime.rng
+
+    @property
+    def simulation_running(self) -> bool:
+        return self.simulation_runtime.running
+
+    @simulation_running.setter
+    def simulation_running(self, value: bool) -> None:
+        self.simulation_runtime.configure(running=value)
+
+    @property
+    def simulation_tick(self) -> int:
+        return self.simulation_runtime.tick
+
+    @property
+    def simulation_speed(self) -> float:
+        return self.simulation_runtime.speed
+
+    @simulation_speed.setter
+    def simulation_speed(self, value: float) -> None:
+        self.simulation_runtime.configure(speed=value)
+
+    @property
+    def simulation_anomaly_rate(self) -> float:
+        return self.simulation_runtime.anomaly_rate
+
+    @simulation_anomaly_rate.setter
+    def simulation_anomaly_rate(self, value: float) -> None:
+        self.simulation_runtime.configure(anomaly_rate=value)
+
+    @property
+    def simulation_last_tick_at(self) -> datetime | None:
+        return self.simulation_runtime.last_tick_at
+
+    @property
+    def simulation_generated_orders(self) -> int:
+        return self.simulation_runtime.generated_orders
+
+    @property
+    def simulation_generated_events(self) -> int:
+        return self.simulation_runtime.generated_events
 
     def _record_persistence_write_failure(self, operation: str, exc: Exception) -> None:
         previous = self._persistence_write_failures.get(operation, {})
@@ -1312,11 +1349,7 @@ class MemoryStore:
         self.part_queue.clear()
         self.part_seq = 0
         self.part_completion_watermark.clear()
-        self.simulation_running = False
-        self.simulation_tick = 0
-        self.simulation_generated_orders = 0
-        self.simulation_generated_events = 0
-        self.simulation_last_tick_at = None
+        self.simulation_runtime.reset_progress()
 
         self.machines = [
             Machine(machine_code="TURN-01", node_code="turning-workshop-01", machine_type="数控车床", load_rate=58, tool_wear_level=32, today_output=210, defect_count=4),
@@ -3948,28 +3981,26 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def simulation_state(self) -> SimulationState:
-        return SimulationState(
-            running=self.simulation_running, tick=self.simulation_tick, speed=self.simulation_speed,
-            anomaly_rate=self.simulation_anomaly_rate, last_tick_at=self.simulation_last_tick_at,
-            generated_orders=self.simulation_generated_orders,
-            generated_events=self.simulation_generated_events,
-        )
+        return self.simulation_runtime.snapshot()
 
     def configure_simulation(self, running: bool | None = None, speed: float | None = None,
                              anomaly_rate: float | None = None) -> SimulationState:
+        state = self.simulation_runtime.configure(
+            running=running,
+            speed=speed,
+            anomaly_rate=anomaly_rate,
+        )
         if running is not None:
-            self.simulation_running = running
             self.add_event("simulation-engine", "simulation-start" if running else "simulation-pause",
                            Severity.info, "实时模拟引擎已启动。" if running else "实时模拟引擎已暂停。")
-        if speed is not None:
-            self.simulation_speed = speed
-        if anomaly_rate is not None:
-            self.simulation_anomaly_rate = anomaly_rate
-        return self.simulation_state()
+        return state
 
     def simulation_step(self) -> SimulationState:
-        self.simulation_tick += 1
-        self.simulation_last_tick_at = utc_now()
+        with self.simulation_runtime.operation():
+            return self._simulation_step_locked()
+
+    def _simulation_step_locked(self) -> SimulationState:
+        tick_now = self.simulation_runtime.begin_step(utc_now())
         latest = self.latest_metrics()
 
         # ---- Workshop metrics random walk ----
@@ -4019,22 +4050,22 @@ class MemoryStore:
         for signal in self.market_signals:
             signal.demand_index = round(min(180, max(30, signal.demand_index + self.rng.uniform(-5, 5))), 1)
             signal.current_price = round(max(10, signal.current_price * (1 + self.rng.uniform(-0.02, 0.02))), 2)
-        if self.simulation_running and self.simulation_tick % 10 == 0:
+        if self.simulation_runtime.running and tick_now % 10 == 0:
             code = self.rng.choice(list(PRODUCTS))
             self.submit_allocation_order(AllocationOrderIn(
                 product_code=code, required_quantity=self.rng.randint(40, 160),
                 priority=self.rng.randint(2, 5), deadline_hours=self.rng.choice([12, 18, 24, 36]),
                 assigned_cloud_role="辅助调配", source_unit="上级调度中心",
                 reason="模拟引擎注入的上级调配任务。"))
-            self.simulation_generated_orders += 1
+            self.simulation_runtime.record_generated_order()
 
         # ---- Periodic re-planning ----
-        if self.simulation_tick % 8 == 0:
+        if tick_now % 8 == 0:
             self.generate_production_plan()
             self.rebuild_dispatch()
 
         # ---- Anomaly injection ----
-        if self.rng.random() < self.simulation_anomaly_rate:
+        if self.rng.random() < self.simulation_runtime.anomaly_rate:
             anomaly_candidates = [
                 (nc, node) for nc, node in nodes_snapshot
                 if not self._is_control_plane_node(nc, node.workshop_type)
@@ -4048,9 +4079,8 @@ class MemoryStore:
                     self.record_metric(lm.model_copy(update={"disk_usage": 92.0}))
                 else:
                     self.record_metric(lm.model_copy(update={"cpu_usage": 95.0, "api_latency_ms": 920}))
-                self.simulation_generated_events += 1
+                self.simulation_runtime.record_generated_event()
 
-        tick_now = self.simulation_tick
         self.add_event("simulation-engine", "tick", Severity.info,
                        f"tick={tick_now} 已推进：车间指标、设备负载与排产状态完成刷新。")
 

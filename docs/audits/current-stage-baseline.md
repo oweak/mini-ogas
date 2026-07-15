@@ -429,6 +429,11 @@ the earlier commit-specific counts.
   `outbox=running`, NATS `live` in Shadow mode, PostgreSQL persistence pass and 3/3
   fresh SimPy production nodes.
 
-Stage D remains open for Production Execution, Quality/Calibration, Event/Outbox,
-Runtime Simulation State and Redis/NATS/MinIO adapter extraction. Stage E remains open
-for the single formal publisher and reconciliation thresholds.
+Runtime Simulation State was subsequently extracted into one locked owner in the
+dedicated worker. The ownership inventory is now 34 fields / 132 methods, Central API
+passes 292 tests, authenticated public stepping produced `0 -> 1 -> 1`, and direct
+unauthenticated worker access returned 401.
+
+Stage D remains open for Production Execution, Quality/Calibration, Event/Outbox and
+Redis/NATS/MinIO adapter extraction. Stage E remains open for the single formal
+publisher and reconciliation thresholds.

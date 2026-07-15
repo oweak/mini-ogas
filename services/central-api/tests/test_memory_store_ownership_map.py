@@ -21,11 +21,28 @@ def _load_generator():
 def test_memory_store_inventory_is_complete_and_classified() -> None:
     module = _load_generator()
     document = module.build_document()
+    field_inventory = document.split("## Field Inventory", 1)[1].split(
+        "## Method Inventory", 1
+    )[0]
 
-    assert "Inventory: 41 instance fields and 123 methods." in document
+    assert "Inventory: 34 instance fields and 132 methods." in document
     assert "unclassified" not in document
     assert "CommandRepository / CommandService" in document
     assert "NodeRepository / NodeService" in document
+    assert "| `simulation_runtime` |" in field_inventory
+    legacy_simulation_fields = {
+        "rng",
+        "simulation_running",
+        "simulation_tick",
+        "simulation_speed",
+        "simulation_anomaly_rate",
+        "simulation_last_tick_at",
+        "simulation_generated_orders",
+        "simulation_generated_events",
+    }
+    assert all(
+        f"| `{field}` |" not in field_inventory for field in legacy_simulation_fields
+    )
 
 
 def test_committed_memory_store_ownership_map_is_current() -> None:
