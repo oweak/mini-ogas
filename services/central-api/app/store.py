@@ -443,15 +443,7 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO metrics (node_code, cpu_usage, memory_usage, disk_usage,
-                       network_in, network_out, db_latency_ms, api_latency_ms, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (metric.node_code, metric.cpu_usage, metric.memory_usage, metric.disk_usage,
-                     metric.network_in, metric.network_out, metric.db_latency_ms,
-                     metric.api_latency_ms, utc_now().isoformat()),
-                )
+            self.node_repository.persist_metric(metric)
         except Exception as exc:  # pragma: no cover - external backend behavior
             self._record_persistence_write_failure("metric", exc)
 
@@ -460,8 +452,8 @@ class MemoryStore:
         if not self._persisting():
             return False
         try:
-            central_fact_repository.persist_heartbeat(
-                {**payload, "_received_at": utc_now().isoformat()},
+            self.node_repository.persist_heartbeat(
+                payload,
                 retention_per_node=settings.heartbeat_shadow_retention_per_node,
             )
             return True
@@ -473,27 +465,6 @@ class MemoryStore:
                 raise RuntimeError(f"PostgreSQL heartbeat write failed: {exc}") from exc
             return False
 
-    def _prune_heartbeat_shadow_locked(self, db: object, max_per_node: int | None = None) -> int:
-        limit = settings.heartbeat_shadow_retention_per_node if max_per_node is None else max_per_node
-        if limit <= 0:
-            return 0
-        cursor = db.execute(
-            """
-            DELETE FROM heartbeat_shadow
-            WHERE id IN (
-                SELECT id FROM (
-                    SELECT id,
-                           ROW_NUMBER() OVER (PARTITION BY node_code ORDER BY id DESC) AS rn
-                    FROM heartbeat_shadow
-                ) ranked
-                WHERE rn > ?
-            )
-            """,
-            (limit,),
-        )
-        rowcount = getattr(cursor, "rowcount", -1)
-        return int(rowcount) if isinstance(rowcount, int) and rowcount >= 0 else 0
-
     def prune_heartbeat_shadow(self, max_per_node: int | None = None) -> dict[str, object]:
         """Apply heartbeat-shadow retention without mutating live runtime state."""
         if not settings.persist_enabled:
@@ -502,46 +473,23 @@ class MemoryStore:
         if limit <= 0:
             return {"status": "disabled", "reason": "HEARTBEAT_SHADOW_RETENTION_PER_NODE<=0"}
         try:
-            with get_db() as db:
-                deleted = self._prune_heartbeat_shadow_locked(db, limit)
-                row = db.execute("SELECT COUNT(*) AS count FROM heartbeat_shadow").fetchone()
-                remaining = int(row["count"])
+            result = self.node_repository.prune_heartbeats(limit)
         except Exception as exc:  # pragma: no cover - depends on external backend
             return {"status": "degraded", "error": str(exc), "max_per_node": limit}
-        return {"status": "ok", "deleted": deleted, "remaining": remaining, "max_per_node": limit}
+        return {"status": "ok", **result, "max_per_node": limit}
 
     def load_heartbeat_shadow(self, limit: int = 500, replace_empty: bool = False) -> int:
         """Restore latest persisted v2 heartbeat facts into the live runtime cache."""
         if not settings.persist_enabled:
             return 0
         try:
-            with get_db() as db:
-                rows = db.execute(
-                    """
-                    SELECT node_code, payload_json, received_at
-                    FROM heartbeat_shadow
-                    ORDER BY received_at DESC, id DESC LIMIT ?
-                    """,
-                    (max(1, limit),),
-                ).fetchall()
+            latest = self.node_repository.load_latest_heartbeats(
+                limit,
+                include_node=lambda node_code: not self._ephemeral_node_code(node_code),
+            )
         except Exception as exc:  # pragma: no cover
             self._handle_projection_load_error("heartbeats", exc)
             return 0
-
-        latest: dict[str, tuple[dict[str, object], object]] = {}
-        for row in rows:
-            data = dict(row)
-            node_code = str(data.get("node_code") or "")
-            if self._ephemeral_node_code(node_code):
-                continue
-            if not node_code or node_code in latest:
-                continue
-            try:
-                payload = json.loads(str(data.get("payload_json") or "{}"))
-            except json.JSONDecodeError:
-                continue
-            if isinstance(payload, dict):
-                latest[node_code] = (payload, data.get("received_at"))
 
         with self._lock:
             if replace_empty and not latest:
@@ -1912,7 +1860,7 @@ class MemoryStore:
         duplicates = 0
         if self._persisting():
             try:
-                result = central_fact_repository.persist_synced_node_records(
+                result = self.node_repository.persist_synced_records(
                     node_code,
                     records,
                     retention_per_node=settings.heartbeat_shadow_retention_per_node,

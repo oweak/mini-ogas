@@ -238,6 +238,7 @@ def _method_tables(method: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
         if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             if node.value.id in {
                 "central_fact_repository",
+                "node_repository",
                 "outbox_repository",
                 "registry",
                 "safety_governor",
