@@ -57,6 +57,16 @@ def test_event_envelope_is_ordered_idempotent_and_restart_restorable(tmp_path, m
 
     second = MemoryStore()
     restored = next(item for item in second.incident_events if item.event_id == event.event_id)
+    assert {
+        "alerts",
+        "audit_logs",
+        "incident_events",
+        "_incident_event_seq",
+        "_node_event_sequences",
+        "_shadow_event_count",
+        "ai_diagnoses",
+    }.isdisjoint(second.__dict__)
+    assert restored in second.incident_repository.events
     assert restored.global_sequence == event.global_sequence
     assert restored.local_sequence == event.local_sequence
     assert restored.run_id == event.run_id

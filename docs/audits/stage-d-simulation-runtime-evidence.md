@@ -79,6 +79,5 @@ Results:
 
 - Production Execution and Quality/Calibration ownership is closed by
   `docs/audits/stage-d-execution-quality-evidence.md`.
-- Extract Event/Outbox service ownership and isolate Redis/NATS/MinIO adapters from
-  the compatibility facade.
-- Prove restart behavior for every remaining extracted domain.
+- Incident/Event/Outbox and adapter ownership is closed by
+  `docs/audits/stage-d-incident-repository-evidence.md`.

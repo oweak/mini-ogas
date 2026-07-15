@@ -101,12 +101,9 @@ Results:
 - Event authority: NATS remains Shadow. Stage E subsequently removed request-side
   publishing; see `docs/audits/stage-e-single-outbox-publisher-evidence.md`.
 
-## Remaining Stage D Work
+## Stage D Continuation
 
-- Extract Production Execution ownership.
-- Extract Quality/Calibration ownership.
-- Extract Event/Outbox repository/service ownership.
-- Runtime Simulation State ownership is closed by
-  `docs/audits/stage-d-simulation-runtime-evidence.md`.
-- Isolate Redis/NATS/MinIO adapters from `MemoryStore`.
-- Complete duplicate-state deletion and restart proof for every extracted domain.
+Runtime Simulation State is closed by
+`docs/audits/stage-d-simulation-runtime-evidence.md`; Production/Quality is closed by
+`docs/audits/stage-d-execution-quality-evidence.md`; Incident/Event/Outbox and adapter
+ownership is closed by `docs/audits/stage-d-incident-repository-evidence.md`.

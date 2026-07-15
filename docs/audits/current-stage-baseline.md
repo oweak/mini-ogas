@@ -440,8 +440,13 @@ boundary tests pass, while the Phase 3 and Phase 5 production gates continue to 
 transactional Outbox, invariant and authorization behavior. The complete Central API
 suite at this checkpoint passes 296 tests.
 
-Stage D remains open for Event/Outbox and Redis/NATS/MinIO adapter extraction. Stage E
-now has one formal Outbox publisher: API workers do not connect or publish, while the
+Stage D is accepted after Incident/Event projections, sequences and mutation/restore
+SQL moved to `IncidentRepository`; the inventory is 28 fields / 139 methods and the
+complete Central suite passes 301 tests. `MemoryStore` does not import Redis, NATS or
+object-storage adapters, and a worker-created tick event was read cross-process from
+PostgreSQL by Central.
+
+Stage E now has one formal Outbox publisher: API workers do not connect or publish, while the
 dedicated worker alone publishes and updates delivery status. The accepted runtime
 reported 9 published and 9 persisted Shadow messages with zero failures. Stage E
 remains open for reconciliation thresholds and controlled degrade/rollback proof.

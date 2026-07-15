@@ -8,7 +8,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B and C are accepted; Stage D has verified Command, Node and Scheduler/Worker boundaries but is not complete. |
+| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B, C and D are accepted; Stage E has one Outbox publisher but reconciliation/degrade/rollback remains open. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -44,6 +44,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260715-09 | Simulation control and progress remained eight independently mutable fields on `MemoryStore`. | Added one locked `RuntimeSimulationState`, made progress read-only through the compatibility facade, regenerated the ownership map and proved public API/worker tick consistency after restart. |
 | FIX-20260715-10 | Stage D still listed Production Execution and Quality as unowned despite direct durable repositories already serving both route groups. | Added repository-recreation and architecture gates, confirmed transactional audit/Outbox behavior and accepted existing PostgreSQL Phase 3/5 owners without adding duplicate state. |
 | FIX-20260715-11 | Heartbeat requests both enqueued a transactional Outbox row and published NATS directly; every API process opened a publisher connection. | Removed request-side NATS ownership. API workers commit fact plus Outbox only; the dedicated worker is the sole runtime publisher and owns retry/status transitions. |
+| FIX-20260715-12 | Incident/Event state and mutation/restore SQL remained split across seven `MemoryStore` fields. | Added `IncidentRepository`, moved sequence/projection and Alert/AI/Event/Audit persistence boundaries, proved restart/cross-process PostgreSQL recovery and isolated transport/object adapters from the facade. |
 
 ## Current Supported Runtime Truth
 
@@ -94,7 +95,6 @@ startup is still a Stage F gap.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Continue after the completed Command/Node/Production/Quality/Simulation boundaries: extract Event/Outbox and adapter ownership from `MemoryStore`. | Stage D |
 | P1 | Complete NATS Shadow reconciliation/degrade/rollback gates; one Outbox publisher and the current idempotent Shadow consumer are proved. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |

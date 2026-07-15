@@ -67,8 +67,7 @@ FIELD_OWNERSHIP: dict[str, FieldOwnership] = {
         "commands, command_shadow, event_store, audit_logs",
     ),
     **_fields(
-        "alerts audit_logs incident_events _incident_event_seq _node_event_sequences "
-        "_shadow_event_count ai_diagnoses",
+        "incident_repository",
         "incident, audit and AI evidence",
         "IncidentRepository / AuditRepository / AiEvidenceRepository",
         "alerts, audit_logs, event_store, ai_diagnosis",
@@ -119,7 +118,7 @@ def method_domain(name: str) -> str:
         return "command and control"
     if "part" in normalized:
         return "material flow"
-    if any(token in normalized for token in ("alert", "audit", "event", "diagnosis")) or (
+    if any(token in normalized for token in ("alert", "audit", "event", "diagnos")) or (
         "escalat" in normalized or normalized == "add_ai_auto_briefing"
     ):
         return "incident, audit and AI evidence"

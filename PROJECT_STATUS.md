@@ -15,7 +15,7 @@ proof.
 | A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 12-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
 | B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
 | C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
-| D - `MemoryStore` decomposition | In progress | Command, Node, Production Execution, Quality and Runtime Simulation State have repository/restart/transaction evidence; periodic work has one dedicated owner. Event/Outbox and adapter boundaries remain open. |
+| D - `MemoryStore` decomposition | Accepted | Command, Node, Production Execution, Quality, Simulation and Incident/Event ownership have repository/restart/transaction evidence; Outbox and Redis/NATS/MinIO adapters are isolated, and periodic work has one owner. |
 | E - data/event convergence | In progress | PostgreSQL authority, Redis projection and NATS Shadow exist; one dedicated Outbox publisher and idempotent Shadow receipts are proved. Reconciliation/degrade/rollback gates remain open. |
 | F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
 | G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
@@ -81,7 +81,6 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Next Required Gate
 
-Continue Stage D from the verified Command/Node/Production/Quality/Simulation
-boundaries: extract Event/Outbox and adapter ownership. Stage E's unique publisher is
+Continue Stage E from the accepted Stage D boundaries. The unique Outbox publisher is
 proved; reconciliation/degrade/rollback gates remain. Full Compose parity remains
 tracked for Stage F.

@@ -18,8 +18,8 @@ from .core.database import get_db, init_db, persistence_backend, persistence_lab
 from .core.service_client import get_json, post_json
 from .core.session import get_session_token
 from .domain.simulation import RuntimeSimulationState
-from .persistence_repository import central_fact_repository
 from .repositories.commands import CommandRepository
+from .repositories.incidents import IncidentRepository
 from .repositories.nodes import NodeRepository
 from .safety_governor import SafetyDecision, safety_governor
 
@@ -169,16 +169,10 @@ class MemoryStore:
         self.part_seq = 0
         self.part_completion_watermark: dict[tuple[str, str], int] = {}
         # Alerts / audit / commands / events / diagnoses
-        self.alerts: list[Alert] = []
-        self.audit_logs: list[AuditLog] = []
+        self.incident_repository = IncidentRepository()
         self.command_repository = CommandRepository()
         self.command_manager = CommandManager()
         self.command_verifier = CommandVerifier()
-        self.incident_events: list[IncidentEvent] = []
-        self._incident_event_seq = 0
-        self._node_event_sequences: dict[tuple[str, str], int] = {}
-        self._shadow_event_count = 0
-        self.ai_diagnoses: list[AiDiagnosis] = []
         # Topology / governance
         self.topology_edges: list[TopologyEdge] = []
         self.ai_shortcuts: list[AiShortcut] = []
@@ -291,6 +285,62 @@ class MemoryStore:
     @node_record_sync_ids.setter
     def node_record_sync_ids(self, value: set[str]) -> None:
         self.node_repository.record_sync_ids = value
+
+    @property
+    def alerts(self) -> list[Alert]:
+        return self.incident_repository.alerts
+
+    @alerts.setter
+    def alerts(self, value: list[Alert]) -> None:
+        self.incident_repository.replace_alerts(value)
+
+    @property
+    def audit_logs(self) -> list[AuditLog]:
+        return self.incident_repository.audit_logs
+
+    @audit_logs.setter
+    def audit_logs(self, value: list[AuditLog]) -> None:
+        self.incident_repository.replace_audits(value)
+
+    @property
+    def incident_events(self) -> list[IncidentEvent]:
+        return self.incident_repository.events
+
+    @incident_events.setter
+    def incident_events(self, value: list[IncidentEvent]) -> None:
+        self.incident_repository.replace_events(value)
+
+    @property
+    def ai_diagnoses(self) -> list[AiDiagnosis]:
+        return self.incident_repository.ai_diagnoses
+
+    @ai_diagnoses.setter
+    def ai_diagnoses(self, value: list[AiDiagnosis]) -> None:
+        self.incident_repository.replace_ai_diagnoses(value)
+
+    @property
+    def _incident_event_seq(self) -> int:
+        return self.incident_repository.incident_event_seq
+
+    @_incident_event_seq.setter
+    def _incident_event_seq(self, value: int) -> None:
+        self.incident_repository.set_incident_event_seq(value)
+
+    @property
+    def _node_event_sequences(self) -> dict[tuple[str, str], int]:
+        return self.incident_repository.node_event_sequences
+
+    @_node_event_sequences.setter
+    def _node_event_sequences(self, value: dict[tuple[str, str], int]) -> None:
+        self.incident_repository.replace_node_event_sequences(value)
+
+    @property
+    def _shadow_event_count(self) -> int:
+        return self.incident_repository.shadow_event_count
+
+    @_shadow_event_count.setter
+    def _shadow_event_count(self, value: int) -> None:
+        self.incident_repository.set_shadow_event_count(value)
 
     @property
     def rng(self):
@@ -626,24 +676,10 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO alerts (id, run_id, node_code, alert_type, severity, source, description,
-                       handled_by, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(id) DO UPDATE SET
-                       run_id=excluded.run_id,
-                       node_code=excluded.node_code,
-                       alert_type=excluded.alert_type,
-                       severity=excluded.severity,
-                       source=excluded.source,
-                       description=excluded.description,
-                       handled_by=excluded.handled_by,
-                       status=excluded.status,
-                       created_at=excluded.created_at""",
-                    (alert.id, alert.run_id or self.current_run_id_for_node(alert.node_code), alert.node_code, alert.alert_type, alert.severity.value,
-                     alert.source, alert.description, alert.handled_by,
-                     alert.status, alert.created_at.isoformat()),
-                )
+            self.incident_repository.persist_alert(
+                alert,
+                alert.run_id or self.current_run_id_for_node(alert.node_code),
+            )
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("alert", exc)
 
@@ -655,21 +691,7 @@ class MemoryStore:
             # durable transition with refresh and then update the current cache
             # object, not only the stale object held by the request thread.
             with self._primary_projection_refresh_lock:
-                with get_db() as db:
-                    cursor = db.execute(
-                        """
-                        UPDATE alerts
-                        SET handled_by = ?, status = ?,
-                            resolved_at = CASE
-                                WHEN ? IN ('closed', 'resolved') THEN CURRENT_TIMESTAMP
-                                ELSE resolved_at
-                            END
-                        WHERE id = ?
-                        """,
-                        (alert.handled_by, alert.status, alert.status, alert.id),
-                    )
-                    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
-                        raise RuntimeError(f"alert state update matched no row: {alert.id}")
+                self.incident_repository.update_alert_state(alert)
                 with self._lock:
                     for current in self.alerts:
                         if current.id == alert.id:
@@ -684,51 +706,24 @@ class MemoryStore:
     def load_alert_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
-        loaded: list[Alert] = []
         try:
-            with get_db() as db:
-                rows = db.execute(
-                    """
-                    SELECT id, run_id, node_code, alert_type, severity, source, description,
-                           handled_by, status, created_at
-                    FROM alerts
-                    ORDER BY created_at ASC, id ASC
-                    """
-                ).fetchall()
+            loaded = self.incident_repository.load_alerts()
         except Exception as exc:  # pragma: no cover
             self._handle_projection_load_error("alerts", exc)
             return 0
-
-        for row in rows:
-            data = dict(row)
-            try:
-                severity = Severity(str(data.get("severity") or Severity.medium.value))
-            except ValueError:
-                severity = Severity.medium
-            loaded.append(Alert(
-                id=int(data["id"]),
-                run_id=str(data.get("run_id") or ""),
-                node_code=str(data["node_code"]),
-                alert_type=str(data["alert_type"]),
-                severity=severity,
-                description=str(data.get("description") or ""),
-                source=str(data.get("source") or "central-api"),
-                handled_by=data.get("handled_by"),
-                status=str(data.get("status") or "open"),
-                created_at=_database_datetime(data["created_at"]),
-            ))
         if loaded or replace_empty:
-            with self._lock:
-                self.alerts = loaded[-120:]
+            self.incident_repository.replace_alerts(loaded)
         return len(loaded)
 
     def persist_audit_log(self, audit: AuditLog, detail: str = "") -> None:
         if not self._persisting():
             return
         try:
-            central_fact_repository.persist_audit(audit, self.current_run_id_for_audit(audit), detail)
-            with self._lock:
-                self._shadow_event_count += 1
+            self.incident_repository.persist_audit(
+                audit,
+                self.current_run_id_for_audit(audit),
+                detail,
+            )
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("audit_log", exc)
 
@@ -794,23 +789,10 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            inserted = central_fact_repository.persist_event(
+            self.incident_repository.persist_event(
                 event,
                 self.current_run_id_for_node(event.node_code),
             )
-            with self._lock:
-                sequence_key = (event.source_node or event.node_code, event.run_id)
-                self._node_event_sequences[sequence_key] = max(
-                    self._node_event_sequences.get(sequence_key, 0),
-                    event.local_sequence,
-                )
-                self._incident_event_seq = max(
-                    self._incident_event_seq,
-                    event.id,
-                    event.global_sequence,
-                )
-                if inserted:
-                    self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("event", exc)
             if self.primary_projection_enabled():
@@ -820,67 +802,23 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """INSERT INTO ai_diagnosis (id, run_id, alert_id, severity, node_code, root_cause,
-                       recommended_action, confidence, need_isolation, model_name, raw_response, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                       ON CONFLICT(id) DO UPDATE SET
-                       run_id=excluded.run_id,
-                       alert_id=excluded.alert_id,
-                       severity=excluded.severity,
-                       node_code=excluded.node_code,
-                       root_cause=excluded.root_cause,
-                       recommended_action=excluded.recommended_action,
-                       confidence=excluded.confidence,
-                       need_isolation=excluded.need_isolation,
-                       model_name=excluded.model_name,
-                       raw_response=excluded.raw_response,
-                       created_at=excluded.created_at""",
-                    (diagnosis.id, self.current_run_id_for_node(diagnosis.node_code), diagnosis.alert_id,
-                     Severity.medium.value, diagnosis.node_code,
-                     diagnosis.root_cause, diagnosis.recommended_action, diagnosis.confidence,
-                     bool(diagnosis.need_isolation), diagnosis.model_name, diagnosis.raw_response,
-                     diagnosis.created_at.isoformat()),
-                )
+            self.incident_repository.persist_ai_diagnosis(
+                diagnosis,
+                self.current_run_id_for_node(diagnosis.node_code),
+            )
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("ai_diagnosis", exc)
 
     def load_ai_diagnosis_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
-        loaded: list[AiDiagnosis] = []
         try:
-            with get_db() as db:
-                rows = db.execute(
-                    """
-                    SELECT id, alert_id, node_code, root_cause, recommended_action,
-                           confidence, need_isolation, model_name, raw_response, created_at
-                    FROM ai_diagnosis
-                    ORDER BY created_at ASC, id ASC
-                    """
-                ).fetchall()
+            loaded = self.incident_repository.load_ai_diagnoses()
         except Exception as exc:  # pragma: no cover
             self._handle_projection_load_error("ai_diagnoses", exc)
             return 0
-
-        for row in rows:
-            data = dict(row)
-            loaded.append(AiDiagnosis(
-                id=int(data["id"]),
-                alert_id=int(data.get("alert_id") or 0),
-                node_code=str(data.get("node_code") or ""),
-                model_name=str(data.get("model_name") or "deepseek"),
-                root_cause=str(data.get("root_cause") or ""),
-                recommended_action=str(data.get("recommended_action") or ""),
-                confidence=float(data.get("confidence") or 0),
-                need_isolation=bool(data.get("need_isolation")),
-                raw_response=str(data.get("raw_response") or ""),
-                created_at=_database_datetime(data["created_at"]),
-            ))
         if loaded or replace_empty:
-            with self._lock:
-                self.ai_diagnoses = loaded[-80:]
+            self.incident_repository.replace_ai_diagnoses(loaded)
         return len(loaded)
 
     def load_audit_log_shadow(
@@ -890,107 +828,17 @@ class MemoryStore:
     ) -> int:
         if not settings.persist_enabled and not allow_disabled_persistence:
             return 0
-        loaded_audits: list[AuditLog] = []
-        loaded_events: list[IncidentEvent] = []
         try:
-            with get_db() as db:
-                rows = db.execute(
-                    """
-                    SELECT id, run_id, actor, action, resource_type, resource_id, result, detail, created_at
-                    FROM audit_logs
-                    ORDER BY created_at ASC, id ASC
-                    """
-                ).fetchall()
-                event_rows = db.execute(
-                    """
-                    SELECT event_id, event_type, schema_version, source_node, event_time,
-                           ingest_time, local_sequence, global_sequence, correlation_id,
-                           run_id, scenario_id, payload_json
-                    FROM event_store
-                    ORDER BY global_sequence ASC
-                    """
-                ).fetchall()
+            loaded_audits, loaded_events = (
+                self.incident_repository.load_audits_and_events()
+            )
         except Exception as exc:  # pragma: no cover
             self._handle_projection_load_error("audit_logs", exc)
             return 0
-
-        for row in rows:
-            data = dict(row)
-            created_at = _database_datetime(data["created_at"])
-            loaded_audits.append(AuditLog(
-                id=int(data["id"]),
-                actor=str(data.get("actor") or ""),
-                action=str(data.get("action") or ""),
-                resource_type=str(data.get("resource_type") or ""),
-                resource_id=str(data.get("resource_id") or ""),
-                result=str(data.get("result") or ""),
-                created_at=created_at,
-            ))
-            if not event_rows and str(data.get("resource_type") or "") == "incident_event":
-                try:
-                    severity = Severity(str(data.get("result") or Severity.info.value))
-                except ValueError:
-                    severity = Severity.info
-                loaded_events.append(IncidentEvent(
-                    id=int(data["id"]),
-                    node_code=str(data.get("actor") or ""),
-                    stage=str(data.get("action") or ""),
-                    severity=severity,
-                    message=str(data.get("detail") or ""),
-                    run_id=str(data.get("run_id") or ""),
-                    created_at=created_at,
-                ))
-        for row in event_rows:
-            data = dict(row)
-            try:
-                payload = json.loads(str(data.get("payload_json") or "{}"))
-            except json.JSONDecodeError:
-                payload = {}
-            if not isinstance(payload, dict):
-                payload = {}
-            try:
-                severity = Severity(str(payload.get("severity") or Severity.info.value))
-            except ValueError:
-                severity = Severity.info
-            event_time = _database_datetime(data["event_time"])
-            loaded_events.append(IncidentEvent(
-                id=int(data.get("global_sequence") or 0),
-                node_code=str(data.get("source_node") or ""),
-                stage=str(payload.get("stage") or data.get("event_type") or ""),
-                severity=severity,
-                message=str(payload.get("message") or ""),
-                run_id=str(data.get("run_id") or ""),
-                event_id=str(data.get("event_id") or ""),
-                event_type=str(data.get("event_type") or ""),
-                schema_version=str(data.get("schema_version") or "2.5"),
-                source_node=str(data.get("source_node") or ""),
-                event_time=event_time,
-                ingest_time=_database_datetime(data["ingest_time"]),
-                local_sequence=int(data.get("local_sequence") or 0),
-                global_sequence=int(data.get("global_sequence") or 0),
-                correlation_id=str(data.get("correlation_id") or ""),
-                scenario_id=str(data.get("scenario_id") or ""),
-                payload=payload,
-                created_at=event_time,
-            ))
-        with self._lock:
-            if loaded_audits or replace_empty:
-                self.audit_logs = loaded_audits[-300:]
-                self._shadow_event_count = max(self._shadow_event_count, len(loaded_audits))
-            if loaded_events or replace_empty:
-                self.incident_events = loaded_events[-160:]
-            if loaded_events:
-                self._incident_event_seq = max(
-                    self._incident_event_seq,
-                    max(event.id for event in loaded_events),
-                )
-                self._node_event_sequences = {
-                    (event.source_node or event.node_code, event.run_id): max(
-                        event.local_sequence,
-                        self._node_event_sequences.get((event.source_node or event.node_code, event.run_id), 0),
-                    )
-                    for event in loaded_events
-                }
+        self.incident_repository.replace_audits_and_events(
+            loaded_audits if loaded_audits or replace_empty else None,
+            loaded_events if loaded_events or replace_empty else None,
+        )
         return len(loaded_audits)
 
     def persist_part_queue_item(self, part: PartQueueItem) -> None:
@@ -1487,39 +1335,21 @@ class MemoryStore:
     # ------------------------------------------------------------------
 
     def _append_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
-        with self._lock:
-            self._incident_event_seq += 1
-            run_id = self.current_run_id_for_node(node_code) or self.current_run_id_for_system()
-            scenario_id = ""
-            heartbeat = self.node_heartbeats_v2.get(node_code)
-            if isinstance(heartbeat, dict):
-                runtime = heartbeat.get("runtime") if isinstance(heartbeat.get("runtime"), dict) else {}
-                scenario_id = str(runtime.get("scenario_id") or "")
-            sequence_key = (node_code, run_id)
-            local_sequence = self._node_event_sequences.get(sequence_key, 0) + 1
-            self._node_event_sequences[sequence_key] = local_sequence
-            now = utc_now()
-            event = IncidentEvent(
-                id=self._incident_event_seq,
-                node_code=node_code,
-                stage=stage,
-                severity=severity,
-                message=message,
-                run_id=run_id,
-                event_type=stage,
-                source_node=node_code,
-                event_time=now,
-                ingest_time=now,
-                local_sequence=local_sequence,
-                global_sequence=self._incident_event_seq,
-                correlation_id=f"{run_id or 'unbound'}:{node_code}:{self._incident_event_seq}",
-                scenario_id=scenario_id,
-                payload={"stage": stage, "severity": severity.value, "message": message},
-                created_at=now,
-            )
-            self.incident_events.append(event)
-            self.incident_events = self.incident_events[-160:]
-        return event
+        run_id = self.current_run_id_for_node(node_code) or self.current_run_id_for_system()
+        scenario_id = ""
+        heartbeat = self.node_heartbeats_v2.get(node_code)
+        if isinstance(heartbeat, dict):
+            runtime = heartbeat.get("runtime") if isinstance(heartbeat.get("runtime"), dict) else {}
+            scenario_id = str(runtime.get("scenario_id") or "")
+        return self.incident_repository.append_event(
+            node_code=node_code,
+            stage=stage,
+            severity=severity,
+            message=message,
+            run_id=run_id,
+            scenario_id=scenario_id,
+            occurred_at=utc_now(),
+        )
 
     def add_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
         event = self._append_event(node_code, stage, severity, message)
@@ -1542,19 +1372,7 @@ class MemoryStore:
                 self.current_run_id_for_node(event.node_code),
                 include_base=include_base,
             )
-            with self._lock:
-                sequence_key = (event.source_node or event.node_code, event.run_id)
-                self._node_event_sequences[sequence_key] = max(
-                    self._node_event_sequences.get(sequence_key, 0),
-                    event.local_sequence,
-                )
-                self._incident_event_seq = max(
-                    self._incident_event_seq,
-                    event.id,
-                    event.global_sequence,
-                )
-                if inserted:
-                    self._shadow_event_count += 1
+            self.incident_repository.note_persisted_event(event, inserted=inserted)
         except Exception as exc:  # pragma: no cover - external backend behavior
             self._record_persistence_write_failure("command_event_transaction", exc)
             if self.primary_projection_enabled():

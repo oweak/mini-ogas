@@ -25,11 +25,12 @@ def test_memory_store_inventory_is_complete_and_classified() -> None:
         "## Method Inventory", 1
     )[0]
 
-    assert "Inventory: 34 instance fields and 132 methods." in document
+    assert "Inventory: 28 instance fields and 139 methods." in document
     assert "unclassified" not in document
     assert "CommandRepository / CommandService" in document
     assert "NodeRepository / NodeService" in document
     assert "| `simulation_runtime` |" in field_inventory
+    assert "| `incident_repository` |" in field_inventory
     legacy_simulation_fields = {
         "rng",
         "simulation_running",
@@ -42,6 +43,18 @@ def test_memory_store_inventory_is_complete_and_classified() -> None:
     }
     assert all(
         f"| `{field}` |" not in field_inventory for field in legacy_simulation_fields
+    )
+    legacy_incident_fields = {
+        "alerts",
+        "audit_logs",
+        "incident_events",
+        "_incident_event_seq",
+        "_node_event_sequences",
+        "_shadow_event_count",
+        "ai_diagnoses",
+    }
+    assert all(
+        f"| `{field}` |" not in field_inventory for field in legacy_incident_fields
     )
 
 
