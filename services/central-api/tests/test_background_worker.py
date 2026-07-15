@@ -10,19 +10,10 @@ def test_api_lifespan_never_creates_periodic_tasks(monkeypatch) -> None:
 
     events: list[str] = []
 
-    async def start_publisher() -> bool:
-        events.append("publisher-started")
-        return True
-
-    async def stop_publisher() -> None:
-        events.append("publisher-stopped")
-
     def reject_task_creation(*_args, **_kwargs):
         raise AssertionError("API request workers must not create background tasks")
 
     monkeypatch.setattr(lifecycle, "initialize_auth_store", lambda: None)
-    monkeypatch.setattr(lifecycle.nats_runtime.publisher, "start", start_publisher)
-    monkeypatch.setattr(lifecycle.nats_runtime.publisher, "stop", stop_publisher)
     monkeypatch.setattr(lifecycle.asyncio, "create_task", reject_task_creation)
 
     async def exercise() -> None:
@@ -31,7 +22,7 @@ def test_api_lifespan_never_creates_periodic_tasks(monkeypatch) -> None:
 
     asyncio.run(exercise())
 
-    assert events == ["publisher-started", "serving", "publisher-stopped"]
+    assert events == ["serving"]
 
 
 def test_background_worker_lifespan_owns_exactly_two_periodic_tasks(monkeypatch) -> None:

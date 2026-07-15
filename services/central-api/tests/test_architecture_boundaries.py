@@ -78,6 +78,18 @@ def test_periodic_business_tasks_are_owned_by_dedicated_worker() -> None:
     assert len(_asyncio_create_task_calls(background_worker)) == 2
 
 
+def test_nats_publish_is_owned_only_by_dedicated_worker() -> None:
+    api_lifecycle = (APP_ROOT / "core" / "lifecycle.py").read_text(encoding="utf-8")
+    node_routes = (APP_ROOT / "routers" / "nodes.py").read_text(encoding="utf-8")
+    background_worker = (APP_ROOT / "worker.py").read_text(encoding="utf-8")
+
+    assert "nats_runtime" not in api_lifecycle
+    assert "nats_runtime" not in node_routes
+    assert "publish_heartbeat" not in node_routes
+    assert "mark_published" not in node_routes
+    assert background_worker.count("nats_runtime.publish_envelope") == 1
+
+
 def test_supervisor_registers_one_background_worker() -> None:
     with (PROJECT_ROOT / "config" / "supervisor.toml").open("rb") as handle:
         supervisor = tomllib.load(handle)

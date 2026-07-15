@@ -4,10 +4,7 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
-
 from app.core.database import get_db, init_db
-from app.core.event_publisher import PublishResult
 from app.core.nats_contracts import (
     TransportEnvelope,
     build_heartbeat_envelope,
@@ -15,10 +12,11 @@ from app.core.nats_contracts import (
 )
 from app.core.nats_publisher import NATSEventWorker, NATSPublisher
 from app.core.security import ActorInfo
-from nats.js.api import AckPolicy
 from app.models import AuditLog, IncidentEvent, NodeCommand, Severity
 from app.persistence_repository import CentralFactRepository
 from app.routers import nodes as nodes_router
+from nats.js.api import AckPolicy
+from pydantic import ValidationError
 
 
 def heartbeat_payload() -> dict[str, object]:
@@ -268,18 +266,19 @@ def test_publisher_reports_degraded_when_nats_is_unavailable() -> None:
     assert options["max_reconnect_attempts"] == 1
 
 
-def test_rest_heartbeat_remains_authoritative_when_nats_is_degraded(monkeypatch) -> None:
+def test_rest_heartbeat_queues_outbox_without_request_side_publish(monkeypatch) -> None:
     recorded: list[dict[str, object]] = []
 
     def record(payload: dict[str, object]) -> dict[str, object]:
         recorded.append(payload)
-        return {"accepted": True, "node_code": payload["node_code"]}
-
-    async def degraded(_payload: dict[str, object]) -> PublishResult:
-        return PublishResult(status="degraded", error_category="connection")
+        return {
+            "accepted": True,
+            "node_code": payload["node_code"],
+            "_transport_outbox_accepted": True,
+        }
 
     monkeypatch.setattr(nodes_router.store, "record_node_heartbeat_v2", record)
-    monkeypatch.setattr(nodes_router.nats_runtime, "publish_heartbeat", degraded)
+    monkeypatch.setattr(nodes_router.settings, "nats_enabled", True)
 
     heartbeat = nodes_router.NodeHeartbeatV2In.model_validate(heartbeat_payload())
     result = asyncio.run(
@@ -302,7 +301,11 @@ def test_rest_heartbeat_remains_authoritative_when_nats_is_degraded(monkeypatch)
     assert recorded and recorded[0]["node_code"] == "turning-workshop-01"
     assert result["ok"] is True
     assert result["transport"]["rest"] == "accepted"
-    assert result["transport"]["nats"]["status"] == "degraded"
+    assert result["transport"]["nats"] == {
+        "status": "queued",
+        "mode": "outbox",
+        "publisher": "background-worker",
+    }
 
 
 class FakeMessage:

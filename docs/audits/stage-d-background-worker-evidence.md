@@ -23,8 +23,8 @@ formal runtime process to periodic work.
 
 ## Implemented Boundary
 
-- `app/core/lifecycle.py` initializes auth and the request-side publisher connection;
-  it never calls `asyncio.create_task`.
+- `app/core/lifecycle.py` initializes auth only; it neither connects a publisher nor
+  calls `asyncio.create_task`.
 - `app/worker.py` is the dedicated process entrypoint. It owns simulation, Outbox,
   NATS manager and NATS consumer tasks and exposes process-bound health evidence.
 - Public `/simulation/*` routes retain their URLs, permission checks and environment
@@ -98,8 +98,8 @@ Results:
 - API compatibility: public simulation routes are unchanged.
 - Migration: no schema migration was introduced.
 - Deployment: one new required process and port (`background-worker`, `8084`).
-- Event authority: NATS remains Shadow. This checkpoint does not claim Stage E's one
-  formal publishing path because request-side direct publisher calls still exist.
+- Event authority: NATS remains Shadow. Stage E subsequently removed request-side
+  publishing; see `docs/audits/stage-e-single-outbox-publisher-evidence.md`.
 
 ## Remaining Stage D Work
 

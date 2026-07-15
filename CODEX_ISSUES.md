@@ -43,6 +43,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260715-08 | Central liveness synchronously waited on Supervisor and worker readiness, creating a startup dependency cycle. | Bounded dependency probes to 250 ms, retained degraded readiness reporting and verified 195 ms Central health during a 12/12 supervised startup. |
 | FIX-20260715-09 | Simulation control and progress remained eight independently mutable fields on `MemoryStore`. | Added one locked `RuntimeSimulationState`, made progress read-only through the compatibility facade, regenerated the ownership map and proved public API/worker tick consistency after restart. |
 | FIX-20260715-10 | Stage D still listed Production Execution and Quality as unowned despite direct durable repositories already serving both route groups. | Added repository-recreation and architecture gates, confirmed transactional audit/Outbox behavior and accepted existing PostgreSQL Phase 3/5 owners without adding duplicate state. |
+| FIX-20260715-11 | Heartbeat requests both enqueued a transactional Outbox row and published NATS directly; every API process opened a publisher connection. | Removed request-side NATS ownership. API workers commit fact plus Outbox only; the dedicated worker is the sole runtime publisher and owns retry/status transitions. |
 
 ## Current Supported Runtime Truth
 
@@ -94,7 +95,7 @@ startup is still a Stage F gap.
 | Priority | Item | Target |
 | --- | --- | --- |
 | P1 | Continue after the completed Command/Node/Production/Quality/Simulation boundaries: extract Event/Outbox and adapter ownership from `MemoryStore`. | Stage D |
-| P1 | Converge unique fact writers, one outbox publisher, idempotent consumers and NATS Shadow reconciliation. | Stage E |
+| P1 | Complete NATS Shadow reconciliation/degrade/rollback gates; one Outbox publisher and the current idempotent Shadow consumer are proved. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
 | P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |

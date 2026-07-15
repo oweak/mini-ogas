@@ -1,16 +1,16 @@
 import asyncio
 import logging
-
-from fastapi import APIRouter, Depends, HTTPException, Response
 from typing import Any
 
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from ..command_control_service import command_control_service
+from ..core.config import settings
 from ..core.security import (
+    PERM_COMMAND_ISSUE,
     PERM_COMMAND_RECEIVE,
     PERM_COMMAND_REPORT,
-    PERM_COMMAND_ISSUE,
     PERM_METRIC_INGEST,
     PERM_NODE_HEARTBEAT,
     PERM_NODE_ISOLATE,
@@ -22,9 +22,6 @@ from ..core.security import (
     assert_node_resource_access,
     require_permission,
 )
-from ..core.nats_publisher import nats_runtime
-from ..core.config import settings
-from ..core.outbox import outbox_repository
 from ..models import MetricIn
 from ..safety_governor import safety_governor
 from ..store import store
@@ -156,22 +153,18 @@ async def ingest_agent_heartbeat(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    shadow = await nats_runtime.publish_heartbeat(payload)
-    if settings.persist_enabled and settings.nats_enabled and shadow.message_id:
-        if shadow.status == "published":
-            await asyncio.to_thread(outbox_repository.mark_published, shadow.message_id)
-        elif shadow.status not in {"disabled"}:
-            await asyncio.to_thread(
-                outbox_repository.mark_failed,
-                shadow.message_id,
-                shadow.error_category or shadow.status,
-            )
+    outbox_accepted = bool(result.pop("_transport_outbox_accepted", False))
+    nats_status = "queued" if outbox_accepted and settings.nats_enabled else "disabled"
     return {
         "ok": True,
         **result,
         "transport": {
             "rest": "accepted",
-            "nats": shadow.model_dump(mode="json"),
+            "nats": {
+                "status": nats_status,
+                "mode": "outbox",
+                "publisher": "background-worker",
+            },
         },
     }
 

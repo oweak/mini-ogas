@@ -441,4 +441,7 @@ transactional Outbox, invariant and authorization behavior. The complete Central
 suite at this checkpoint passes 296 tests.
 
 Stage D remains open for Event/Outbox and Redis/NATS/MinIO adapter extraction. Stage E
-remains open for the single formal publisher and reconciliation thresholds.
+now has one formal Outbox publisher: API workers do not connect or publish, while the
+dedicated worker alone publishes and updates delivery status. The accepted runtime
+reported 9 published and 9 persisted Shadow messages with zero failures. Stage E
+remains open for reconciliation thresholds and controlled degrade/rollback proof.

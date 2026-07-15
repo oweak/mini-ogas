@@ -1735,7 +1735,7 @@ class MemoryStore:
 
         # When PostgreSQL is the primary fact source, commit the durable heartbeat
         # before exposing it through the in-process projection.
-        self.persist_heartbeat_shadow(payload)
+        heartbeat_persisted = self.persist_heartbeat_shadow(payload)
 
         uptime = int(payload.get("uptime_sec") or payload.get("uptime_seconds") or 0)
         agent_version = str(payload.get("agent_version") or "0.2.0")
@@ -1872,6 +1872,9 @@ class MemoryStore:
 
         return {
             **heartbeat_result,
+            "_transport_outbox_accepted": bool(
+                heartbeat_persisted and settings.nats_enabled
+            ),
             "schema_version": payload.get("schema_version") or "2.2",
             "runtime": runtime,
             "production": production,
