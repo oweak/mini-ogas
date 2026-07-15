@@ -30,6 +30,21 @@ current runtime claims. NATS is currently a loopback-only shadow path; it is not
 the authoritative edge transport. Redis is active only as a rebuildable projection,
 not as a business fact source.
 
+## Identity and Control Boundary
+
+- Human users authenticate with password-verified JWTs and stable `user:<name>`
+  Principal IDs.
+- Each production node uses a distinct random credential bound to its own
+  `node_code`; the protected runtime ledger supports rotation and revocation.
+- Service and AI Agent credentials are separate opaque bearer credentials with
+  restricted roles. AI Agents may submit auditable suggestions but cannot issue
+  or approve production commands.
+- Target-rate issue, command approval/rejection/cancel/retry, node control,
+  dispatch approval and escalation approval pass through verified permissions,
+  resource checks, Safety Governor conditions and audit recording.
+- The implemented role/resource/action/condition matrix is documented in
+  `docs/security/principal-control-matrix.md`.
+
 ## Architecture
 
 ```text
@@ -151,6 +166,12 @@ alignment. It also runs Ruff correctness rules when the project development
 environment is installed. Optional Kali/VirtualBox state is not used as
 production-node proof.
 
+The latest Stage C verification on commit `78b994d` passed 273 Central API tests,
+39 simulator tests, 73 Dashboard tests and production build, 4 AI Dispatcher
+tests, 32 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
+checks and Ruff correctness. The strict runtime check loaded three unique node
+credentials and observed 3/3 authenticated SimPy nodes.
+
 AI model calls are only proven when the runtime check is run with:
 
 ```powershell
@@ -160,6 +181,8 @@ AI model calls are only proven when the runtime check is run with:
 If that fails with `AI vault is present but locked`, the system is using rule
 fallback and must not be described as having live DeepSeek participation.
 
-The current Windows host does not have Docker/Compose installed. Source Dockerfiles
-and Compose manifests are present, but clean image build and container startup remain
-unverified and must not be presented as available deployment evidence.
+The current Windows host does not have Docker/Compose installed. Clean Linux image
+build and startup are nevertheless verified by GitHub Container Gate run
+`29400758287`: Central API health, a real Node Agent heartbeat, and the production
+Nginx Dashboard all passed. Full Compose-stack startup is still a later deployment
+gate and must not be inferred from this image-level proof.

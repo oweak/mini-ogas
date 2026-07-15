@@ -8,7 +8,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stage A local tests/runtime pass; Docker/Compose clean build is unverified. Stage B source fixes are present, but container proof remains open. |
+| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B and C are accepted; Stage D decomposition is next. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -33,6 +33,11 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260713-16 | Local steady-state rule text still named the configured DeepSeek provider despite no model call. | Local results now report `provider=rule_fallback`, `used_live_ai=false`; failed attempts use separate `attempted_provider`. |
 | FIX-20260713-17 | Empty or unusable provider responses were marked as successful live AI explanations. | The provider chain and rule explanation contract now reject empty/unstructured output, fall back truthfully, and use a configurable 4096-token response budget for reasoning-capable models. |
 | FIX-20260713-18 | A backlog-triggered bottleneck conclusion exposed an unmatched rate predicate, allowing AI to treat `0.94 <= 0.75` as evidence. | Rule conclusions now include only satisfied predicates and select summaries from the actual trigger path; a regression test covers backlog-only bottlenecks. |
+| FIX-20260715-01 | Write routes trusted body-supplied `actor`/`operator` labels, allowing forged audit identity. | Audit and command paths now bind the verified Principal ID and ignore untrusted identity labels. |
+| FIX-20260715-02 | Production nodes shared one ingest secret and legacy aliases exposed duplicate route surfaces. | Added three independently generated, node-bound credentials with rotation/revocation and removed duplicate `/api/api/...` aliases. |
+| FIX-20260715-03 | Command lifecycle mutations were split across route-specific implementations. | Added `CommandControlService` for issue, approve, reject, cancel and retry with resource checks, Safety Governor, approval policy and audit. |
+| FIX-20260715-04 | AI identity and advice had no persisted least-privilege boundary. | Added AI Agent Principals and auditable suggestions; high-risk suggestions enter `pending_human_review` and cannot create production commands. |
+| FIX-20260715-05 | Phase 7 verification reused a shared node credential. | The gate now provisions a temporary node Principal, verifies bound telemetry and revokes the credential after the run. |
 
 ## Current Supported Runtime Truth
 
@@ -53,22 +58,35 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- | --- |
 | B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
 | B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
-| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; full suite 260 passed | Closed in source |
-| B4 | Complete Central API image inputs | Dockerfile copies service runtime helpers | Source fixed; image build unverified |
-| B5 | Complete Node Agent image inputs | Dockerfile copies direct imports and pins runtime packages | Source fixed; image build unverified |
+| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; full suite 273 passed | Closed |
+| B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in Container Gate `29400758287` | Closed |
+| B5 | Complete Node Agent image inputs | Clean Linux image sent an observable authenticated SimPy heartbeat in the same gate | Closed |
 | B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
 | B7 | Use one controlled Phase 5 clock | Phase 5 suite: 9 passed | Closed |
 | B8 | Align status documents to evidence | README, project status, issues and baseline updated together | Closed |
 
-Stage B must not be described as fully accepted until B4/B5 are proven with a clean
-Docker build and startup. Docker Desktop/CLI and WSL are not installed on this host.
+Stage B is accepted. Docker Desktop/CLI and WSL remain absent on this Windows host,
+but B4/B5 were independently proven on a clean GitHub Ubuntu runner. Full Compose
+startup is still a Stage F gap.
+
+## Stage C Acceptance
+
+- Human, service, node and AI Agent identities share one persisted Principal schema.
+- Opaque service/node/AI credentials are stored as hashes and support rotation and
+  revocation; production startup rejects missing, duplicate or placeholder node secrets.
+- Three runtime production nodes use distinct credentials bound to their own
+  `node_code`; cross-node resource access is rejected.
+- Sensitive command lifecycle actions use `CommandControlService`, verified
+  permissions, resource ownership, Safety Governor, approval policy and audit.
+- AI Agents can submit provenance-bearing suggestions only. A live high-risk
+  suggestion persisted as `pending_human_review` without changing command count.
+- The complete matrix and route evidence are recorded in
+  `docs/security/principal-control-matrix.md`.
 
 ## Remaining Work
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P0 | Install/provide Docker and prove clean Central API, Node Agent, Dashboard and Compose build/start. | Stage A/B gate |
-| P1 | Audit and complete the unified Principal/permission matrix for every sensitive write route. | Stage C |
 | P1 | Split command and node identity domains out of `MemoryStore`, then continue bounded-domain extraction. | Stage D |
 | P1 | Converge unique fact writers, one outbox publisher, idempotent consumers and NATS Shadow reconciliation. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
@@ -83,8 +101,8 @@ Docker build and startup. Docker Desktop/CLI and WSL are not installed on this h
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local non-container result: all verifier gates passed. Canonical counts are
-Central API 260, node simulator 39, Dashboard 73 across 16 files plus production
-build, AI dispatcher 4, CLI/workflow 31 plus 9 subtests, and both Go modules. Ruff
-correctness passes. Docker/Compose is explicitly excluded because no Docker runtime
-is installed; therefore the current A-H objective remains open.
+Latest local verifier gates passed. Canonical counts are Central API 273, node
+simulator 39, Dashboard 73 across 16 files plus production build, AI dispatcher 4,
+CLI/workflow 32 plus 9 subtests, and both Go modules. Ruff correctness passes. GitHub
+Container Gate `29400758287` also passed. Full Compose parity and Stages D-H remain
+open, so the current A-H objective is not complete.

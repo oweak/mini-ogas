@@ -12,13 +12,13 @@ proof.
 
 | Current stage | Status | Evidence boundary |
 | --- | --- | --- |
-| A - truthful baseline | Local path verified; container path open | Tests, production frontend build and 11-process Supervisor runtime pass. Docker/Compose cannot be run on this host. |
-| B - P0 source fixes | Seven closed; two image fixes await container proof | B1-B3 and B6-B8 are tested. B4/B5 are statically corrected but not clean-built. |
-| C - unified identity/control | Audit pending | JWT/RBAC, node token paths and Safety Governor exist, but all sensitive writes still require route-by-route proof. |
+| A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 11-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
+| B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
+| C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
 | D - `MemoryStore` decomposition | Not accepted | Some repositories exist; a complete ownership map, duplicate-state removal and restart proof are still required. |
 | E - data/event convergence | Not accepted | PostgreSQL authority, Redis projection and NATS Shadow exist; unique writer/outbox/idempotency/reconciliation gates remain to be proved. |
 | F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
-| G - unified AI plane | Not accepted | Live DeepSeek and fallback evidence exist; sole model-call ownership and high-risk approval integration remain to be proved. |
+| G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
 | H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
 
 ## Verified Runtime Truth
@@ -52,19 +52,21 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 260 passed |
+| Central API | 273 passed |
 | Python node simulator | 39 passed |
 | Dashboard | 16 files / 73 tests passed |
 | Dashboard production build | passed |
 | AI dispatcher | 4 passed |
-| CLI/workflow | 31 passed + 9 subtests |
+| CLI/workflow | 32 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
 | API and generated contracts | passed |
 | Secret scan and ACL check | passed |
 | Ruff correctness | passed |
 | Strict Supervisor runtime | passed, 11 healthy processes and 3/3 fresh nodes |
-| Docker/Compose build and startup | not run: Docker/WSL unavailable |
+| Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
+| Clean key-image build/start | passed: GitHub Container Gate `29400758287` |
+| Full Compose-stack startup | not yet proved |
 
 ## Hard Boundaries
 
@@ -73,11 +75,11 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 3. NATS is a loopback Shadow path and must never be described as authoritative edge transport.
 4. Live DeepSeek participation is proven only by an unlocked runtime verification result.
 5. Dashboard production build passes, but the current Supervisor path still serves Vite dev mode.
-6. Dockerfiles and Compose manifests existing in the repository do not prove container deployability.
+6. Container Gate proves the three key images, but does not yet prove full Compose parity or persistence services.
 7. Kali tooling remains laboratory-only; no registered, isolated Kali VM is currently claimed.
 
 ## Next Required Gate
 
-Provide a Docker-capable host, run clean image/Compose build and startup, and record the
-evidence in `docs/audits/current-stage-baseline.md`. Only then can Stage B be accepted
-and Stage C implementation proceed without violating the mandatory order.
+Build the Stage D ownership map for every `MemoryStore` field/method/caller/table,
+then incrementally extract Command and Node repositories/services with transaction and
+restart-recovery proof. Full Compose parity remains tracked for Stage F.

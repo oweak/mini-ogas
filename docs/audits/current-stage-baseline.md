@@ -1,10 +1,10 @@
 # Mini-OGAS Current Stage Baseline
 
-Generated at: 2026-07-15T15:59:20+08:00
+Generated at: 2026-07-15T17:51:24+08:00
 
 Branch: `codex/current-stage-hardening`
 
-Commit under test: `a32652e88e474052a57495e9e4788dfe6f062bfd`
+Commit under test: `78b994d838fc595e97fa1e936c631ea3849133a4`
 
 ## Objective Scope
 
@@ -46,18 +46,18 @@ cd "D:\New project\mini-ogas"
 
 | Gate | Command / evidence | Result |
 | --- | --- | --- |
-| API contract | `scripts\check_api_contract.py` via `verify-miniogas.ps1` | PASS, 127 backend routes / 27 frontend calls |
+| API contract | `scripts\check_api_contract.py` via `verify-miniogas.ps1` | PASS, 134 backend routes / 27 frontend calls |
 | Generated contracts | `tools\export_contracts.py --check` via central-api venv | PASS |
 | Dashboard login gate | `scripts\check_dashboard_gate.py` | PASS |
 | Secret scan | `scripts\check_secrets.py` | PASS |
 | Secret scan tests | `scripts\test_check_secrets.py` | PASS |
 | Secret ACL | `scripts\protect-secrets.ps1 -CheckOnly` | PASS, 12 protected targets |
-| Central API tests | central-api venv `pytest -q` | PASS, 260 passed |
+| Central API tests | central-api venv `pytest -q` | PASS, 273 passed |
 | Python node simulator tests | `python -m pytest .\test_simulator.py -q` | PASS, 39 passed |
 | Go node-agent tests | `go test ./...` | PASS |
 | Go supervisor tests | `go test ./...` | PASS |
 | AI dispatcher tests | ai-dispatcher venv `pytest .\tests -q` | PASS, 4 passed |
-| CLI/workflow tests | `pytest tools\mogas\tests scripts\test_check_secrets.py scripts\test_kali_redteam_workflow.py -q` | PASS, 31 passed + 9 subtests |
+| CLI/workflow tests | `pytest tools\mogas\tests scripts\test_check_secrets.py scripts\test_kali_redteam_workflow.py -q` | PASS, 32 passed + 9 subtests |
 | Dashboard tests | `npm run test -- --run` | PASS, 16 files / 73 tests |
 | Dashboard production build | `npm run build` | PASS |
 | Ruff correctness | central-api venv `ruff check .\services .\scripts .\tools --select F` | PASS |
@@ -100,6 +100,12 @@ Strict runtime check confirmed:
 - AI runtime was live through API source, provider `deepseek`, model `deepseek-v4-pro`.
 - Dashboard process was listening on port 5173.
 - 3/3 production SimPy nodes were connected.
+- Three distinct 64-character node credentials were loaded and bound to the expected
+  `turning`, `milling`, and `grinding` node codes.
+- PostgreSQL contained the Principal and AI-suggestion migrations; all active node
+  credential hashes matched the protected runtime ledger.
+- A live high-risk AI Agent suggestion persisted as `pending_human_review`, command
+  count did not change, and the revoked test credential subsequently returned 401.
 
 ## Reproduced Failures and Root Causes
 
@@ -180,8 +186,8 @@ Resolution evidence:
 - The test now uses a single controlled `P5_EVENT_TIME` / `P5_EVENT_AT` clock.
 - `.\services\central-api\.venv\Scripts\python.exe -m pytest tests/test_phase5_quality.py -q`:
   9 passed.
-- Full central-api test suite after the packaging dependency regression test was
-  added: 260 passed.
+- Full central-api test suite after packaging, Principal, command-control, credential
+  and node-inventory regressions were added: 273 passed.
 
 ### P0-B3 Central API runtime dependency declaration and interpreter path
 
@@ -232,7 +238,8 @@ Resolution evidence:
 
 - `services/central-api/Dockerfile` now copies `ai_runtime.py`,
   `create_ai_vault.py`, and `run_portable.py`.
-- Docker CLI is not present on this host, so image build remains unverified here.
+- GitHub Container Gate `29400758287` built the clean image and started Central API;
+  `/health` passed on an Ubuntu runner.
 
 ### P0-B5 Node Agent Dockerfile direct-import module coverage
 
@@ -255,7 +262,8 @@ Resolution evidence:
   `runtime_adapters.py`, and `agent.py`.
 - The image now installs `simpy==4.1.1` and `psutil==7.1.3`.
 - Static import audit confirmed `simulator.py` local imports are covered.
-- Docker CLI is not present on this host, so image build remains unverified here.
+- GitHub Container Gate `29400758287` built the clean image, started Node Agent and
+  observed its authenticated SimPy heartbeat through Central API.
 
 ### P0-B6 illegal environment enum handling
 
@@ -305,28 +313,64 @@ Resolution evidence:
 - `README.md`, `PROJECT_STATUS.md`, `CODEX_ISSUES.md` and this baseline now use the
   same 2026-07-15 test counts and runtime boundaries.
 - All four documents explicitly state that PostgreSQL is authoritative, Redis is a
-  rebuildable projection, NATS is Shadow, and Docker/Compose remains unverified.
+  rebuildable projection, NATS is Shadow, key images are clean-build verified, and
+  full Compose startup remains unverified.
+
+## Stage C Identity and Control Acceptance
+
+Implemented boundary:
+
+- `Principal` covers human, service, node and AI Agent identities in PostgreSQL.
+- Opaque credentials are hash-only at rest and support issue, rotate and revoke.
+- Production startup rejects missing, duplicate, short or placeholder node credentials
+  and disables legacy shared-node authentication by default.
+- Node credentials are bound to `node_code`; node telemetry and command claim/result
+  access cannot cross that resource boundary.
+- `CommandControlService` owns target-rate issue and command approve/reject/cancel/retry
+  operations. Each path evaluates authenticated Principal, permission, resource,
+  Safety Governor, approval policy and audit.
+- AI Agent suggestions are persisted separately from commands. High/critical advice is
+  held for human review and cannot create or approve a production command.
+
+Verification evidence:
+
+- `docs/security/principal-control-matrix.md` maps every sensitive action to its
+  Principal type, permission, resource rule, safety rule, approval and audit event.
+- Central API full suite: 273 passed.
+- Strict runtime: 3/3 independently authenticated nodes online.
+- Live PostgreSQL query: both Stage C migrations present, three active expected node
+  credentials, three unique hashes matching the protected runtime ledger.
+- Live AI test: high-risk suggestion recorded as `pending_human_review`, no command
+  created, credential revocation enforced with HTTP 401.
+- Phase 7 created and revoked its own temporary node Principal while retaining
+  idempotent ingest, Redis rebuild and PostgreSQL historian proof.
+
+Stage C is accepted. This does not accept Stage G: AI Dispatcher still must become the
+sole model provider-chain owner.
 
 ## Known Remaining Gaps
 
-### Docker / Compose clean build is not verified
+### Key container images are verified; full Compose startup is not
 
 Evidence:
 
-- `docker --version` failed because Docker CLI is not installed or not on PATH.
+- `docker --version` still fails locally because Docker CLI is not installed or on PATH.
+- GitHub Actions run `29400758287` on commit `9a58ecc` built Central API, Node Agent
+  and Dashboard from clean contexts, started all three, verified Central API health,
+  observed a real Node Agent heartbeat and served the Nginx production Dashboard.
+- `docker compose ... config --quiet` passed in that run; full Compose services were
+  not started together.
 
 Impact:
 
-- Stage A clean Docker/Compose build and startup remains unproven in the current
-  Windows environment.
-- The system must not claim container deployment is available from this baseline.
+- Stage A now has independent key-image build/start evidence.
+- Full Compose parity, PostgreSQL/NATS/Redis/MinIO container integration and one-shot
+  migration remain unproven.
 
 Next action:
 
-- Install or expose Docker CLI, then run explicit Central API, Node Agent, Dashboard,
-  and Compose build/start checks.
-- Alternatively, document this machine as a non-Docker runtime and run the Docker
-  gate on another host.
+- Stage F must extend the gate to start the complete Compose component set and prove
+  migration, readiness, persistence and shutdown behavior.
 
 ### Deployment path consistency is not complete
 
@@ -353,10 +397,13 @@ Next action:
 ## Current Status
 
 Stage A has a real baseline with code tests and local Supervisor runtime passing.
-Stage B P0 items 1 through 8 have been reproduced and corrected in source, tests or
-canonical status documents. P0-B4/B5 still require Docker CLI for real image-build
-and startup proof, so the Stage B acceptance gate is not yet closed.
+Stage B P0 items 1 through 8 have been reproduced, corrected and verified. B4/B5 are
+proven by clean GitHub Container Gate run `29400758287`; the Stage B gate is closed.
 
-The full current-stage goal is not complete. Remaining work starts with Docker/Compose
-clean-build verification on a Docker-capable host. After that gate passes, execution
-continues with the identity/control plane and `MemoryStore` decomposition.
+Stage C is accepted with persisted Principal identities, independent node credentials,
+canonical command governance, AI suggestion isolation and live rotation/revocation
+proof.
+
+The full current-stage goal is not complete. Execution now continues with Stage D
+`MemoryStore` ownership mapping and incremental Command/Node extraction. Full Compose
+parity remains explicitly assigned to Stage F.
