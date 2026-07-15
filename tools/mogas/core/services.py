@@ -47,6 +47,11 @@ def _core_api() -> list[str]:
             "--host", "127.0.0.1", "--port", "8080", "--log-level", "warning"]
 
 
+def _background_worker() -> list[str]:
+    return [_python(), "-u", "-m", "uvicorn", "app.worker:app",
+            "--host", "127.0.0.1", "--port", "8084", "--log-level", "warning"]
+
+
 def _microservice(port: int) -> list[str]:
     return [_python(), "-u", "-m", "uvicorn", "app.main:app",
             "--host", "127.0.0.1", f"--port={port}", "--log-level", "warning"]
@@ -67,6 +72,13 @@ _CENTRAL_API = Service(
     name="central-api", role="core", port=8080,
     workdir=PROJ_ROOT / "services" / "central-api",
     command=_core_api(),
+)
+
+_BACKGROUND_WORKER = Service(
+    name="background-worker", role="core", port=8084,
+    workdir=PROJ_ROOT / "services" / "central-api",
+    command=_background_worker(),
+    depends_on=("central-api",),
 )
 
 _AI_DISPATCHER = Service(
@@ -129,6 +141,7 @@ _CLOUD_DB = Service(
 
 ALL: tuple[Service, ...] = (
     _CENTRAL_API,
+    _BACKGROUND_WORKER,
     _AI_DISPATCHER,
     _MARKET,
     _PLANNER,

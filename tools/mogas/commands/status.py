@@ -18,6 +18,8 @@ def _print_api_status() -> None:
     else:
         print("  central-api  : OFFLINE")
 
+    worker = "ONLINE" if check(8084, timeout=1) else "OFFLINE"
+    print(f"  worker       : {worker}")
     dash = "ONLINE" if check(5173, timeout=1) else "OFFLINE"
     print(f"  dashboard    : {dash}")
 

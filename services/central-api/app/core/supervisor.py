@@ -4,10 +4,19 @@ from .config import settings
 from .service_client import get_json
 
 
-def supervisor_health(session_token: str) -> dict[str, object]:
+def supervisor_health(
+    session_token: str,
+    *,
+    timeout: float | None = None,
+) -> dict[str, object]:
+    probe_timeout = (
+        min(settings.service_probe_timeout_seconds, 2)
+        if timeout is None
+        else max(0.05, timeout)
+    )
     ok, payload = get_json(
         f"{settings.supervisor_url.rstrip('/')}/supervisor/status",
-        timeout=min(settings.service_probe_timeout_seconds, 2),
+        timeout=probe_timeout,
     )
     expected = list(settings.expected_supervisor_processes)
     base: dict[str, object] = {

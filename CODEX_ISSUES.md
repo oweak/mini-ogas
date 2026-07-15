@@ -8,7 +8,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B and C are accepted; Stage D decomposition is next. |
+| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B and C are accepted; Stage D has verified Command, Node and Scheduler/Worker boundaries but is not complete. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -38,10 +38,14 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260715-03 | Command lifecycle mutations were split across route-specific implementations. | Added `CommandControlService` for issue, approve, reject, cancel and retry with resource checks, Safety Governor, approval policy and audit. |
 | FIX-20260715-04 | AI identity and advice had no persisted least-privilege boundary. | Added AI Agent Principals and auditable suggestions; high-risk suggestions enter `pending_human_review` and cannot create production commands. |
 | FIX-20260715-05 | Phase 7 verification reused a shared node credential. | The gate now provisions a temporary node Principal, verifies bound telemetry and revokes the credential after the run. |
+| FIX-20260715-06 | Command and node runtime projections were still owned directly by `MemoryStore`. | Added durable Command and Node repositories, compatibility projections, transaction/restart tests and a generated ownership map. |
+| FIX-20260715-07 | Every API worker started simulation, Outbox and NATS consumer loops. | Moved periodic work to one `background-worker` process; API lifespan now owns request-serving dependencies only and architecture tests reject task creation there. |
+| FIX-20260715-08 | Central liveness synchronously waited on Supervisor and worker readiness, creating a startup dependency cycle. | Bounded dependency probes to 250 ms, retained degraded readiness reporting and verified 195 ms Central health during a 12/12 supervised startup. |
 
 ## Current Supported Runtime Truth
 
-- Runtime owner: Go supervisor, 11 healthy managed processes in the latest verified session.
+- Runtime owner: Go supervisor, 12 healthy managed processes in the latest verified session.
+- Periodic task owner: one `background-worker` process on port 8084; API workers do not create simulation, Outbox or NATS consumer tasks.
 - Production nodes: three process-hosted SimPy nodes, counted only from fresh heartbeats.
 - Central fact source: PostgreSQL; memory is a cache/projection. SQLite is test/local fallback only.
 - Dashboard fact source: `/api/dashboard/snapshot`; legacy state is a wrapper.
@@ -58,7 +62,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- | --- |
 | B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
 | B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
-| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; full suite 273 passed | Closed |
+| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; current full suite 288 passed | Closed |
 | B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in Container Gate `29406148599` | Closed |
 | B5 | Complete Node Agent image inputs | Clean Linux image sent an observable authenticated SimPy heartbeat in the same gate | Closed |
 | B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
@@ -87,7 +91,7 @@ startup is still a Stage F gap.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Split command and node identity domains out of `MemoryStore`, then continue bounded-domain extraction. | Stage D |
+| P1 | Continue after the completed Command/Node/Scheduler boundaries: extract Production, Quality, Event/Outbox, Simulation State and adapter ownership from `MemoryStore`. | Stage D |
 | P1 | Converge unique fact writers, one outbox publisher, idempotent consumers and NATS Shadow reconciliation. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
@@ -101,8 +105,10 @@ startup is still a Stage F gap.
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local verifier gates passed. Canonical counts are Central API 273, node
+Latest local verifier gates passed. Canonical counts are Central API 288, node
 simulator 39, Dashboard 73 across 16 files plus production build, AI dispatcher 4,
-CLI/workflow 32 plus 9 subtests, and both Go modules. Ruff correctness passes. GitHub
+CLI/workflow 36 plus 9 subtests, and both Go modules. Ruff correctness passes. The
+strict runtime reports 12/12 healthy processes, a ready dedicated worker, live NATS
+Shadow and 3/3 fresh SimPy nodes. GitHub
 Container Gate `29406148599` also passed. Full Compose parity and Stages D-H remain
 open, so the current A-H objective is not complete.

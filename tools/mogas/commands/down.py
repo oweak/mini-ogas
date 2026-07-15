@@ -39,7 +39,7 @@ def run() -> None:
 
     # Force-kill ports
     from ..core.process import kill_port
-    ports = [8080, 8081, 8082, 8083, 5173]
+    ports = [8080, 8081, 8082, 8083, 8084, 5173]
     for p in ports:
         kill_port(p)
 

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from app.core.config import settings
+from app.models import NodeStatus, utc_now
 from app.store import MemoryStore
 
 NODE_FIELDS = {
@@ -86,3 +89,28 @@ def test_node_repository_rebuilds_heartbeat_projection_after_restart(
     assert machine.node_code == "turning-workshop-01"
     assert machine.status == "running"
     assert restarted.node_repository.runtime_metrics["turning-workshop-01"].cpu_usage == 21
+
+
+def test_restored_stale_heartbeat_cannot_make_node_look_online(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "persist_enabled", False)
+    monkeypatch.setattr(settings, "demo_seed_enabled", False)
+    state = MemoryStore()
+    stale_at = utc_now() - timedelta(seconds=settings.heartbeat_timeout_seconds + 1)
+
+    with state._lock:
+        state._restore_heartbeat_shadow_locked(
+            "turning-workshop-01",
+            _heartbeat(),
+            stale_at,
+        )
+
+    node = state.nodes["turning-workshop-01"]
+    machine = next(item for item in state.machines if item.machine_code == "LATHE-NODE-REPOSITORY")
+    readiness = state.production_node_readiness()
+
+    assert node.status == NodeStatus.offline
+    assert machine.status == "offline"
+    assert readiness["healthy"] == []
+    assert readiness["stale"] == ["turning-workshop-01"]

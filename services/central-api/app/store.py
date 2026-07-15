@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import logging
 import json
+import logging
 import random
 import threading
 import uuid
@@ -11,13 +11,13 @@ from statistics import mean
 
 import psutil
 
-from .core.ai.registry import registry
-from .core.config import settings
-from .core.session import get_session_token
-from .core.database import get_db, init_db, persistence_backend, persistence_label
-from .core.service_client import get_json, post_json
 from .command_manager import CommandManager, CommandTransition
 from .command_verifier import CommandVerifier
+from .core.ai.registry import registry
+from .core.config import settings
+from .core.database import get_db, init_db, persistence_backend, persistence_label
+from .core.service_client import get_json, post_json
+from .core.session import get_session_token
 from .persistence_repository import central_fact_repository
 from .repositories.commands import CommandRepository
 from .repositories.nodes import NodeRepository
@@ -199,7 +199,7 @@ class MemoryStore:
         self._primary_projection_in_progress = False
         self._persistence_write_failures: dict[str, dict[str, object]] = {}
 
-        if settings.persist_enabled:
+        if settings.persist_enabled and settings.database_auto_migrate:
             init_db()
         if settings.demo_seed_enabled:
             self.seed_demo()
@@ -510,8 +510,20 @@ class MemoryStore:
         alarms = payload.get("alarms") if isinstance(payload.get("alarms"), list) else []
         workshop_type = str(production.get("workshop_type") or self.infer_workshop_type(node_code))
         heartbeat_time = _database_datetime(received_at) if received_at else utc_now()
+        if heartbeat_time.tzinfo is None:
+            heartbeat_time = heartbeat_time.replace(tzinfo=utc_now().tzinfo)
         raw_status = str(payload.get("status") or "running")
-        node_status = NodeStatus.online if raw_status in {"running", "online", "idle"} else NodeStatus.degraded
+        heartbeat_is_fresh = heartbeat_time >= (
+            utc_now() - timedelta(seconds=settings.heartbeat_timeout_seconds)
+        )
+        if not heartbeat_is_fresh:
+            node_status = NodeStatus.offline
+        else:
+            node_status = (
+                NodeStatus.online
+                if raw_status in {"running", "online", "idle"}
+                else NodeStatus.degraded
+            )
 
         node = self.nodes.setdefault(
             node_code,
@@ -531,7 +543,16 @@ class MemoryStore:
             machine = Machine(machine_code=machine_code, node_code=node_code, machine_type=workshop_type)
             self.machines.append(machine)
         machine.node_code = node_code
-        machine.status = "fault" if raw_status == "fault" else "warning" if raw_status == "warning" else "running"
+        if node_status == NodeStatus.offline:
+            machine.status = "offline"
+        else:
+            machine.status = (
+                "fault"
+                if raw_status == "fault"
+                else "warning"
+                if raw_status == "warning"
+                else "running"
+            )
         machine.load_rate = float(production.get("utilization") or 0) * 100
         machine.tool_wear_level = float(production.get("tool_wear_level") or machine.tool_wear_level)
         machine.today_output = int(production.get("finished_quantity") or machine.today_output)

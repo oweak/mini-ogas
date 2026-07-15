@@ -12,10 +12,10 @@ proof.
 
 | Current stage | Status | Evidence boundary |
 | --- | --- | --- |
-| A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 11-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
+| A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 12-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
 | B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
 | C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
-| D - `MemoryStore` decomposition | Not accepted | Some repositories exist; a complete ownership map, duplicate-state removal and restart proof are still required. |
+| D - `MemoryStore` decomposition | In progress | The generated ownership map is current. Command and Node repositories have restart/transaction tests, and simulation/Outbox/NATS periodic work now runs only in a dedicated worker. Production, Quality, Event/Outbox, Simulation State and adapter boundaries remain open. |
 | E - data/event convergence | Not accepted | PostgreSQL authority, Redis projection and NATS Shadow exist; unique writer/outbox/idempotency/reconciliation gates remain to be proved. |
 | F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
 | G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
@@ -34,6 +34,7 @@ FastAPI central-api :8080 ---- PostgreSQL authoritative facts
         |                         |-- commands + audit transaction
         |                         |-- production / quality / maintenance facts
         |
+        |---- background worker :8084 (simulation + Outbox + NATS consumer)
         |---- Redis rebuildable projection
         |---- NATS JetStream Shadow + PostgreSQL receipts
         |---- MinIO object/evidence storage
@@ -52,18 +53,18 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 273 passed |
+| Central API | 288 passed |
 | Python node simulator | 39 passed |
 | Dashboard | 16 files / 73 tests passed |
 | Dashboard production build | passed |
 | AI dispatcher | 4 passed |
-| CLI/workflow | 32 passed + 9 subtests |
+| CLI/workflow | 36 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
 | API and generated contracts | passed |
 | Secret scan and ACL check | passed |
 | Ruff correctness | passed |
-| Strict Supervisor runtime | passed, 11 healthy processes and 3/3 fresh nodes |
+| Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
 | Clean key-image build/start | passed: GitHub Container Gate `29406148599` on the Stage C branch head |
 | Full Compose-stack startup | not yet proved |
@@ -80,6 +81,7 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Next Required Gate
 
-Build the Stage D ownership map for every `MemoryStore` field/method/caller/table,
-then incrementally extract Command and Node repositories/services with transaction and
-restart-recovery proof. Full Compose parity remains tracked for Stage F.
+Continue Stage D from the verified Command/Node/Scheduler boundaries: extract
+Production Execution and Quality/Calibration ownership, then make Event/Outbox and
+Runtime Simulation State independently testable. Stage E still owns the unique
+publisher and reconciliation gates; full Compose parity remains tracked for Stage F.

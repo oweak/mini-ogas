@@ -166,11 +166,12 @@ alignment. It also runs Ruff correctness rules when the project development
 environment is installed. Optional Kali/VirtualBox state is not used as
 production-node proof.
 
-The latest Stage C verification on commit `78b994d` passed 273 Central API tests,
+The latest local hardening verification on 2026-07-15 passed 288 Central API tests,
 39 simulator tests, 73 Dashboard tests and production build, 4 AI Dispatcher
-tests, 32 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
-checks and Ruff correctness. The strict runtime check loaded three unique node
-credentials and observed 3/3 authenticated SimPy nodes.
+tests, 36 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
+checks and Ruff correctness. The strict runtime reported 12/12 healthy processes,
+a ready dedicated background worker, live NATS Shadow, three unique node credentials
+and 3/3 authenticated SimPy nodes.
 
 AI model calls are only proven when the runtime check is run with:
 

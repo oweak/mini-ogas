@@ -25,7 +25,7 @@ def run() -> None:
 
     print()
     print("  Ports:")
-    for p in [8080, 8081, 8082, 8083, 5173]:
+    for p in [8080, 8081, 8082, 8083, 8084, 5173]:
         busy = "BUSY" if check(p, timeout=1) else "free"
         print(f"    :{p:<5} {busy}")
 

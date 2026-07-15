@@ -43,7 +43,7 @@ $MinioDataPath = Join-Path $MinioRuntimeRoot "data"
 $MinioEnvPath = Join-Path $MinioRuntimeRoot "minio.env"
 $CentralApiPython = Join-Path $ProjectRoot "services\central-api\.venv\Scripts\python.exe"
 $SessionPath = Join-Path $RuntimeRoot "miniogas-session-token.txt"
-$Ports = @(4222, 8222, 6379, 9000, 9001, 8080, 8081, 8082, 8083, 5173, 9099)
+$Ports = @(4222, 8222, 6379, 9000, 9001, 8080, 8081, 8082, 8083, 8084, 5173, 9099)
 
 function Get-ConfigValue {
   param([string]$Path, [string]$Name)

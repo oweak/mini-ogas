@@ -18,7 +18,7 @@ if (Test-Path $PidDir) {
 }
 
 # 2. Kill by port (catches anything missed by PID files)
-$Ports = @(8080, 8081, 8082, 8083)
+$Ports = @(8080, 8081, 8082, 8083, 8084)
 foreach ($port in $Ports) {
     $line = netstat -ano 2>$null | Select-String ":$port " | Select-String "LISTENING"
     if ($line) {

@@ -1,13 +1,12 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI
 import pytest
-from fastapi.testclient import TestClient
-
 from app.core.config import settings
 from app.main import app, setup_middleware
 from app.models import DispatchTask, IncidentEvent, Severity
 from app.store import store
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 AUTH_HEADERS = {"X-OGAS-Token": "mini-ogas-dev-token"}
 
@@ -41,7 +40,12 @@ def test_health_keeps_liveness_ok_when_nats_is_degraded(monkeypatch) -> None:
     monkeypatch.setattr(
         health_router,
         "supervisor_health",
-        lambda _session: {"status": "ok"},
+        lambda _session, **_kwargs: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        health_router,
+        "get_json",
+        lambda _url, timeout=None: (False, {"error": "worker-offline"}),
     )
     monkeypatch.setattr(
         health_router.nats_runtime,
@@ -57,8 +61,8 @@ def test_health_keeps_liveness_ok_when_nats_is_degraded(monkeypatch) -> None:
 
 
 def test_health_supervisor_ok(monkeypatch) -> None:
-    from app.core.config import settings
     from app.core import supervisor
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api", "dashboard"])
     monkeypatch.setattr(
@@ -86,8 +90,8 @@ def test_health_supervisor_ok(monkeypatch) -> None:
 
 
 def test_health_supervisor_offline(monkeypatch) -> None:
-    from app.core.config import settings
     from app.core import supervisor
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
     monkeypatch.setattr(supervisor, "get_json", lambda url, timeout=None: (False, {"error": "URLError"}))
@@ -99,9 +103,26 @@ def test_health_supervisor_offline(monkeypatch) -> None:
     assert payload["missing_processes"] == ["central-api"]
 
 
-def test_health_supervisor_session_mismatch(monkeypatch) -> None:
-    from app.core.config import settings
+def test_supervisor_health_honors_fast_liveness_probe_timeout(monkeypatch) -> None:
     from app.core import supervisor
+
+    observed: dict[str, float] = {}
+
+    def unavailable(_url, timeout=None):
+        observed["timeout"] = timeout
+        return False, {"error": "offline"}
+
+    monkeypatch.setattr(supervisor, "get_json", unavailable)
+
+    payload = supervisor.supervisor_health("SESSION-1", timeout=0.25)
+
+    assert payload["status"] == "offline"
+    assert observed["timeout"] == 0.25
+
+
+def test_health_supervisor_session_mismatch(monkeypatch) -> None:
+    from app.core import supervisor
+    from app.core.config import settings
 
     monkeypatch.setattr(settings, "expected_supervisor_processes", ["central-api"])
     monkeypatch.setattr(

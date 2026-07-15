@@ -27,6 +27,15 @@ def test_core_services_have_ports():
         assert svc.port > 0, f"{svc.name} should have a port"
 
 
+def test_background_worker_is_a_single_core_service_owned_after_central():
+    workers = [service for service in CORE if service.name == "background-worker"]
+
+    assert len(workers) == 1
+    assert workers[0].port == 8084
+    assert workers[0].depends_on == ("central-api",)
+    assert "app.worker:app" in workers[0].command
+
+
 def test_agents_have_no_ports():
     for svc in AGENTS:
         assert svc.port == 0, f"{svc.name} should not have a port"

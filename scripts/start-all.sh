@@ -52,7 +52,7 @@ export OGAS_SESSION_TOKEN=$(python -c "import uuid; print(uuid.uuid4())" 2>/dev/
 echo "Session token: $OGAS_SESSION_TOKEN"
 
 echo "=== Phase 0: 清理旧进程 ==="
-for port in 8080 8081 8082 8083; do
+for port in 8080 8081 8082 8083 8084; do
     kill_port $port
 done
 # Kill any lingering agent.py
@@ -69,6 +69,19 @@ cd "$ROOT/services/central-api"
 CENTRAL_PID=$!
 echo "  PID=$CENTRAL_PID"
 wait_health "http://127.0.0.1:8080/preflight" 20 "central-api" || { echo "FATAL: central-api 启动失败"; exit 1; }
+echo ""
+
+# Periodic simulation and transport work belongs to a dedicated process.
+echo "=== Phase 1b: 启动 background-worker :8084 ==="
+cd "$ROOT/services/central-api"
+DATABASE_AUTO_MIGRATE=false "$PYTHON" -m uvicorn app.worker:app \
+    --host 127.0.0.1 --port 8084 --log-level warning &
+WORKER_PID=$!
+echo "  PID=$WORKER_PID"
+wait_health "http://127.0.0.1:8084/health" 20 "background-worker" || {
+    echo "FATAL: background-worker 启动失败"
+    exit 1
+}
 echo ""
 
 # ================================================================

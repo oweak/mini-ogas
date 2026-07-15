@@ -17,9 +17,12 @@ services:
 
   nats:
     image: nats:2-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
       - "8222:8222"
+    volumes:
+      - nats_data:/data
 
   central-api:
     build: ../services/central-api
@@ -27,11 +30,28 @@ services:
       - ./env.central.example
     environment:
       ALLOW_LEGACY_NODE_TOKEN_AUTH: "false"
+      DATABASE_AUTO_MIGRATE: "true"
+      BACKGROUND_WORKER_URL: http://background-worker:8084
       NODE_CREDENTIALS_JSON: >-
         {"turning-workshop-01":"${TURNING_NODE_TOKEN:-replace_turning_node_token_000000000000}","milling-workshop-01":"${MILLING_NODE_TOKEN:-replace_milling_node_token_000000000000}","grinding-workshop-01":"${GRINDING_NODE_TOKEN:-replace_grinding_node_token_000000000000}"}
     ports:
       - "8080:8080"
     depends_on:
+      - postgres
+      - redis
+      - nats
+
+  background-worker:
+    build: ../services/central-api
+    command: ["uvicorn", "app.worker:app", "--host", "0.0.0.0", "--port", "8084"]
+    restart: unless-stopped
+    env_file:
+      - ./env.central.example
+    environment:
+      DATABASE_AUTO_MIGRATE: "false"
+      TELEMETRY_BOOTSTRAP_CATALOG_ENABLED: "true"
+    depends_on:
+      - central-api
       - postgres
       - redis
       - nats
@@ -66,3 +86,4 @@ services:
 
 volumes:
   postgres_data:
+  nats_data:

@@ -2,8 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.config import settings
 from ..core.security import PERM_SIMULATION_CONTROL, ActorInfo, require_permission
+from ..core.service_client import get_json, post_json
 from ..models import SimulationControl
-from ..store import store
 
 router = APIRouter(tags=["simulation"])
 
@@ -23,7 +23,13 @@ def _require_simulation_control() -> None:
 
 @router.get("/simulation/state")
 def get_simulation_state():
-    return store.simulation_state()
+    ok, payload = get_json(f"{settings.background_worker_url.rstrip('/')}/simulation/state")
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "background_worker_unavailable", "worker": payload},
+        )
+    return payload
 
 
 @router.post("/simulation/control")
@@ -32,11 +38,16 @@ def control_simulation(
     actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
 ):
     _require_simulation_control()
-    return store.configure_simulation(
-        running=payload.running,
-        speed=payload.speed,
-        anomaly_rate=payload.anomaly_rate,
+    ok, result = post_json(
+        f"{settings.background_worker_url.rstrip('/')}/simulation/configure",
+        payload.model_dump(exclude_none=True),
     )
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "background_worker_unavailable", "worker": result},
+        )
+    return result
 
 
 @router.post("/simulation/step")
@@ -44,4 +55,13 @@ def step_simulation(
     actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
 ):
     _require_simulation_control()
-    return store.simulation_step()
+    ok, result = post_json(
+        f"{settings.background_worker_url.rstrip('/')}/simulation/step",
+        {},
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "background_worker_unavailable", "worker": result},
+        )
+    return result

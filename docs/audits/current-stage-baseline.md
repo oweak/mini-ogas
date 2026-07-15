@@ -407,3 +407,28 @@ proof.
 The full current-stage goal is not complete. Execution now continues with Stage D
 `MemoryStore` ownership mapping and incremental Command/Node extraction. Full Compose
 parity remains explicitly assigned to Stage F.
+
+## Stage D Checkpoint - 2026-07-15
+
+This checkpoint supplements the immutable Stage A baseline above; it does not rewrite
+the earlier commit-specific counts.
+
+- The generated `memory-store-ownership-map.md` is current and guarded by a test.
+- Command and Node repositories own their durable SQL/projections and have restart and
+  transaction regressions.
+- API lifespan creates no periodic tasks. A single `background-worker` owns simulation,
+  Outbox publication and the NATS Shadow consumer/manager.
+- Supervisor starts 12 processes and Compose registers the same worker image/entrypoint;
+  complete Compose runtime parity remains unproved on this host.
+- The startup dependency cycle caused by blocking readiness probes was reproduced and
+  fixed. Central `/health` returned in 195 ms in the accepted runtime.
+- Official verification passed: Central 288, simulator 39, AI Dispatcher 4,
+  CLI/workflow 36 plus 9 subtests, Dashboard 73 plus production build, both Go suites,
+  Ruff correctness and the Phase 1/3/4/5/6/7 PostgreSQL gates.
+- Runtime evidence: 12/12 healthy processes, worker tasks `simulation=running` and
+  `outbox=running`, NATS `live` in Shadow mode, PostgreSQL persistence pass and 3/3
+  fresh SimPy production nodes.
+
+Stage D remains open for Production Execution, Quality/Calibration, Event/Outbox,
+Runtime Simulation State and Redis/NATS/MinIO adapter extraction. Stage E remains open
+for the single formal publisher and reconciliation thresholds.

@@ -4,7 +4,7 @@
 echo "=== 停止所有 Mini-OGAS 服务 ==="
 
 # Kill by port
-for port in 8080 8081 8082 8083; do
+for port in 8080 8081 8082 8083 8084; do
     pid=$(netstat -ano 2>/dev/null | grep ":$port " | grep LISTENING | awk '{print $NF}' | head -1)
     if [ -n "$pid" ] && [ "$pid" != "0" ]; then
         taskkill //F //PID "$pid" 2>/dev/null && echo "  已终止端口 $port (PID $pid)" || true

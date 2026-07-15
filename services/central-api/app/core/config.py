@@ -7,7 +7,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, field_validator, model_validator
 
-
 LOCAL_DEVELOPMENT_JWT_SECRET = "mini-ogas-local-development-jwt-secret"
 
 
@@ -115,6 +114,9 @@ class Settings(BaseModel):
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "1200"))
     microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     persist_enabled: bool = os.getenv("PERSIST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
+    database_auto_migrate: bool = os.getenv("DATABASE_AUTO_MIGRATE", "true").lower() in {
+        "1", "true", "yes", "on",
+    }
     persist_backend: str = os.getenv("PERSIST_BACKEND", "auto").strip().lower()
     central_fact_source: str = os.getenv("CENTRAL_FACT_SOURCE", "postgresql").strip().lower()
     postgres_dsn: str = os.getenv("POSTGRES_DSN", os.getenv("DATABASE_URL", "")).strip()
@@ -156,11 +158,14 @@ class Settings(BaseModel):
     ai_dispatcher_url: str = os.getenv("AI_DISPATCHER_URL", "http://127.0.0.1:8081")
     market_simulator_url: str = os.getenv("MARKET_SIMULATOR_URL", "http://127.0.0.1:8082")
     production_planner_url: str = os.getenv("PRODUCTION_PLANNER_URL", "http://127.0.0.1:8083")
+    background_worker_url: str = os.getenv(
+        "BACKGROUND_WORKER_URL", "http://127.0.0.1:8084"
+    )
     supervisor_url: str = os.getenv("SUPERVISOR_URL", "http://127.0.0.1:9099")
     service_probe_timeout_seconds: float = float(os.getenv("SERVICE_PROBE_TIMEOUT_SECONDS", "5"))
     expected_supervisor_processes: list[str] = _csv_env(
         "EXPECTED_SUPERVISOR_PROCESSES",
-        "central-api,ai-dispatcher,market-simulator,production-planner,dashboard,"
+        "central-api,background-worker,ai-dispatcher,market-simulator,production-planner,dashboard,"
         "turning-simpy-node,milling-simpy-node,grinding-simpy-node",
     )
     expected_production_nodes: list[str] = _csv_env(
