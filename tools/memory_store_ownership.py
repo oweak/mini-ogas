@@ -37,8 +37,7 @@ FIELD_OWNERSHIP: dict[str, FieldOwnership] = {
     **_fields("_lock", "infrastructure", "RuntimeStateCoordinator", "runtime only"),
     **_fields("rng", "simulation", "RuntimeSimulationState", "runs, scenarios"),
     **_fields(
-        "nodes metrics runtime_metrics machines node_db_size_bytes node_db_size_sources "
-        "node_heartbeats_v2 node_record_sync_ids",
+        "node_repository",
         "node and telemetry",
         "NodeRepository / NodeService",
         "heartbeat_shadow, metrics, node_record_receipts, telemetry_*",

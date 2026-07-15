@@ -20,6 +20,7 @@ from .command_manager import CommandManager, CommandTransition
 from .command_verifier import CommandVerifier
 from .persistence_repository import central_fact_repository
 from .repositories.commands import CommandRepository
+from .repositories.nodes import NodeRepository
 from .safety_governor import SafetyDecision, safety_governor
 
 logger = logging.getLogger(__name__)
@@ -153,14 +154,7 @@ class MemoryStore:
         self._lock = threading.RLock()
         self.rng = random.Random(260507)
         # Nodes (workshops + cloud) and their metrics
-        self.nodes: dict[str, Node] = {}
-        self.metrics: list[MetricIn] = []
-        self.runtime_metrics: dict[str, MetricIn] = {}
-        self.machines: list[Machine] = []
-        self.node_db_size_bytes: dict[str, int] = {}
-        self.node_db_size_sources: dict[str, str] = {}
-        self.node_heartbeats_v2: dict[str, dict[str, object]] = {}
-        self.node_record_sync_ids: set[str] = set()
+        self.node_repository = NodeRepository()
         # Market and inventory
         self.market_signals: list[MarketSignal] = []
         self.market_forecast: list[MarketForecast] = []
@@ -241,6 +235,70 @@ class MemoryStore:
     @commands.setter
     def commands(self, commands: list[NodeCommand]) -> None:
         self.command_repository.replace_projection(commands)
+
+    @property
+    def nodes(self) -> dict[str, Node]:
+        return self.node_repository.nodes
+
+    @nodes.setter
+    def nodes(self, value: dict[str, Node]) -> None:
+        self.node_repository.nodes = value
+
+    @property
+    def metrics(self) -> list[MetricIn]:
+        return self.node_repository.metrics
+
+    @metrics.setter
+    def metrics(self, value: list[MetricIn]) -> None:
+        self.node_repository.metrics = value
+
+    @property
+    def runtime_metrics(self) -> dict[str, MetricIn]:
+        return self.node_repository.runtime_metrics
+
+    @runtime_metrics.setter
+    def runtime_metrics(self, value: dict[str, MetricIn]) -> None:
+        self.node_repository.runtime_metrics = value
+
+    @property
+    def machines(self) -> list[Machine]:
+        return self.node_repository.machines
+
+    @machines.setter
+    def machines(self, value: list[Machine]) -> None:
+        self.node_repository.machines = value
+
+    @property
+    def node_db_size_bytes(self) -> dict[str, int]:
+        return self.node_repository.db_size_bytes
+
+    @node_db_size_bytes.setter
+    def node_db_size_bytes(self, value: dict[str, int]) -> None:
+        self.node_repository.db_size_bytes = value
+
+    @property
+    def node_db_size_sources(self) -> dict[str, str]:
+        return self.node_repository.db_size_sources
+
+    @node_db_size_sources.setter
+    def node_db_size_sources(self, value: dict[str, str]) -> None:
+        self.node_repository.db_size_sources = value
+
+    @property
+    def node_heartbeats_v2(self) -> dict[str, dict[str, object]]:
+        return self.node_repository.heartbeats_v2
+
+    @node_heartbeats_v2.setter
+    def node_heartbeats_v2(self, value: dict[str, dict[str, object]]) -> None:
+        self.node_repository.heartbeats_v2 = value
+
+    @property
+    def node_record_sync_ids(self) -> set[str]:
+        return self.node_repository.record_sync_ids
+
+    @node_record_sync_ids.setter
+    def node_record_sync_ids(self, value: set[str]) -> None:
+        self.node_repository.record_sync_ids = value
 
     def _record_persistence_write_failure(self, operation: str, exc: Exception) -> None:
         previous = self._persistence_write_failures.get(operation, {})
@@ -541,7 +599,7 @@ class MemoryStore:
             "_received_at": heartbeat_time.isoformat(),
             "_restored_from_persistence": True,
         }
-        self.metrics.append(MetricIn(
+        restored_metric = MetricIn(
             node_code=node_code,
             workshop_type=workshop_type,
             cpu_usage=float(metrics.get("cpu_usage") or 0),
@@ -553,8 +611,10 @@ class MemoryStore:
             api_latency_ms=int(metrics.get("api_latency_ms") or metrics.get("network_latency_ms") or 0),
             finished_quantity=int(production.get("finished_quantity") or 0),
             defect_quantity=int(production.get("defect_quantity") or 0),
-        ))
+        )
+        self.metrics.append(restored_metric)
         self.metrics = self.metrics[-300:]
+        self.runtime_metrics[node_code] = restored_metric
 
     def persist_alert(self, alert: Alert) -> None:
         if not self._persisting():
