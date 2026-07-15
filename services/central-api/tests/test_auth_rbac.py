@@ -29,6 +29,28 @@ def test_node_ingest_stays_separate_from_dashboard_bearer_auth() -> None:
         assert denied.status_code == 401
 
 
+def test_node_inventory_is_bearer_only(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"operator": "admin", "password": "mini-ogas-dev-token"},
+        )
+        access_token = login.json()["access_token"]
+
+        authorized = client.get(
+            "/api/nodes",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        machine_denied = client.get(
+            "/api/nodes",
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+
+    assert authorized.status_code == 200
+    assert machine_denied.status_code == 401
+
+
 def test_operator_command_gateway_uses_jwt_and_keeps_agent_channel_machine_only(monkeypatch) -> None:
     monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
     node_code = "turning-workshop-01"

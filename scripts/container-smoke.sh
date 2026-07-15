@@ -66,6 +66,7 @@ docker run --detach --name central-api --network "$NETWORK" \
   --env NATS_ENABLED=false \
   --env REDIS_ENABLED=false \
   --env OBJECT_STORAGE_ENABLED=false \
+  --env TELEMETRY_BOOTSTRAP_CATALOG_ENABLED=true \
   miniogas-central-api:ci >/dev/null
 
 wait_for_url http://127.0.0.1:18080/health central-api

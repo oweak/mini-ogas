@@ -76,7 +76,7 @@ def _is_node_ingest_path(path: str) -> bool:
             or path.endswith("/command-results")
         )
     return (
-        path in {"/metrics", "/node-heartbeats", "/nodes"}
+        path in {"/metrics", "/node-heartbeats"}
         or path.startswith("/agents/")
         or path.startswith("/node-records/")
         or path.startswith("/node-dispatches/")
