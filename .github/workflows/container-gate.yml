@@ -18,7 +18,7 @@ jobs:
     timeout-minutes: 25
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Build images and verify container startup
         run: bash scripts/container-smoke.sh

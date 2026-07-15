@@ -24,9 +24,17 @@ trap cleanup EXIT
 
 wait_for_url() {
   url="$1"
+  container_name="${2:-}"
   for _ in $(seq 1 45); do
     if curl --fail --silent --show-error "$url" >/dev/null; then
       return 0
+    fi
+    if [[ -n "$container_name" ]] && \
+      [[ "$(docker inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null || true)" != true ]]; then
+      echo "Container $container_name exited before $url became ready" >&2
+      docker inspect "$container_name" --format '{{json .State}}' >&2 || true
+      docker logs "$container_name" >&2 || true
+      return 1
     fi
     sleep 1
   done
@@ -60,7 +68,7 @@ docker run --detach --name central-api --network "$NETWORK" \
   --env OBJECT_STORAGE_ENABLED=false \
   miniogas-central-api:ci >/dev/null
 
-wait_for_url http://127.0.0.1:18080/health
+wait_for_url http://127.0.0.1:18080/health central-api
 
 docker run --detach --name node-agent --network "$NETWORK" \
   --env CENTRAL_API_URL=http://central-api:8080 \
@@ -103,7 +111,7 @@ docker run --detach --name dashboard --network "$NETWORK" \
   --publish 15173:5173 \
   miniogas-dashboard:ci >/dev/null
 
-wait_for_url http://127.0.0.1:15173/
+wait_for_url http://127.0.0.1:15173/ dashboard
 
 test "$(docker inspect --format '{{.State.Running}}' central-api)" = true
 test "$(docker inspect --format '{{.State.Running}}' node-agent)" = true
