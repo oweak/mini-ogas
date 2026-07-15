@@ -92,7 +92,7 @@ function checkLabel(status: string) {
           :value="loginOperator"
           type="text"
           autocomplete="username"
-          placeholder="车间主管"
+          placeholder="admin"
           @input="emit('update:loginOperator', ($event.target as HTMLInputElement).value)"
         />
       </label>
@@ -101,7 +101,7 @@ function checkLabel(status: string) {
         <input
           :value="loginPassword"
           type="password"
-          autocomplete="current-password"
+          autocomplete="new-password"
           placeholder="请输入管理员密码"
           @input="emit('update:loginPassword', ($event.target as HTMLInputElement).value)"
         />

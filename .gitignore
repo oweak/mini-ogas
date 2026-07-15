@@ -18,6 +18,7 @@ miniogas-token.txt
 # Local dependencies, runtime state, and browser-test artifacts.
 node_modules/
 .runtime/
+.playwright-cli/
 .playwright-mcp/
 output/
 *.out.log

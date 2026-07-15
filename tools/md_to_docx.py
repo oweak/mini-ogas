@@ -1,9 +1,7 @@
 """Convert the Mini-OGAS technical report from Markdown to .docx."""
 import re
 from docx import Document
-from docx.shared import Inches, Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
+from docx.shared import Pt, Cm, RGBColor
 
 doc = Document()
 

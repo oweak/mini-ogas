@@ -51,6 +51,7 @@ class ProviderRegistry:
                 base_url=settings.deepseek_base_url,
                 model=settings.deepseek_model,
                 timeout=settings.ai_timeout_seconds,
+                chat_max_tokens=settings.ai_chat_max_tokens,
             )
         if name == "ollama":
             return OllamaProvider(
@@ -119,6 +120,8 @@ class ProviderRegistry:
                 continue
             try:
                 answer = provider.chat(messages, timeout=timeout)
+                if not isinstance(answer, str) or not answer.strip():
+                    raise RuntimeError("provider returned an empty chat response")
                 self._verified_provider = provider.name
                 return answer, provider.name, errors
             except Exception as exc:

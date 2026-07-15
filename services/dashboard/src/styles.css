@@ -952,9 +952,45 @@ th {
   .summary-grid,
   .alarm-facts,
   .snapshot-strip,
-  .report-metrics,
-  .nav-list {
+  .report-metrics {
     grid-template-columns: 1fr;
+  }
+
+  /* compact-mobile-navigation */
+  .sidebar {
+    gap: 12px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 14px 16px;
+    width: 100%;
+  }
+
+  .nav-list {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+    width: 100%;
+  }
+
+  .nav-button {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 9px 12px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  .operator-card {
+    padding: 10px 12px;
+  }
+
+  .operator-card small {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .panel-heading,

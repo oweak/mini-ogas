@@ -1,10 +1,10 @@
 import os
-import sqlite3
+import json
 import tempfile
 import unittest
 import urllib.error
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,6 +31,70 @@ class FakeResponse:
 
 
 class NodeAgentTests(unittest.TestCase):
+    def test_workshop_profiles_match_physical_line_capacity_contract(self) -> None:
+        expected = {
+            "turning": (3, 135, 80.0),
+            "milling": (2, 144, 50.0),
+            "grinding": (2, 111, 65.0),
+        }
+
+        for workshop, (machine_count, process_time_sec, capacity_per_hour) in expected.items():
+            profile = simulator.PROFILES[workshop]
+            self.assertEqual(profile.machine_count, machine_count)
+            self.assertEqual(profile.cycle_time_sec, process_time_sec)
+            self.assertAlmostEqual(profile.nominal_capacity_per_hour, capacity_per_hour, delta=0.2)
+
+    def test_simpy_one_hour_output_matches_nominal_capacity(self) -> None:
+        original_speed = simulator.SIMULATION_SPEED
+        simulator.SIMULATION_SPEED = 1
+        try:
+            for profile in simulator.PROFILES.values():
+                tick = 3600 // simulator.HEARTBEAT_SEC
+                state = simulator.simpy_machine_state(
+                    profile,
+                    tick,
+                    random_seed=42,
+                    scenario_id="SCN-NORMAL-CAPACITY-001",
+                )
+                self.assertAlmostEqual(
+                    state["finished_quantity"],
+                    profile.nominal_capacity_per_hour,
+                    delta=1.0,
+                )
+        finally:
+            simulator.SIMULATION_SPEED = original_speed
+
+    def test_simulation_speed_accelerates_elapsed_time_not_nominal_capacity(self) -> None:
+        profile = simulator.PROFILES["turning"]
+        original_speed = simulator.SIMULATION_SPEED
+        try:
+            simulator.SIMULATION_SPEED = 1
+            normal = simulator.heartbeat_payload(profile, 27)
+            simulator.SIMULATION_SPEED = 4
+            accelerated = simulator.heartbeat_payload(profile, 27)
+        finally:
+            simulator.SIMULATION_SPEED = original_speed
+
+        self.assertEqual(normal["production"]["nominal_capacity_per_hour"], 80.0)
+        self.assertEqual(accelerated["production"]["nominal_capacity_per_hour"], 80.0)
+        self.assertGreater(
+            accelerated["production"]["finished_quantity"],
+            normal["production"]["finished_quantity"],
+        )
+
+    def test_simulation_clock_advances_from_fixed_epoch(self) -> None:
+        original_epoch = simulator.SIMULATION_STARTED_AT
+        original_speed = simulator.SIMULATION_SPEED
+        simulator.SIMULATION_STARTED_AT = datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
+        simulator.SIMULATION_SPEED = 3
+        try:
+            observed = datetime.fromisoformat(simulator.simulation_time_for_tick(4))
+        finally:
+            simulator.SIMULATION_STARTED_AT = original_epoch
+            simulator.SIMULATION_SPEED = original_speed
+
+        self.assertEqual(observed, datetime(2026, 1, 2, 3, 5, 5, tzinfo=timezone.utc))
+
     def test_heartbeat_reports_actual_local_backlog_without_faking_latency(self) -> None:
         profile = simulator.PROFILES["milling"]
 
@@ -63,6 +127,7 @@ class NodeAgentTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["production"]["finished_quantity"], 9)
+        self.assertEqual(payload["production"]["raw_finished_quantity"], 9)
         self.assertEqual(payload["runtime"]["simulation_engine"], "stub-runtime")
 
     def test_runtime_adapter_factory_selects_simple_and_simpy(self) -> None:
@@ -133,6 +198,123 @@ class NodeAgentTests(unittest.TestCase):
         self.assertEqual(result["http_status"], 202)
         self.assertTrue(result["request_id"])
         self.assertEqual(captured["request"].headers["X-request-id"], result["request_id"])
+
+    def test_telemetry_batch_has_stable_typed_sample_identity(self) -> None:
+        heartbeat = simulator.heartbeat_payload(simulator.PROFILES["turning"], 7)
+
+        batch = simulator.telemetry_batch_payload(heartbeat, 7)
+
+        self.assertEqual(
+            batch["batch_id"],
+            f"{simulator.RUN_ID}:{simulator.NODE_CODE}:telemetry:7",
+        )
+        self.assertEqual(batch["source"], "simulated")
+        self.assertEqual(batch["source_id"], simulator.NODE_CODE)
+        self.assertEqual(batch["equipment_code"], "LATHE-01")
+        self.assertEqual(
+            {sample["signal_code"] for sample in batch["samples"]},
+            {
+                "SPINDLE-TEMPERATURE",
+                "TOOL-WEAR-LEVEL",
+                "UTILIZATION",
+                "DEFECT-RATE",
+                "ACTUAL-RATE",
+            },
+        )
+        for sample in batch["samples"]:
+            self.assertEqual(sample["sequence_no"], 7)
+            self.assertEqual(sample["mapping_version"], 1)
+            self.assertEqual(
+                sample["sample_id"],
+                f"{simulator.RUN_ID}:{simulator.NODE_CODE}:{sample['signal_code']}:7",
+            )
+            self.assertEqual(sample["simulation_time"], heartbeat["runtime"]["simulation_time"])
+
+    def test_send_telemetry_batch_uses_machine_ingest_endpoint(self) -> None:
+        captured: dict[str, urllib.request.Request] = {}
+
+        def fake_urlopen(request: urllib.request.Request, timeout: int):
+            captured["request"] = request
+            self.assertEqual(timeout, 5)
+            return FakeResponse()
+
+        payload = {
+            "batch_id": "batch-1",
+            "source": "simulated",
+            "source_id": "turning-workshop-01",
+            "equipment_code": "LATHE-01",
+            "edge_received_at": datetime.now(timezone.utc).isoformat(),
+            "samples": [],
+        }
+        with patch.object(simulator.urllib.request, "urlopen", fake_urlopen):
+            result = simulator.send_telemetry_batch(payload)
+
+        self.assertTrue(result["synced"])
+        self.assertEqual(result["http_status"], 202)
+        self.assertTrue(result["request_id"])
+        self.assertTrue(captured["request"].full_url.endswith("/api/telemetry/batches"))
+        self.assertEqual(
+            captured["request"].headers["X-ogas-token"],
+            simulator.OGAS_API_TOKEN,
+        )
+
+    def test_telemetry_sequence_resumes_from_legacy_local_outbox(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "node.db"
+            with patch.object(simulator, "LOCAL_DB_PATH", database_path):
+                connection = simulator.connect_db()
+                connection.execute(
+                    "DELETE FROM telemetry_sequence_state WHERE source_id=?",
+                    (simulator.NODE_CODE,),
+                )
+                heartbeat = simulator.heartbeat_payload(simulator.PROFILES["turning"], 41)
+                payload = simulator.telemetry_batch_payload(heartbeat, 41)
+                connection.execute(
+                    """INSERT INTO telemetry_batches (
+                           batch_id, payload, synced, created_at, request_id,
+                           send_error, http_status
+                       ) VALUES (?, ?, 1, ?, '', '', 201)""",
+                    (
+                        payload["batch_id"],
+                        json.dumps(payload),
+                        payload["edge_received_at"],
+                    ),
+                )
+                connection.commit()
+                connection.close()
+
+                resumed = simulator.connect_db()
+                self.assertEqual(simulator.reserve_telemetry_sequence(resumed), 42)
+                resumed.close()
+
+    def test_terminal_telemetry_conflict_does_not_block_retry_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            database_path = Path(temporary_directory) / "node.db"
+            with patch.object(simulator, "LOCAL_DB_PATH", database_path):
+                connection = simulator.connect_db()
+                sequence = simulator.reserve_telemetry_sequence(connection)
+                heartbeat = simulator.heartbeat_payload(simulator.PROFILES["turning"], 1)
+                payload = simulator.telemetry_batch_payload(heartbeat, sequence)
+                simulator.store_telemetry_batch(
+                    connection,
+                    payload,
+                    {
+                        "synced": False,
+                        "request_id": "terminal-conflict",
+                        "http_status": 409,
+                        "error": json.dumps(
+                            {"code": "TELEMETRY_SEQUENCE_IDENTITY_CONFLICT"}
+                        ),
+                    },
+                )
+
+                row = connection.execute(
+                    "SELECT synced FROM telemetry_batches WHERE batch_id=?",
+                    (payload["batch_id"],),
+                ).fetchone()
+                self.assertEqual(int(row[0]), -1)
+                self.assertEqual(simulator.pending_telemetry_batches(connection), [])
+                connection.close()
 
     def test_send_heartbeat_records_http_error(self) -> None:
         def fake_urlopen(request: urllib.request.Request, timeout: int):
@@ -288,6 +470,204 @@ class NodeAgentTests(unittest.TestCase):
         self.assertIn("unsupported", unsupported[1])
         self.assertEqual(unsafe[0], "failed")
         self.assertIn("safe range", unsafe[1])
+
+    def test_target_rate_changes_incremental_physical_output(self) -> None:
+        original_target = simulator.COMMAND_TARGET_RATE
+        original_state = dict(simulator.RATE_CONTROL_STATE)
+        profile = simulator.PROFILES["turning"]
+        try:
+            simulator.RATE_CONTROL_STATE.clear()
+            simulator.COMMAND_TARGET_RATE = None
+            baseline = simulator.apply_rate_control_to_state(profile, {
+                "finished_quantity": 10,
+                "defect_quantity": 0,
+                "defect_rate": 0.0,
+                "load": 0.8,
+            })
+            simulator.COMMAND_TARGET_RATE = 0.5
+            controlled = simulator.apply_rate_control_to_state(profile, {
+                "finished_quantity": 20,
+                "defect_quantity": 0,
+                "defect_rate": 0.0,
+                "load": 0.8,
+            })
+        finally:
+            simulator.COMMAND_TARGET_RATE = original_target
+            simulator.RATE_CONTROL_STATE.clear()
+            simulator.RATE_CONTROL_STATE.update(original_state)
+
+        self.assertEqual(baseline["finished_quantity"], 10)
+        self.assertEqual(controlled["raw_finished_quantity"], 20)
+        self.assertEqual(controlled["finished_quantity"], 13)
+
+    def test_target_rate_cannot_exceed_workshop_physical_capacity(self) -> None:
+        original_workshop = simulator.WORKSHOP_TYPE
+        original_applied = set(simulator.APPLIED_COMMAND_IDS)
+        simulator.WORKSHOP_TYPE = "milling"
+        simulator.APPLIED_COMMAND_IDS.clear()
+        try:
+            result = simulator.apply_agent_command({
+                "id": 4201,
+                "command_type": "set_target_rate",
+                "parameters": {"target_rate": 1.0},
+            })
+        finally:
+            simulator.WORKSHOP_TYPE = original_workshop
+            simulator.APPLIED_COMMAND_IDS.clear()
+            simulator.APPLIED_COMMAND_IDS.update(original_applied)
+
+        self.assertEqual(result[0], "failed")
+        self.assertIn("safe range", result[1])
+
+    def test_restore_rejects_target_above_workshop_physical_capacity(self) -> None:
+        original_workshop = simulator.WORKSHOP_TYPE
+        original_target = simulator.COMMAND_TARGET_RATE
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_path = simulator.LOCAL_DB_PATH
+            simulator.LOCAL_DB_PATH = Path(temp_dir) / "restore-capacity.db"
+            simulator.WORKSHOP_TYPE = "milling"
+            simulator.COMMAND_TARGET_RATE = None
+            conn = simulator.connect_db()
+            conn.execute(
+                """INSERT INTO local_commands (
+                       command_id, idempotency_key, version, command_type,
+                       parameters_json, status, result_message, applied_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    4301,
+                    "rate-4301",
+                    1,
+                    "set_target_rate",
+                    '{"target_rate": 1.0}',
+                    "executed",
+                    "persisted before capacity validation",
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            conn.commit()
+            try:
+                simulator.restore_local_command_state(conn)
+            finally:
+                conn.close()
+                simulator.LOCAL_DB_PATH = original_path
+                simulator.WORKSHOP_TYPE = original_workshop
+                restored_target = simulator.COMMAND_TARGET_RATE
+                simulator.COMMAND_TARGET_RATE = original_target
+
+        self.assertIsNone(restored_target)
+
+    def test_command_version_expiry_and_sqlite_idempotency_survive_memory_reset(self) -> None:
+        original_target = simulator.COMMAND_TARGET_RATE
+        original_applied = set(simulator.APPLIED_COMMAND_IDS)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_path = simulator.LOCAL_DB_PATH
+            simulator.LOCAL_DB_PATH = Path(temp_dir) / "commands.db"
+            conn = simulator.connect_db()
+            command = {
+                "id": 4001,
+                "version": 1,
+                "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat(),
+                "command_type": "set_target_rate",
+                "parameters": {"target_rate": 0.8, "idempotency_key": "rate-4001"},
+            }
+            try:
+                simulator.APPLIED_COMMAND_IDS.clear()
+                first = simulator.apply_agent_command(command, conn)
+                simulator.APPLIED_COMMAND_IDS.clear()
+                repeated = simulator.apply_agent_command(command, conn)
+                unsupported = simulator.apply_agent_command({**command, "id": 4002, "version": 2}, conn)
+                expired = simulator.apply_agent_command(
+                    {**command, "id": 4003, "expires_at": "2020-01-01T00:00:00+00:00",
+                     "parameters": {"target_rate": 0.7, "idempotency_key": "rate-4003"}},
+                    conn,
+                )
+            finally:
+                conn.close()
+                simulator.LOCAL_DB_PATH = original_path
+                simulator.COMMAND_TARGET_RATE = original_target
+                simulator.APPLIED_COMMAND_IDS.clear()
+                simulator.APPLIED_COMMAND_IDS.update(original_applied)
+
+        self.assertEqual(first[0], "executed")
+        self.assertIn("already applied", repeated[1])
+        self.assertIn("version=2", unsupported[1])
+        self.assertIn("expired", expired[1])
+
+    def test_command_result_outbox_retries_after_restart_without_reexecution(self) -> None:
+        original_target = simulator.COMMAND_TARGET_RATE
+        original_applied = set(simulator.APPLIED_COMMAND_IDS)
+
+        class CommandListResponse(FakeResponse):
+            body = (
+                b'[{"id": 4101, "version": 1, "command_type": "set_target_rate", '
+                b'"parameters": {"target_rate": 0.77, "idempotency_key": "rate-4101"}}]'
+            )
+
+        class ChangedDuplicateResponse(FakeResponse):
+            body = (
+                b'[{"id": 4101, "version": 1, "command_type": "set_target_rate", '
+                b'"parameters": {"target_rate": 0.22, "idempotency_key": "rate-4101"}}]'
+            )
+
+        class AcceptedResultResponse(FakeResponse):
+            body = b'{"accepted": true, "status": "applied"}'
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            original_path = simulator.LOCAL_DB_PATH
+            simulator.LOCAL_DB_PATH = Path(temp_dir) / "command-outbox.db"
+            simulator.COMMAND_TARGET_RATE = None
+            simulator.APPLIED_COMMAND_IDS.clear()
+            conn = simulator.connect_db()
+
+            def offline_urlopen(request: urllib.request.Request, timeout: int):
+                if "/commands/pending" in request.full_url:
+                    return CommandListResponse()
+                if "/commands/4101/result" in request.full_url:
+                    raise urllib.error.URLError("central disconnected")
+                raise AssertionError(f"unexpected url {request.full_url}")
+
+            try:
+                with patch.object(simulator.urllib.request, "urlopen", offline_urlopen):
+                    simulator.poll_agent_commands(conn)
+
+                first_row = conn.execute(
+                    "SELECT result_reported, report_attempts, last_report_error FROM local_commands"
+                ).fetchone()
+                self.assertEqual(simulator.COMMAND_TARGET_RATE, 0.77)
+                self.assertEqual(first_row[0], 0)
+                self.assertEqual(first_row[1], 1)
+                self.assertIn("disconnected", first_row[2])
+                conn.close()
+
+                simulator.COMMAND_TARGET_RATE = None
+                simulator.APPLIED_COMMAND_IDS.clear()
+                conn = simulator.connect_db()
+                simulator.restore_local_command_state(conn)
+                self.assertEqual(simulator.COMMAND_TARGET_RATE, 0.77)
+
+                def online_urlopen(request: urllib.request.Request, timeout: int):
+                    if "/commands/4101/result" in request.full_url:
+                        return AcceptedResultResponse()
+                    if "/commands/pending" in request.full_url:
+                        return ChangedDuplicateResponse()
+                    raise AssertionError(f"unexpected url {request.full_url}")
+
+                with patch.object(simulator.urllib.request, "urlopen", online_urlopen):
+                    simulator.poll_agent_commands(conn)
+
+                final_row = conn.execute(
+                    "SELECT result_reported, report_attempts, last_report_error FROM local_commands"
+                ).fetchone()
+                row_count = conn.execute("SELECT COUNT(*) FROM local_commands").fetchone()[0]
+                self.assertEqual(final_row, (1, 2, ""))
+                self.assertEqual(row_count, 1)
+                self.assertEqual(simulator.COMMAND_TARGET_RATE, 0.77)
+            finally:
+                conn.close()
+                simulator.LOCAL_DB_PATH = original_path
+                simulator.COMMAND_TARGET_RATE = original_target
+                simulator.APPLIED_COMMAND_IDS.clear()
+                simulator.APPLIED_COMMAND_IDS.update(original_applied)
 
     def test_poll_agent_commands_claims_applies_and_reports_result(self) -> None:
         original_target = simulator.COMMAND_TARGET_RATE
@@ -456,7 +836,7 @@ class NodeAgentTests(unittest.TestCase):
         self.assertTrue(runtime["scenario_id"].startswith("SCN-"))
         self.assertEqual(runtime["simulation_speed"], simulator.SIMULATION_SPEED)
         self.assertEqual(runtime["simulation_engine"], simulator.SIMULATION_ENGINE)
-        self.assertEqual(runtime["runtime_source"], "node-agent")
+        self.assertEqual(runtime["runtime_source"], "simulated")
         self.assertIsInstance(datetime.fromisoformat(runtime["simulation_time"]), datetime)
 
         for field in ("wip_input", "wip_output"):

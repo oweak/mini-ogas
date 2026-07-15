@@ -3,7 +3,7 @@ import json
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.rule_explanation import explain_rule_conclusions
+from app.rule_explanation import RuleExplanationCache, explain_rule_conclusions, rule_explanation_cache_key
 
 
 AUTH_HEADERS = {"X-OGAS-Token": "mini-ogas-dev-token"}
@@ -43,8 +43,81 @@ def test_rule_explanation_steady_state_does_not_call_live_ai() -> None:
     assert called is False
     assert explanation["status"] == "steady"
     assert explanation["used_live_ai"] is False
+    assert explanation["provider"] == "rule_fallback"
     assert explanation["rule_count"] == 0
     assert "未发现瓶颈" in explanation["summary"]
+
+
+def test_rule_explanation_failure_records_attempt_without_claiming_live_provider() -> None:
+    conclusion = {
+        "conclusion_id": "CONC-FAIL",
+        "rule_id": "RULE-BOTTLENECK",
+        "node_code": "milling-workshop-01",
+        "machine_code": "MILL-02",
+        "severity": "high",
+        "evidence": [],
+    }
+
+    explanation = explain_rule_conclusions(
+        _snapshot([conclusion]),
+        use_live_ai=True,
+        chat_fn=lambda _: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+
+    assert explanation["used_live_ai"] is False
+    assert explanation["provider"] == "rule_fallback"
+    assert explanation["attempted_provider"] == "deepseek"
+
+
+def test_rule_explanation_empty_provider_response_falls_back_truthfully() -> None:
+    conclusion = {
+        "conclusion_id": "CONC-EMPTY",
+        "rule_id": "RULE-BOTTLENECK",
+        "node_code": "milling-workshop-01",
+        "machine_code": "MILL-02",
+        "severity": "high",
+        "evidence": [],
+    }
+
+    explanation = explain_rule_conclusions(
+        _snapshot([conclusion]),
+        use_live_ai=True,
+        chat_fn=lambda _: "",
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+
+    assert explanation["status"] == "fallback"
+    assert explanation["source"] == "rule-fallback"
+    assert explanation["provider"] == "rule_fallback"
+    assert explanation["used_live_ai"] is False
+    assert explanation["attempted_provider"] == "deepseek"
+
+
+def test_rule_explanation_unusable_json_falls_back_truthfully() -> None:
+    conclusion = {
+        "conclusion_id": "CONC-EMPTY-JSON",
+        "rule_id": "RULE-BOTTLENECK",
+        "node_code": "milling-workshop-01",
+        "machine_code": "MILL-02",
+        "severity": "high",
+        "evidence": [],
+    }
+
+    explanation = explain_rule_conclusions(
+        _snapshot([conclusion]),
+        use_live_ai=True,
+        chat_fn=lambda _: "{}",
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+
+    assert explanation["status"] == "fallback"
+    assert explanation["provider"] == "rule_fallback"
+    assert explanation["used_live_ai"] is False
+    assert explanation["attempted_provider"] == "deepseek"
 
 
 def test_rule_explanation_uses_live_ai_for_rule_conclusions() -> None:
@@ -97,6 +170,32 @@ def test_rule_explanation_uses_live_ai_for_rule_conclusions() -> None:
     assert explanation["recommended_actions"] == ["先限制上游放料，再复核冷却。"]
 
 
+def test_rule_explanation_normalizes_list_summary_from_provider() -> None:
+    conclusion = {
+        "conclusion_id": "CONC-SUMMARY",
+        "rule_id": "RULE-BOTTLENECK",
+        "node_code": "milling-workshop-01",
+        "machine_code": "MILL-02",
+        "severity": "high",
+        "evidence": [],
+    }
+
+    explanation = explain_rule_conclusions(
+        _snapshot([conclusion]),
+        use_live_ai=True,
+        chat_fn=lambda _: json.dumps({
+            "summary": ["第一条摘要。", "第二条摘要。"],
+            "reasoning": [],
+            "recommended_actions": [],
+            "evidence": [],
+        }, ensure_ascii=False),
+        provider="deepseek",
+        model="deepseek-chat",
+    )
+
+    assert explanation["summary"] == "第一条摘要。；第二条摘要。"
+
+
 def test_rule_explanation_endpoint_returns_contract() -> None:
     with TestClient(app) as client:
         response = client.get("/api/ai/rule-explanation?use_live=false", headers=AUTH_HEADERS)
@@ -107,3 +206,42 @@ def test_rule_explanation_endpoint_returns_contract() -> None:
     assert payload["status"] in {"steady", "fallback"}
     assert "summary" in payload
     assert "recommended_actions" in payload
+
+
+def test_rule_explanation_cache_deduplicates_semantically_identical_live_facts() -> None:
+    now = 100.0
+    calls = 0
+    cache = RuleExplanationCache(ttl_seconds=60, now=lambda: now)
+    first = _snapshot([{
+        "conclusion_id": "CONC-CACHE",
+        "rule_id": "RULE-BOTTLENECK",
+        "node_code": "milling-workshop-01",
+        "machine_code": "MILL-02",
+        "severity": "high",
+        "risk_level": "high",
+        "evidence": [{"field": "backlog", "operator": ">=", "value": 14, "threshold": 12}],
+        "recommended_actions": ["Throttle upstream release."],
+    }])
+    second = _snapshot([{
+        **first["rule_conclusions"][0],
+        "evidence": [{"field": "backlog", "operator": ">=", "value": 18, "threshold": 12}],
+    }])
+
+    def compute() -> dict:
+        nonlocal calls
+        calls += 1
+        return {"status": "explained", "summary": f"call-{calls}"}
+
+    first_result = cache.get_or_compute(
+        rule_explanation_cache_key(first, provider="deepseek", model="deepseek-chat", use_live_ai=True),
+        compute,
+    )
+    second_result = cache.get_or_compute(
+        rule_explanation_cache_key(second, provider="deepseek", model="deepseek-chat", use_live_ai=True),
+        compute,
+    )
+
+    assert calls == 1
+    assert first_result["cache_status"] == "miss"
+    assert second_result["cache_status"] == "hit"
+    assert second_result["summary"] == "call-1"

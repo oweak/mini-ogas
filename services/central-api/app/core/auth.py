@@ -18,7 +18,6 @@ from typing import Any
 from .config import settings
 from .database import get_db, init_db
 
-
 ALL_PERMISSIONS = (
     "node:view",
     "node:isolate",
@@ -29,12 +28,66 @@ ALL_PERMISSIONS = (
     "ai:diagnose",
     "metric:ingest",
     "simulation:control",
+    "master-data:manage",
+    "execution:manage",
+    "inventory:manage",
+    "quality:manage",
+    "quality:measure",
+    "quality:release",
+    "maintenance:manage",
+    "maintenance:execute",
+    "maintenance:verify",
+    "telemetry:manage",
+    "telemetry:ingest",
+    "telemetry:read",
+    "telemetry:retention",
+    "projection:rebuild",
+    "document-object:manage",
 )
 
 ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
     "system_admin": ALL_PERMISSIONS,
-    "operator": ("node:view", "command:issue", "ai:diagnose"),
-    "viewer": ("node:view",),
+    "operator": (
+        "node:view",
+        "command:issue",
+        "ai:diagnose",
+        "execution:manage",
+        "inventory:manage",
+        "quality:measure",
+        "maintenance:execute",
+        "telemetry:read",
+    ),
+    "quality_engineer": (
+        "node:view",
+        "quality:manage",
+        "quality:measure",
+    ),
+    "quality_releaser": (
+        "node:view",
+        "quality:release",
+    ),
+    "maintenance_planner": (
+        "node:view",
+        "maintenance:manage",
+    ),
+    "maintenance_technician": (
+        "node:view",
+        "maintenance:execute",
+    ),
+    "maintenance_verifier": (
+        "node:view",
+        "maintenance:verify",
+    ),
+    "data_engineer": (
+        "node:view",
+        "telemetry:manage",
+        "telemetry:ingest",
+        "telemetry:read",
+        "telemetry:retention",
+        "projection:rebuild",
+        "document-object:manage",
+    ),
+    "viewer": ("node:view", "telemetry:read"),
 }
 
 
@@ -63,7 +116,6 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
 
 def initialize_auth_store() -> None:
     """Seed fixed RBAC policy and a first administrator exactly once."""
-    bootstrap_password = settings.auth_bootstrap_password or settings.api_access_token
     init_db()
     with get_db() as db:
         for permission in ALL_PERMISSIONS:
@@ -87,6 +139,17 @@ def initialize_auth_store() -> None:
             "SELECT id FROM users WHERE username = ?", (settings.auth_bootstrap_username,)
         ).fetchone()
         if existing is None:
+            bootstrap_password = settings.auth_bootstrap_password
+            if not bootstrap_password and settings.app_env != "production":
+                bootstrap_password = settings.api_access_token
+            if not bootstrap_password:
+                raise RuntimeError(
+                    "AUTH_BOOTSTRAP_PASSWORD is required to create the first administrator"
+                )
+            if settings.app_env == "production" and len(bootstrap_password) < 16:
+                raise RuntimeError(
+                    "AUTH_BOOTSTRAP_PASSWORD must contain at least 16 characters in production"
+                )
             password_hash, password_salt = hash_password(bootstrap_password)
             db.execute(
                 """INSERT INTO users (username, display_name, password_hash, password_salt, active)
@@ -155,8 +218,12 @@ def issue_access_token(user: dict[str, Any]) -> str:
         "exp": now + settings.auth_jwt_ttl_seconds,
         "jti": secrets.token_urlsafe(12),
     }
-    signing_input = f"{_b64encode(_json_bytes(header))}.{_b64encode(_json_bytes(payload))}".encode("ascii")
-    signature = hmac.new(settings.auth_jwt_secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+    signing_input = f"{_b64encode(_json_bytes(header))}.{_b64encode(_json_bytes(payload))}".encode(
+        "ascii"
+    )
+    signature = hmac.new(
+        settings.auth_jwt_secret.encode("utf-8"), signing_input, hashlib.sha256
+    ).digest()
     return f"{signing_input.decode('ascii')}.{_b64encode(signature)}"
 
 
@@ -164,7 +231,9 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
     try:
         header_raw, payload_raw, signature_raw = token.split(".")
         signing_input = f"{header_raw}.{payload_raw}".encode("ascii")
-        expected = hmac.new(settings.auth_jwt_secret.encode("utf-8"), signing_input, hashlib.sha256).digest()
+        expected = hmac.new(
+            settings.auth_jwt_secret.encode("utf-8"), signing_input, hashlib.sha256
+        ).digest()
         if not secrets.compare_digest(expected, _b64decode(signature_raw)):
             return None
         header = json.loads(_b64decode(header_raw))
@@ -173,7 +242,9 @@ def decode_access_token(token: str) -> dict[str, Any] | None:
             return None
         if int(payload.get("exp", 0)) <= int(time.time()):
             return None
-        if not isinstance(payload.get("permissions"), list) or not isinstance(payload.get("roles"), list):
+        if not isinstance(payload.get("permissions"), list) or not isinstance(
+            payload.get("roles"), list
+        ):
             return None
         return payload
     except (ValueError, TypeError, json.JSONDecodeError, UnicodeDecodeError):

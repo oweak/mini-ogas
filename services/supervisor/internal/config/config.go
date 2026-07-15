@@ -11,11 +11,12 @@ import (
 )
 
 type HealthCheckConfig struct {
-	Type     string `toml:"type"`
-	Endpoint string `toml:"endpoint"`
-	Interval int    `toml:"interval"`
-	Timeout  int    `toml:"timeout"`
-	Retries  int    `toml:"retries"`
+	Type            string `toml:"type"`
+	Endpoint        string `toml:"endpoint"`
+	Interval        int    `toml:"interval"`
+	Timeout         int    `toml:"timeout"`
+	Retries         int    `toml:"retries"`
+	SessionAgnostic bool   `toml:"session_agnostic"`
 }
 
 type ProcessSpec struct {
@@ -94,10 +95,10 @@ func validate(cfg Config) error {
 			return fmt.Errorf("duplicate process name %q", process.Name)
 		}
 		known[process.Name] = struct{}{}
-		if process.Health.Type != "http" && process.Health.Type != "process" {
+		if process.Health.Type != "http" && process.Health.Type != "http-status" && process.Health.Type != "process" {
 			return fmt.Errorf("process %q has unsupported health type %q", process.Name, process.Health.Type)
 		}
-		if process.Health.Type == "http" && process.Health.Endpoint == "" {
+		if (process.Health.Type == "http" || process.Health.Type == "http-status") && process.Health.Endpoint == "" {
 			return fmt.Errorf("process %q HTTP health check requires an endpoint", process.Name)
 		}
 		if process.Health.Interval <= 0 || process.Health.Timeout <= 0 || process.Health.Retries <= 0 {

@@ -12,6 +12,9 @@ from ..core.health import check
 from ..core.services import PROJ_ROOT
 
 
+SENSITIVE_ENV_KEYS = {"DEEPSEEK_API_KEY", "API_ACCESS_TOKEN"}
+
+
 def run() -> None:
     print()
     print(f"  OS          : {platform.system()} {platform.release()}")
@@ -32,15 +35,16 @@ def run() -> None:
         val = os.environ.get(key, "")
         if not val or val == "replace-with-your-key":
             print(f"    {key:26s} NOT SET")
+        elif key in SENSITIVE_ENV_KEYS:
+            print(f"    {key:26s} SET (redacted)")
         else:
-            masked = val[:10] + "..." if len(val) > 10 else val
-            print(f"    {key:26s} {masked}")
+            print(f"    {key:26s} {val}")
 
     env_file = PROJ_ROOT / ".env"
     if env_file.exists():
-        print(f"\n    .env        OK")
+        print("\n    .env        OK")
     else:
-        print(f"\n    .env        NOT FOUND  (run 'mogas setup')")
+        print("\n    .env        NOT FOUND  (run 'mogas setup')")
 
     deps = (
         ("psutil", "pip install psutil"),

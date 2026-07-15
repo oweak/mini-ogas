@@ -1,7 +1,13 @@
-# Mini-OGAS First-Stage Completion Plan
+# Mini-OGAS Long-Cycle Implementation Plan
 
 ## Goal
 Complete the v2.2 compatible trusted-loop stage to an evidence-based acceptance standard: every required contract, data path, runtime mode, command loop, dashboard state, persistence path, and test in the stage must work together without fixture-only substitutions.
+
+The 2026-07-13 long-cycle directive supersedes prior optimistic completion
+labels. Existing local-runtime evidence remains valid, but phase completion is
+reopened where physical simulation, unified events, observed command effects,
+or distributed failure evidence is missing. The canonical detailed plan is
+`docs/CODEX_MASTER_PLAN.md`.
 
 ## Acceptance Rule
 A task is complete only when its implementation, configuration, automated tests, and a runnable integration check all pass. Code presence alone does not count.
@@ -22,6 +28,13 @@ A task is complete only when its implementation, configuration, automated tests,
 | 11. Full-system architecture and runtime audit | completed | Reconciled implementation, reports, configuration, persistence, AI, supervisor, nodes, dashboard, and baseline evidence |
 | 12. P0/P1 remediation and architecture optimization | completed | Repaired cross-run alert/event/WIP leakage, audit contract drift, duplicate command events, unsafe action paths, persistence ownership, and run identity |
 | 13. End-to-end acceptance and documentation sync | completed | Full tests, live PostgreSQL/AI/three-node workflow, browser checks, and current reports all pass |
+| 14. Physical command-effect hardening | completed | Raw/controlled SimPy output, physical capacity gates, operator command gateway and live throttle/restore proof |
+| 15. AI polling and security hardening | completed | Semantic AI request dedupe, server cache, summary normalization, secret redaction and Ruff correctness gate |
+| 16. v3.0.0 baseline and contract gate | completed | Real-host audit, five frozen contract documents and three executable JSON schema blocks pass |
+| 17. v3.0.1 NATS shadow transport | completed | Checksum-verified NATS/JetStream, strict publisher, durable PostgreSQL worker, normal/degraded runtime gates and canonical regression pass |
+| 18. Engineering master prompt Phase 0 | completed | Required audit records, truth/simulation/security boundaries and runnable no-physical-write baseline |
+| 19. Phase 1 engineering foundation | completed | Environment guards, scoped migrations/RLS, Outbox, Audit, contracts, ID/time/error and secret governance passed live gates |
+| 20. Phase 2 master data | in progress | Organization, assets, materials, versioned BOM/routing/documents and personnel qualification with auditable immutable revisions |
 
 ## Non-Negotiable Constraints
 - Preserve user work and existing dirty changes unless a correction is explicitly required.
@@ -46,6 +59,9 @@ A task is complete only when its implementation, configuration, automated tests,
 | A broad recursive report inventory entered generated/protected content and timed out | 1 | Restricted the report audit to repository-owned top-level status and docs files |
 | The live workflow command first referenced a nonexistent root `.venv` | 1 | Used `services/central-api/.venv/Scripts/python.exe`, the repository's actual Python runtime |
 | Current-run notification filtering hid an event from an ephemeral workflow node | 1 | Unbound central events now inherit the active system `run_id`; the complete workflow passed |
+| Worker treated Python 3.13 empty-pull timeout as a transport failure | 1 | Catch both `nats.errors.TimeoutError` and base `asyncio.TimeoutError`; live worker failure count remains zero |
+| Unavailable NATS blocked FastAPI startup through unbounded initial reconnect | 1 | Bound each client connection attempt and keep indefinite retry in the background runtime manager |
+| Windows NATS stop signal returned access denied | 1 | Removed the untrue graceful-stop path; documented local recovery scanning and retained this as a production service-hosting gate |
 
 ## Phase 12 Checkpoint (2026-07-13)
 - Completed actual-provider provenance across compatibility diagnosis, metric-triggered diagnosis, control planning, and operations wrappers.

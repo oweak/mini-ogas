@@ -19,12 +19,10 @@ from ..core.config import settings
 from ..core.security import (
     PERM_AI_DIAGNOSE,
     PERM_COMMAND_APPROVE,
-    PERM_COMMAND_ISSUE,
-    PERM_COMMAND_REJECT,
     ActorInfo,
     require_permission,
 )
-from ..models import AiDiagnoseRequest, ControlCommandRequest, Severity
+from ..models import Severity
 from ..safety_governor import safety_governor
 from ..store import store
 

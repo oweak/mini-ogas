@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import logging
 import os
-import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from .services import PROJ_ROOT, Service
@@ -92,6 +91,14 @@ class ProcessManager:
 
         env = os.environ.copy()
         env.setdefault("OGAS_SESSION_TOKEN", SESSION_TOKEN)
+        env.setdefault("APP_ENV", "digital_twin")
+        env.setdefault("DATA_SOURCE", "simulated")
+        env.setdefault("CONTROL_MODE", "operator_assisted")
+        env.setdefault("DEMO_SEED_ENABLED", "true")
+        env.setdefault("INDUSTRIAL_CONNECTOR_ENABLED", "false")
+        env.setdefault("PHYSICAL_WRITE_ENABLED", "false")
+        env.setdefault("TENANT_ID", "tenant-local")
+        env.setdefault("SITE_ID", "site-digital-twin")
         token = _runtime_token()
         if token:
             env.setdefault("API_ACCESS_TOKEN", token)
@@ -208,7 +215,6 @@ def _kill_port_windows(port: int) -> None:
 
 
 def _kill_port_unix(port: int) -> None:
-    sig = getattr(signal, "SIGKILL", signal.SIGTERM)
     try:
         subprocess.run(["fuser", "-k", "-9", f"{port}/tcp"], capture_output=True)
     except Exception:

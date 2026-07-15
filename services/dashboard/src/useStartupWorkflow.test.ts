@@ -103,11 +103,14 @@ describe('useStartupWorkflow', () => {
       }
     }))
     const { workflow, liveLogs, soundArmed, playSound, ensureAudioContext, loadDashboardState } = createWorkflow()
+    expect(workflow.loginOperator.value).toBe('admin')
     workflow.loginPassword.value = 'miniogas'
 
     await workflow.loginAdmin()
 
     expect(apiFetchMock).toHaveBeenCalledWith('/api/auth/login', expect.objectContaining({ method: 'POST' }))
+    const loginOptions = apiFetchMock.mock.calls[0]?.[1] as RequestInit
+    expect(JSON.parse(String(loginOptions.body))).toMatchObject({ operator: 'admin' })
     expect(workflow.systemUnlocked.value).toBe(true)
     expect(soundArmed.value).toBe(true)
     expect(workflow.loginPassword.value).toBe('')

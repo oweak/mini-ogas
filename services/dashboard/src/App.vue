@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { apiFetch } from './apiClient'
 import AlarmManagementView from './AlarmManagementView.vue'
+import DataQualityView from './DataQualityView.vue'
 import FactoryRuntimeView from './FactoryRuntimeView.vue'
 import LogManagementView from './LogManagementView.vue'
 import OrderDispatchView from './OrderDispatchView.vue'
@@ -9,6 +10,7 @@ import ProductionReportView from './ProductionReportView.vue'
 import ReplayTimelineView from './ReplayTimelineView.vue'
 import StartupGate from './StartupGate.vue'
 import { useProtectedPolling } from './protectedPolling'
+import { createRuleExplanationRefreshGate, ruleExplanationSignature } from './ruleExplanationRefresh'
 import { closeIssue } from './operationsApi'
 import type { AiRuleExplanation, Alarm, ApiAlert, ApiDiagnosis, AuditEvent, DashboardSnapshot, DispatchPlan, EscalationItem, HostNode, HostWorkOrder, LogEvent, MachineState, NodeSyncRecord, PartQueueSnapshot, RuleConclusion, RuntimeDashboardState } from './types'
 import { activeDashboardIssues, dashboardSnapshotToState, mergeAlarmFetchResults, normalizeAuditEvents, responseToFetchSlot, snapshotSummary, visibleRuntimeEvents } from './runtimeState'
@@ -20,7 +22,7 @@ import { useRuntimePresentation } from './useRuntimePresentation'
 import { useStartupWorkflow } from './useStartupWorkflow'
 import { verificationSummary } from './verification'
 
-type ViewKey = 'factory' | 'orders' | 'alarms' | 'logs' | 'replay' | 'reports' | 'demo'
+type ViewKey = 'factory' | 'orders' | 'alarms' | 'quality' | 'logs' | 'replay' | 'reports' | 'demo'
 
 const activeView = ref<ViewKey>('factory')
 const selectedAlarmId = ref('')
@@ -34,7 +36,7 @@ const dispatchPlan = ref<DispatchPlan | null>(null)
 const runtimeSnapshot = ref<DashboardSnapshot | null>(null)
 const aiRuleExplanation = ref<AiRuleExplanation | null>(null)
 const aiRuleExplanationLoading = ref(false)
-const lastRuleExplanationSignature = ref('')
+const ruleExplanationRefreshGate = createRuleExplanationRefreshGate()
 const escalationConfirmCodes = ref<Record<number, string>>({})
 // --- alarm page real data ---
 const apiAlerts = ref<ApiAlert[]>([])
@@ -301,10 +303,12 @@ const operatingSummary = computed(() => {
   const running = machines.value.filter((machine) => machine.state === 'running').length
   const fault = machines.value.filter((machine) => machine.state === 'fault').length
   const warning = machines.value.filter((machine) => machine.state === 'warning').length
-  const count = machines.value.length
-  const averageOee = count ? Math.round(
-    machines.value.reduce((total, machine) => total + machine.oee, 0) / count
-  ) : 0
+  const reportedOee = machines.value
+    .map((machine) => machine.oee)
+    .filter((value): value is number => value !== null)
+  const averageOee = reportedOee.length
+    ? Math.round(reportedOee.reduce((total, value) => total + value, 0) / reportedOee.length)
+    : null
 
   return { running, fault, warning, averageOee }
 })
@@ -374,6 +378,7 @@ const viewLabels = {
   factory: '工厂拓扑',
   orders: '工单调度',
   alarms: '报警处置',
+  quality: '数据质量',
   logs: '日志管理',
   replay: '运行回放',
   reports: '生产报告',
@@ -461,33 +466,25 @@ async function fetchAuditEvents() {
   }
 }
 
-function ruleExplanationSignature(snapshot: DashboardSnapshot) {
-  return JSON.stringify({
-    run_id: snapshot.run?.run_id,
-    scenario_id: snapshot.run?.scenario_id,
-    conclusions: (snapshot.rule_conclusions ?? []).map((item) => ({
-      id: item.conclusion_id,
-      severity: item.severity,
-      evidence: item.evidence?.map((evidence) => `${evidence.field}:${evidence.value}:${evidence.threshold}`) ?? []
-    }))
-  })
-}
-
 async function refreshAiRuleExplanation(snapshot = runtimeSnapshot.value, force = false) {
   if (!snapshot) return
   const signature = ruleExplanationSignature(snapshot)
-  if (!force && aiRuleExplanation.value && signature === lastRuleExplanationSignature.value) return
+  if (!ruleExplanationRefreshGate.begin(signature, force)) return
   aiRuleExplanationLoading.value = true
+  let succeeded = false
   try {
     const useLive = (snapshot.rule_conclusions?.length ?? 0) > 0
-    const response = await apiFetch(`/api/ai/rule-explanation?mode=${demoMode.value}&use_live=${useLive ? 'true' : 'false'}`)
+    const response = await apiFetch(
+      `/api/ai/rule-explanation?mode=${demoMode.value}&use_live=${useLive ? 'true' : 'false'}&refresh=${force ? 'true' : 'false'}`
+    )
     if (!response.ok) throw new Error('rule explanation unavailable')
     aiRuleExplanation.value = await response.json() as AiRuleExplanation
-    lastRuleExplanationSignature.value = signature
+    succeeded = true
   } catch (error) {
     const message = error instanceof Error ? error.message : 'AI 解释接口未响应'
     liveLogs.value.unshift(`${currentTime()} AI 规则解释失败：${message}`)
   } finally {
+    ruleExplanationRefreshGate.finish(signature, succeeded)
     aiRuleExplanationLoading.value = false
   }
 }
@@ -600,6 +597,9 @@ watch(systemUnlocked, (unlocked) => {
     void refreshProtectedData()
   } else {
     stopRuntimePolling()
+    ruleExplanationRefreshGate.reset()
+    aiRuleExplanation.value = null
+    aiRuleExplanationLoading.value = false
   }
 }, { immediate: true })
 
@@ -703,7 +703,7 @@ function handleAuthExpired() {
         </article>
         <article class="summary-tile">
           <span>平均 OEE</span>
-          <strong>{{ operatingSummary.averageOee }}%</strong>
+          <strong>{{ operatingSummary.averageOee === null ? '未上报' : `${operatingSummary.averageOee}%` }}</strong>
         </article>
       </section>
 
@@ -979,6 +979,10 @@ function handleAuthExpired() {
         :node-sync-records="nodeSyncRecords"
         :verification-summary="verificationSummary"
         @refresh="fetchAuditEvents"
+      />
+
+      <DataQualityView
+        v-else-if="activeView === 'quality'"
       />
 
       <ProductionReportView

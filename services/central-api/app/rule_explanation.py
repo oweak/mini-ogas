@@ -2,18 +2,109 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from collections.abc import Callable
 from hashlib import sha1
+from threading import Lock
+from time import monotonic
 from typing import Any
 
 
 ChatFn = Callable[[list[dict[str, str]]], str]
 
 
+def rule_explanation_cache_key(
+    snapshot: dict[str, Any],
+    *,
+    provider: str,
+    model: str,
+    use_live_ai: bool,
+) -> str:
+    run = _run(snapshot)
+    conclusions = []
+    for item in _conclusions(snapshot):
+        evidence = item.get("evidence", [])
+        evidence_shape = [
+            {
+                "field": entry.get("field"),
+                "operator": entry.get("operator"),
+                "threshold": entry.get("threshold"),
+            }
+            for entry in evidence
+            if isinstance(entry, dict)
+        ] if isinstance(evidence, list) else []
+        conclusions.append({
+            "id": item.get("conclusion_id"),
+            "rule_id": item.get("rule_id"),
+            "type": item.get("type"),
+            "node_code": item.get("node_code"),
+            "machine_code": item.get("machine_code"),
+            "severity": item.get("severity"),
+            "risk_level": item.get("risk_level"),
+            "evidence_shape": evidence_shape,
+            "recommended_actions": item.get("recommended_actions", []),
+        })
+    payload = json.dumps({
+        "run_id": run.get("run_id"),
+        "scenario_id": run.get("scenario_id"),
+        "provider": provider,
+        "model": model,
+        "use_live_ai": use_live_ai,
+        "conclusions": sorted(conclusions, key=lambda item: str(item.get("id") or "")),
+    }, ensure_ascii=False, sort_keys=True)
+    return sha1(payload.encode("utf-8")).hexdigest()
+
+
+class RuleExplanationCache:
+    """Short-lived single-flight cache for semantic rule explanations."""
+
+    def __init__(self, ttl_seconds: float, now: Callable[[], float] = monotonic) -> None:
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
+        self._now = now
+        self._entries: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._lock = Lock()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+
+    def get_or_compute(
+        self,
+        key: str,
+        compute: Callable[[], dict[str, Any]],
+        *,
+        bypass: bool = False,
+    ) -> dict[str, Any]:
+        with self._lock:
+            current = self._now()
+            cached = self._entries.get(key)
+            if not bypass and cached is not None and cached[0] > current:
+                result = deepcopy(cached[1])
+                result["cache_status"] = "hit"
+                result["cache_ttl_seconds"] = self.ttl_seconds
+                return result
+
+            result = compute()
+            if self.ttl_seconds > 0:
+                self._entries[key] = (current + self.ttl_seconds, deepcopy(result))
+            response = deepcopy(result)
+            response["cache_status"] = "bypass" if bypass else "miss"
+            response["cache_ttl_seconds"] = self.ttl_seconds
+            return response
+
+
 def _text(value: Any, default: str = "") -> str:
     if value is None:
         return default
     return str(value)
+
+
+def _summary_text(value: Any, default: str) -> str:
+    if isinstance(value, list):
+        items = [str(item).strip() for item in value if str(item).strip()]
+        return "；".join(items) if items else default
+    text = _text(value).strip()
+    return text or default
 
 
 def _conclusions(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
@@ -77,12 +168,19 @@ def _recommended_actions(conclusions: list[dict[str, Any]]) -> list[str]:
     return actions[:6]
 
 
-def _local_explanation(snapshot: dict[str, Any], *, status: str, source: str, reason: str = "") -> dict[str, Any]:
+def _local_explanation(
+    snapshot: dict[str, Any],
+    *,
+    status: str,
+    source: str,
+    reason: str = "",
+    attempted_provider: str = "",
+) -> dict[str, Any]:
     conclusions = _conclusions(snapshot)
     run = _run(snapshot)
     actions = _recommended_actions(conclusions)
     if not conclusions:
-        return {
+        result = {
             "schema_version": "2.2",
             "status": "steady",
             "source": "steady-state",
@@ -101,8 +199,11 @@ def _local_explanation(snapshot: dict[str, Any], *, status: str, source: str, re
             "evidence": [],
             "conclusion_ids": [],
         }
+        if attempted_provider:
+            result["attempted_provider"] = attempted_provider
+        return result
     highest = conclusions[0]
-    return {
+    result = {
         "schema_version": "2.2",
         "status": status,
         "source": "rule-fallback",
@@ -121,6 +222,9 @@ def _local_explanation(snapshot: dict[str, Any], *, status: str, source: str, re
         "evidence": _evidence_lines(conclusions),
         "conclusion_ids": [_text(item.get("conclusion_id")) for item in conclusions],
     }
+    if attempted_provider:
+        result["attempted_provider"] = attempted_provider
+    return result
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
@@ -138,6 +242,17 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _has_useful_ai_payload(payload: dict[str, Any]) -> bool:
+    for field in ("summary", "reasoning", "recommended_actions", "evidence"):
+        value = payload.get(field)
+        if isinstance(value, list):
+            if any(str(item).strip() for item in value):
+                return True
+        elif value is not None and str(value).strip():
+            return True
+    return False
+
+
 def _normalize_ai_response(
     raw_text: str,
     *,
@@ -148,6 +263,8 @@ def _normalize_ai_response(
     conclusions = _conclusions(snapshot)
     run = _run(snapshot)
     parsed = _parse_json_object(raw_text)
+    if not _has_useful_ai_payload(parsed):
+        raise ValueError("AI provider returned no usable structured explanation")
     reasoning = parsed.get("reasoning", [])
     actions = parsed.get("recommended_actions", [])
     evidence = parsed.get("evidence", [])
@@ -160,7 +277,7 @@ def _normalize_ai_response(
         "used_live_ai": True,
         "rule_count": len(conclusions),
         "prompt_digest": _digest(conclusions, run),
-        "summary": _text(parsed.get("summary"), raw_text[:240] or "AI 已读取规则证据。"),
+        "summary": _summary_text(parsed.get("summary"), raw_text[:240] or "AI 已读取规则证据。"),
         "reasoning": [str(item) for item in reasoning[:5]] if isinstance(reasoning, list) else [str(reasoning)],
         "recommended_actions": [str(item) for item in actions[:6]] if isinstance(actions, list) else [str(actions)],
         "evidence": [str(item) for item in evidence[:8]] if isinstance(evidence, list) else _evidence_lines(conclusions),
@@ -209,16 +326,19 @@ def explain_rule_conclusions(
 ) -> dict[str, Any]:
     conclusions = _conclusions(snapshot)
     if not conclusions:
-        return _local_explanation(snapshot, status="steady", source=provider)
+        return _local_explanation(snapshot, status="steady", source="rule_fallback")
     if not use_live_ai or chat_fn is None:
-        return _local_explanation(snapshot, status="fallback", source=provider)
+        return _local_explanation(snapshot, status="fallback", source="rule_fallback")
     try:
         raw_text = chat_fn(build_rule_explanation_prompt(snapshot))
+        if not isinstance(raw_text, str) or not raw_text.strip():
+            raise ValueError("AI provider returned an empty response")
         return _normalize_ai_response(raw_text, snapshot=snapshot, provider=provider, model=model)
     except Exception as exc:
         return _local_explanation(
             snapshot,
             status="fallback",
-            source=provider,
+            source="rule_fallback",
             reason=f"AI 解释调用失败，已使用规则回退：{exc}",
+            attempted_provider=provider,
         )

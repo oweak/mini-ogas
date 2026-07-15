@@ -50,3 +50,15 @@ func TestProbeHTTPRejectsMissingOrStaleProcessProof(t *testing.T) {
 		})
 	}
 }
+
+func TestProbeHTTPStatusAcceptsThirdPartyLivenessEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	result := NewChecker().ProbeHTTPStatus(server.URL, time.Second)
+	if !result.Healthy {
+		t.Fatalf("expected status-only health to pass, got %q", result.Detail)
+	}
+}

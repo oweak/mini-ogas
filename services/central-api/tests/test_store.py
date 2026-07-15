@@ -370,14 +370,17 @@ def test_part_claim_completion_and_expiry_recovery(store: MemoryStore) -> None:
 
 def test_milling_completion_creates_grinding_downstream_part(store: MemoryStore) -> None:
     source = store.create_ready_part("WO-PARTS-GRIND", "A3")
+    source_sequence = source.event_sequence
     milling_claim = store.claim_next_part_for_node("milling-workshop-01")
     milling_part = milling_claim["part"]
+    claimed_sequence = milling_part.event_sequence
 
     milling_done = store.complete_claimed_part(
         "milling-workshop-01",
         milling_part.part_id,
         milling_part.claim_token,
     )
+    downstream_created = milling_done["downstream_part"].model_copy(deep=True)
     grinding_claim = store.claim_next_part_for_node("grinding-workshop-01")
     grinding_claim_again = store.claim_next_part_for_node("grinding-workshop-01")
     grinding_part = grinding_claim["part"]
@@ -389,15 +392,136 @@ def test_milling_completion_creates_grinding_downstream_part(store: MemoryStore)
 
     assert milling_done["accepted"] is True
     assert milling_done["part"].part_id == source.part_id
-    assert milling_done["downstream_part"].parent_part_id == source.part_id
-    assert milling_done["downstream_part"].current_step == "grinding"
-    assert milling_done["downstream_part"].target_node == "grinding-workshop-01"
+    assert downstream_created.parent_part_id == source.part_id
+    assert downstream_created.current_step == "grinding"
+    assert downstream_created.current_operation == "grinding"
+    assert downstream_created.next_operation == ""
+    assert downstream_created.target_node == "grinding-workshop-01"
+    assert downstream_created.batch_id == source.batch_id
+    assert downstream_created.run_id == source.run_id
+    assert downstream_created.scenario_id == source.scenario_id
+    assert source_sequence < claimed_sequence < milling_done["part"].event_sequence
+    assert milling_done["part"].event_sequence < downstream_created.event_sequence
+    assert milling_done["part"].quality_status == "accepted"
+    assert downstream_created.quality_status == "pending"
     assert grinding_claim["claimed"] is True
     assert grinding_claim_again == {"claimed": False, "part": None}
     assert grinding_done["accepted"] is True
     assert grinding_done["part"].status == "completed"
+    assert grinding_done["part"].quality_status == "accepted"
+    assert grinding_done["part"].event_sequence > downstream_created.event_sequence
     assert grinding_done["downstream_part"] is None
     assert store.part_queue_snapshot()["counts"]["completed"] == 2
+
+
+def test_part_queue_flow_projection_is_causal_and_preserves_reported_wip(store: MemoryStore) -> None:
+    source = store.create_ready_part("WO-FLOW-PROJECTION", "A3")
+    reported = {"wip_input": 99, "wip_output": 77, "actual_rate": 0.8}
+
+    turning_before = store.part_queue_flow_projection("turning-workshop-01", reported)
+    milling_before = store.part_queue_flow_projection("milling-workshop-01", reported)
+    milling_claim = store.claim_next_part_for_node("milling-workshop-01")
+    milling_done = store.complete_claimed_part(
+        "milling-workshop-01",
+        source.part_id,
+        milling_claim["part"].claim_token,
+    )
+    milling_after = store.part_queue_flow_projection("milling-workshop-01", reported)
+    grinding_before = store.part_queue_flow_projection("grinding-workshop-01", reported)
+    grinding_claim = store.claim_next_part_for_node("grinding-workshop-01")
+    store.complete_claimed_part(
+        "grinding-workshop-01",
+        grinding_claim["part"].part_id,
+        grinding_claim["part"].claim_token,
+    )
+    grinding_after = store.part_queue_flow_projection("grinding-workshop-01", reported)
+
+    assert turning_before["wip_output"] == 1
+    assert milling_before["wip_input"] == 1
+    assert milling_after["wip_input"] == 0
+    assert milling_after["wip_output"] == 1
+    assert grinding_before["wip_input"] == 1
+    assert grinding_after["wip_input"] == 0
+    assert grinding_after["wip_output"] == 1
+    assert milling_done["downstream_part"].current_operation == "grinding"
+    assert grinding_after["reported_wip_input"] == 99
+    assert grinding_after["reported_wip_output"] == 77
+    assert grinding_after["wip_source"] == "part_queue"
+    assert grinding_after["actual_rate"] == 0.8
+
+
+def test_simpy_finished_deltas_advance_only_available_parts(store: MemoryStore) -> None:
+    def heartbeat(node_code: str, workshop: str, finished: int) -> dict:
+        return {
+            "node_code": node_code,
+            "status": "running",
+            "runtime": {
+                "simulation_engine": "simpy",
+                "run_id": "RUN-CAUSAL-FLOW",
+                "scenario_id": "SCN-CAUSAL-FLOW",
+                "random_seed": 42,
+            },
+            "metrics": {"cpu_usage": 20, "memory_usage": 30, "disk_usage": 40},
+            "production": {
+                "machine_code": node_code,
+                "workshop_type": workshop,
+                "active_order": "WO-CAUSAL-FLOW",
+                "product_code": "A3",
+                "finished_quantity": finished,
+                "target_rate": 1.0,
+                "actual_rate": 0.8,
+                "utilization": 0.7,
+            },
+        }
+
+    store.record_node_heartbeat_v2(heartbeat("turning-workshop-01", "turning", 0))
+    store.record_node_heartbeat_v2(heartbeat("milling-workshop-01", "milling", 0))
+    store.record_node_heartbeat_v2(heartbeat("grinding-workshop-01", "grinding", 0))
+
+    turning = store.record_node_heartbeat_v2(heartbeat("turning-workshop-01", "turning", 3))
+    milling = store.record_node_heartbeat_v2(heartbeat("milling-workshop-01", "milling", 2))
+    grinding = store.record_node_heartbeat_v2(heartbeat("grinding-workshop-01", "grinding", 1))
+
+    milling_flow = store.part_queue_flow_projection("milling-workshop-01")
+    grinding_flow = store.part_queue_flow_projection("grinding-workshop-01")
+    assert turning["parts_created"] == 3
+    assert milling["parts_completed"] == 2
+    assert grinding["parts_completed"] == 1
+    assert milling_flow["wip_input"] == 1
+    assert grinding_flow["wip_input"] == 1
+    assert grinding_flow["wip_output"] == 1
+
+    # Grinding reports two more physical completions, but only one part remains.
+    constrained = store.record_node_heartbeat_v2(heartbeat("grinding-workshop-01", "grinding", 3))
+    constrained_flow = store.part_queue_flow_projection("grinding-workshop-01")
+    assert constrained["parts_completed"] == 1
+    assert constrained["flow_limited_by_input"] is True
+    assert constrained_flow["wip_input"] == 0
+    assert constrained_flow["wip_output"] == 2
+    assert constrained_flow["wip_output"] <= turning["parts_created"]
+
+
+def test_current_system_run_follows_latest_received_heartbeat(store: MemoryStore) -> None:
+    store.node_heartbeats_v2 = {
+        "turning-workshop-01": {
+            "runtime": {"run_id": "RUN-OLD"},
+            "_received_at": "2026-07-13T01:00:00+00:00",
+        },
+        "milling-workshop-01": {
+            "runtime": {"run_id": "RUN-NEW"},
+            "_received_at": "2026-07-13T02:00:00+00:00",
+        },
+        "grinding-workshop-01": {
+            "runtime": {"run_id": "RUN-OLD"},
+            "_received_at": "2026-07-13T01:30:00+00:00",
+        },
+        "workflow-check-node-newer": {
+            "runtime": {"run_id": "RUN-WORKFLOW-TEMP"},
+            "_received_at": "2026-07-13T03:00:00+00:00",
+        },
+    }
+
+    assert store.current_run_id_for_system() == "RUN-NEW"
 
 
 def test_shadow_persistence_restores_part_queue_and_commands(tmp_path) -> None:
@@ -439,8 +563,14 @@ def test_shadow_persistence_restores_part_queue_and_commands(tmp_path) -> None:
     restored_command = next(item for item in second.commands if item.id == command.id)
     assert restored_part.status == "completed"
     assert restored_downstream.current_step == "grinding"
+    assert restored_downstream.current_operation == "grinding"
+    assert restored_downstream.batch_id == restored_part.batch_id
+    assert restored_downstream.parent_part_id == restored_part.part_id
+    assert restored_downstream.event_sequence > restored_part.event_sequence
+    assert restored_part.quality_status == "accepted"
+    assert restored_downstream.quality_status == "pending"
     assert restored_downstream.status == "ready"
-    assert restored_command.status == "executed"
+    assert restored_command.status == "applied"
     assert restored_command.claimed_by == "pytest-agent"
     assert restored_command.parameters["target_rate"] == 0.81
     assert restored_command.result_message == "applied"
@@ -513,9 +643,9 @@ def test_command_manager_accepts_duplicate_result_idempotently(store: MemoryStor
     before_events = len(store.incident_events)
     second = store.record_command_result("milling-workshop-01", command.id, "executed", "applied")
 
-    assert first["status"] == "executed"
-    assert second["status"] == "executed"
-    assert command.status == "executed"
+    assert first["status"] == "applied"
+    assert second["status"] == "applied"
+    assert command.status == "applied"
     assert command.result_message == "applied"
     assert len(store.incident_events) == before_events
 

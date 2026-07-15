@@ -76,7 +76,7 @@ function safeStoreToken(token?: string) {
 }
 
 export function useStartupWorkflow(options: StartupWorkflowOptions) {
-  const loginOperator = ref('车间主管')
+  const loginOperator = ref('admin')
   const loginPassword = ref('')
   const loginFeedback = ref('')
   const loginLoading = ref(false)
@@ -211,7 +211,7 @@ export function useStartupWorkflow(options: StartupWorkflowOptions) {
     try {
       const res = await apiFetch('/api/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ operator: loginOperator.value || '车间主管', password: loginPassword.value })
+        body: JSON.stringify({ operator: loginOperator.value || 'admin', password: loginPassword.value })
       })
       const data = await res.json() as LoginResponse
       authRuntime.value = data.runtime ?? authRuntime.value

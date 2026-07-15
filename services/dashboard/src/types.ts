@@ -8,14 +8,18 @@ export type Machine = {
   workOrder: string
   process: string
   output: number
+  rawOutput?: number
   target: number
-  yieldRate: number
-  oee: number
+  yieldRate: number | null
+  oee: number | null
   toolWear: number
   targetRate?: number
   actualRate?: number
   utilization?: number
   defectRate?: number
+  wipInput?: number
+  wipOutput?: number
+  wipSource?: string
   sync: 'online' | 'delayed' | 'offline'
   lastAlarm?: string
 }
@@ -35,7 +39,7 @@ export type WorkOrder = {
   route: string[]
   priority: 'P1' | 'P2' | 'P3'
   quantity: number
-  completed: number
+  completed: number | null
   due: string
   status: 'scheduled' | 'in_progress' | 'blocked' | 'waiting'
 }
@@ -46,7 +50,7 @@ export type DisplayedWorkOrder = {
   route: string[]
   priority: string
   quantity: number
-  completed: number
+  completed: number | null
   due: string
   status: 'scheduled' | 'in_progress' | 'blocked' | 'waiting'
 }
@@ -59,6 +63,8 @@ export type HostWorkOrder = {
   route: string[]
   assigned_node: string
   status: string
+  completed?: number | null
+  due?: string | null
 }
 
 export type NodeRuntime = {
@@ -95,11 +101,19 @@ export type HostNode = {
     active_order?: string
     active_part_id?: string
     finished_quantity?: number
+    raw_finished_quantity?: number
     defect_quantity?: number
     tool_wear_level?: number
     spindle_temp?: number
     wip_input?: number
     wip_output?: number
+    reported_wip_input?: number
+    reported_wip_output?: number
+    wip_source?: string
+    flow_run_id?: string
+    milling_queue_depth?: number
+    grinding_queue_depth?: number
+    finished_goods_buffer?: number
     target_rate?: number
     actual_rate?: number
     utilization?: number
@@ -390,9 +404,17 @@ export type DashboardSnapshotWorkOrder = Partial<HostWorkOrder> & {
 
 export type PartQueueItem = {
   part_id: string
+  run_id?: string
+  scenario_id?: string
+  batch_id?: string
+  parent_part_id?: string
   order_id: string
   product_code: string
   current_step: string
+  current_operation?: string
+  next_operation?: string
+  quality_status?: string
+  event_sequence?: number
   status: 'ready' | 'claimed' | 'completed' | 'interrupted' | string
   source_node: string
   target_node: string

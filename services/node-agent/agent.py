@@ -13,7 +13,6 @@ a real distributed factory where every workshop has its own edge agent.
 """
 
 import argparse
-import hashlib
 import json
 import os
 import random
@@ -22,7 +21,6 @@ import sys
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
 from pathlib import Path
 
 try:

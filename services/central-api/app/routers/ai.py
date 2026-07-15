@@ -6,14 +6,15 @@ from ..core.config import settings
 from ..core.security import PERM_AI_DIAGNOSE, ActorInfo, require_permission
 from ..core.service_client import post_json
 from ..models import AiChatRequest, AiChatResponse, AiDiagnoseRequest, AiStatus, Severity
-from ..rule_explanation import explain_rule_conclusions
+from ..rule_explanation import RuleExplanationCache, explain_rule_conclusions, rule_explanation_cache_key
 from ..store import store
 
 router = APIRouter(tags=["ai"])
+rule_explanation_cache = RuleExplanationCache(settings.ai_rule_explanation_cache_seconds)
 
 
-@router.get("/ai-diagnoses")
-@router.get("/ai/diagnoses")
+@router.get("/ai-diagnoses", operation_id="list_ai_diagnoses_legacy")
+@router.get("/ai/diagnoses", operation_id="list_ai_diagnoses")
 def list_ai_diagnoses():
     return store.ai_diagnoses
 
@@ -49,6 +50,7 @@ def list_ai_shortcuts():
 def rule_explanation(
     mode: str = "normal",
     use_live: bool = True,
+    refresh: bool = False,
     actor: ActorInfo = Depends(require_permission(PERM_AI_DIAGNOSE)),
 ):
     from .demo import _build_dashboard_snapshot
@@ -59,12 +61,22 @@ def rule_explanation(
     provider = active.name if active else "rule_fallback"
     model = getattr(active, "_model", "") if active and hasattr(active, "_model") else ""
     chat_fn = (lambda messages: active.chat(messages, timeout=settings.ai_timeout_seconds)) if use_live_ai and active else None
-    return explain_rule_conclusions(
+    cache_key = rule_explanation_cache_key(
         snapshot,
-        use_live_ai=use_live_ai,
-        chat_fn=chat_fn,
         provider=provider,
         model=model,
+        use_live_ai=use_live_ai,
+    )
+    return rule_explanation_cache.get_or_compute(
+        cache_key,
+        lambda: explain_rule_conclusions(
+            snapshot,
+            use_live_ai=use_live_ai,
+            chat_fn=chat_fn,
+            provider=provider,
+            model=model,
+        ),
+        bypass=refresh,
     )
 
 

@@ -224,14 +224,15 @@ AI 不是前端问答装饰。当前参与点包括：
 | API contract | passed |
 | Dashboard login gate | passed |
 | Secret scan + scanner tests | passed |
-| central-api | 133 passed |
-| Python simulator | 26 passed |
+| central-api | 162 passed |
+| Python simulator | 35 passed |
 | Go node-agent | passed |
 | Go supervisor | passed |
 | AI dispatcher | 4 passed |
-| CLI/workflow | 30 passed + 9 subtests |
-| Dashboard | 63 passed |
+| CLI/workflow | 31 passed + 9 subtests |
+| Dashboard | 69 passed |
 | Dashboard build | passed |
+| Ruff correctness lint | passed |
 | Strict live runtime | passed |
 
 严格运行检查记录：
@@ -276,7 +277,7 @@ heartbeat_fault
 - `CODEX_ISSUES.md`
 - `PROJECT_STATUS.md`
 - `SYSTEM_ISSUES.md`
-- `docs/architecture-debt.md`
+- `docs/ARCHITECTURE_DEBT.md`
 - `docs/api-compatibility-plan.md`
 - 本报告
 
@@ -313,3 +314,107 @@ Mini-OGAS 已从“页面能动、后端部分存在”的演示原型，推进�
 - production heartbeat 与 optional attack-lab VM 分离。
 
 在这一边界内，v2.2 和 v2.5 可以结项。下一步应进入 v3.0 部署契约，而不是继续在同一台主机上堆叠伪分布式组件。
+
+## 11. 第二轮深度检查补充
+
+在首轮报告完成后，又按更严格的“物理效果、调用成本、最新状态语义、
+密钥输出、移动端和静态质量”标准继续检查。新增结论如下。
+
+### 11.1 命令不再只是修改显示字段
+
+节点将 SimPy 原始完工量与命令约束完工量分离。`set_target_rate` 作用于
+增量完工输出，并受车间机器数和加工节拍计算出的物理上限约束。Central
+operator gateway 和 edge restore/apply 都拒绝超过物理能力的目标值。
+
+实时命令证据：
+
+1. 命令 54 将 Turning 从 1.333 降至 0.5 件/分钟。
+2. 随后的心跳中原始 SimPy 完工继续增加，而命令约束完工保持不变，证明
+   限速发生在仿真生产层，不是只改 Dashboard 标签。
+3. 命令 55 恢复 1.333 件/分钟，节点实际速率上升，三次后续观察后成为
+   `verified/effective`。
+4. 旧命令 54 的 `partial` 留在审计/回放，但被命令 55 supersede 后退出
+   实时规则结论。
+
+### 11.2 AI 请求放大被消除
+
+此前 Dashboard 每秒读取 snapshot，并把每秒变化的 evidence value 放入 AI
+刷新签名，导致规则身份不变时仍持续调用 DeepSeek。修复包括：
+
+- 前端只对 run/scenario、规则身份、严重度、阈值形状和建议动作做语义签名；
+- 同一时刻只允许一个 AI 请求；失败后同签名冷却 60 秒；
+- 锁屏清理页面内 AI 缓存，重新登录后重新验证；
+- Central 使用相同语义键做 60 秒 single-flight cache；
+- 人工“刷新解释”显式 `bypass` 缓存；
+- provider 返回数组形式 summary 时规范为单一可读字符串。
+
+Playwright 清洁会话中，12 秒内 snapshot 连续刷新 13 次，AI explanation 仅
+请求 1 次，响应为 `deepseek-v4-pro`、`source=api`、`cache_status=miss`，没有
+新的 console warning/error。
+
+### 11.3 密钥和静态正确性
+
+Ruff 正确性规则发现 `mogas doctor` 会输出密钥前缀。现已改为只输出
+`SET (redacted)`，并增加防回归测试。Repository-owned Python 的 Ruff `F`
+类检查现为总验收的一部分并全部通过。全量 Ruff 仍有历史行宽、导入排序
+和复杂度风格债务，不把这些样式告警伪装成已经清零。
+
+### 11.4 结构性债务
+
+静态质量审计确认两个下一阶段拆分重点：
+
+- `services/central-api/app/store.py`：4098 行、117 个方法，混合 projection、
+  orchestration、replay 和兼容行为；
+- `services/node-agent/simulator.py`：1059 行，混合 SimPy、SQLite outbox、
+  command loop、heartbeat 和 transport。
+
+本轮没有进行一次性大重写，因为那会扩大可信闭环的回归面。现有
+Command Manager、Verifier、Safety Governor、Persistence Repository、
+RuntimeAdapter 和 EventPublisher 已形成可逐步迁移的边界。v3 开始前应按
+这些边界小步拆分，并要求每一步继续通过当前 162/35/69 和实时闭环门禁。
+
+### 11.5 最新运行事实
+
+- 8/8 supervisor 进程健康，3/3 production nodes online；
+- `run_id=RUN-LOCAL-20260713-153118`，统一 scenario，SimPy live；
+- PostgreSQL `status=ok`、`fact_source=postgresql`、无未报告写失败；
+- live nominal capacity 为 Turning 80、Milling 50、Grinding 64.9 件/小时；
+- AI runtime 为 DeepSeek `deepseek-v4-pro`，来源 `api`；
+- rule conclusions 随实时 WIP/产速证据进入或退出，命令历史不会反向污染当前结论；
+- 当前事实与历史命令、告警和事件同时保留在 PostgreSQL 审计/回放中。
+
+### 11.6 AI 空响应真实性与推理预算
+
+最终浏览器联调又发现一项高影响真实性缺陷：供应商调用未抛异常时，即使
+`content` 为空或仅返回 `{}`，系统也会写成 `status=explained`、
+`used_live_ai=true`。这会把“接口连通”错误等同于“已经完成诊断”。
+
+根因探针确认当前 `deepseek-v4-pro` 属于会消耗推理 token 的模型。复杂规则
+提示在原 400 token 上限下可能先耗尽推理预算，导致最终正文为空；简单登录
+连通探针则仍可成功，因此两个现象可以同时出现。
+
+修复包括：
+
+- DeepSeek 对话上限改为 `AI_CHAT_MAX_TOKENS=4096`，并保留环境变量配置；
+- provider registry 拒绝空字符串，继续走下一 provider 或规则回退；
+- DeepSeek adapter 拒绝空 `content`，错误中只记录 `finish_reason` 和长度，
+  不泄露推理正文；
+- 规则解释只接受至少包含一个有效结构化字段的 JSON；空字符串、空 JSON、
+  非结构化空载荷都返回 `provider=rule_fallback`、`used_live_ai=false`，并单独
+  记录 `attempted_provider`；
+- 增加 provider、registry 和 rule-explanation 回归测试。
+
+修复后的真实调用结果为：`provider=deepseek`、`model=deepseek-v4-pro`、
+`source=api`、`used_live_ai=true`，并返回非空摘要、2 条推理、3 条建议和
+2 条证据。若供应商再次返回空正文，系统会如实降级，不再显示伪成功。
+
+### 11.7 规则证据只暴露已满足谓词
+
+浏览器内容审查发现，积压条件单独触发瓶颈时，规则结论仍把未满足的
+`actual_rate / target_rate <= 0.75` 候选条件放进 evidence。模型据此把
+`0.94 <= 0.75` 错误解释为成立。问题根因不是模型接口，而是确定性规则的
+证据契约把“候选条件”和“已满足条件”混在了一起。
+
+修复后，瓶颈规则只输出实际成立的积压、利用率、产速比和输入 WIP 谓词，
+并按 backlog-only、rate-only 或二者同时触发选择不同摘要。回归测试证明
+当比值为 `0.94` 时，不会再把 `<= 0.75` 发送给 AI，也不会声称产出低于目标。

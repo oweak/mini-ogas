@@ -227,7 +227,16 @@ func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx 
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			result := m.checker.ProbeHTTP(proc.Spec.Health.Endpoint, timeout, m.sessionID)
+			expectedSession := m.sessionID
+			if proc.Spec.Health.SessionAgnostic {
+				expectedSession = ""
+			}
+			result := health.Status{}
+			if proc.Spec.Health.Type == "http-status" {
+				result = m.checker.ProbeHTTPStatus(proc.Spec.Health.Endpoint, timeout)
+			} else {
+				result = m.checker.ProbeHTTP(proc.Spec.Health.Endpoint, timeout, expectedSession)
+			}
 			if result.Healthy {
 				consecutiveFails = 0
 				m.markHealthy(proc, generation)

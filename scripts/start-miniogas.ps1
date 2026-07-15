@@ -2,10 +2,19 @@ param(
   [string]$RuntimeRoot = "D:\MiniOGAS-VMs",
   [switch]$ReplaceRunning,
   [switch]$Foreground,
+  [switch]$DisableNats,
   [switch]$UseScriptLauncher,
   [switch]$CheckOnly,
   [switch]$RequireAiApi,
   [switch]$StartKali,
+  [ValidateSet("development", "test", "digital_twin", "staging", "pilot", "production")]
+  [string]$AppEnv = "digital_twin",
+  [ValidateSet("simulated", "replay", "shadow", "live")]
+  [string]$DataSource = "simulated",
+  [ValidateSet("read_only", "operator_assisted", "controlled_write")]
+  [string]$ControlMode = "operator_assisted",
+  [string]$TenantId = "tenant-local",
+  [string]$SiteId = "site-digital-twin",
   [ValidateSet("postgresql", "memory")]
   [string]$FactSource = "postgresql"
 )
@@ -21,6 +30,10 @@ if ($UseScriptLauncher -or $CheckOnly -or $StartKali) {
     "-RuntimeRoot", $RuntimeRoot
   )
   $args += @("-FactSource", $FactSource)
+  $args += @(
+    "-AppEnv", $AppEnv, "-DataSource", $DataSource, "-ControlMode", $ControlMode,
+    "-TenantId", $TenantId, "-SiteId", $SiteId
+  )
   if ($CheckOnly) { $args += "-CheckOnly" }
   if ($RequireAiApi) { $args += "-RequireAiApi" }
   if ($StartKali) { $args += "-StartKali" }
@@ -35,8 +48,13 @@ $supervisorArgs = @(
   "-RuntimeRoot", $RuntimeRoot
 )
 $supervisorArgs += @("-FactSource", $FactSource)
+$supervisorArgs += @(
+  "-AppEnv", $AppEnv, "-DataSource", $DataSource, "-ControlMode", $ControlMode,
+  "-TenantId", $TenantId, "-SiteId", $SiteId
+)
 if ($ReplaceRunning) { $supervisorArgs += "-ReplaceRunning" }
 if ($Foreground) { $supervisorArgs += "-Foreground" }
+if ($DisableNats) { $supervisorArgs += "-DisableNats" }
 
 & powershell.exe @supervisorArgs
 exit $LASTEXITCODE

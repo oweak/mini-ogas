@@ -6,15 +6,21 @@ from . import (
     audit,
     compat,
     control,
+    data_platform,
     demo,
     dispatch,
+    execution,
     health,
     history,
     market,
+    maintenance,
+    master_data,
+    material_flow,
     nodes,
     ops,
     preflight,
     production,
+    quality,
     replay,
     reports,
     simulation,
@@ -30,6 +36,12 @@ api_router.include_router(ops.router)
 api_router.include_router(nodes.router)
 api_router.include_router(dispatch.router)
 api_router.include_router(market.router)
+api_router.include_router(data_platform.router)
+api_router.include_router(master_data.router)
+api_router.include_router(execution.router)
+api_router.include_router(material_flow.router)
+api_router.include_router(quality.router)
+api_router.include_router(maintenance.router)
 api_router.include_router(production.router)
 api_router.include_router(replay.router)
 api_router.include_router(reports.router)

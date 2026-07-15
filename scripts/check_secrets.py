@@ -72,7 +72,6 @@ def secret_assignment_kind(line: str) -> str | None:
 
 def is_documentation_or_test(path: Path) -> bool:
     rel = path.relative_to(PROJECT_ROOT).as_posix()
-    parts = set(path.relative_to(PROJECT_ROOT).parts)
     return (
         rel == ".env.example"
         or rel.endswith(".example")

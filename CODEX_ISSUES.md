@@ -23,6 +23,15 @@ Last verified: 2026-07-13
 | FIX-20260713-07 | AI provenance could report configured labels instead of the provider that actually answered. | Diagnosis/planning paths now return actual provider/model/source and test API vs fallback truth. |
 | FIX-20260713-08 | High-risk actions had route-specific safety bypasses. | Node, control, ops, demo, dispatch, escalation and attack-lab paths now require Safety Governor decisions. |
 | FIX-20260713-09 | Command and incident event persistence could diverge. | Repository transaction persists both or rolls both back; failure injection test proves rollback. |
+| FIX-20260713-10 | Target-rate commands changed heartbeat labels but did not constrain physical SimPy output. | Added incremental physical rate control, raw/controlled counters and capacity checks; live command 54 proved divergence. |
+| FIX-20260713-11 | Operator JWTs had no structured agent-command entry point. | Added `/ops/agents/{node}/commands`; machine claim/result routes remain node-token-only. |
+| FIX-20260713-12 | Verifier compared only post-command observations and misclassified rate increases. | It now uses the creation baseline and direction-aware own-rate/downstream evidence; live command 55 verified effective. |
+| FIX-20260713-13 | Old partial commands remained permanent live rule conclusions. | Rules evaluate the latest command per node/type; superseded failures remain only in audit/replay. |
+| FIX-20260713-14 | Dashboard snapshot polling repeatedly called live AI as evidence values changed. | Semantic signature, single-flight/cooldown and server cache reduce calls; browser observed one call in 12 seconds. |
+| FIX-20260713-15 | `mogas doctor` printed the first characters of sensitive environment values. | Secret values are fully redacted and covered by a regression test. |
+| FIX-20260713-16 | Local steady-state rule text still named the configured DeepSeek provider despite no model call. | Local results now report `provider=rule_fallback`, `used_live_ai=false`; failed attempts use separate `attempted_provider`. |
+| FIX-20260713-17 | Empty or unusable provider responses were marked as successful live AI explanations. | The provider chain and rule explanation contract now reject empty/unstructured output, fall back truthfully, and use a configurable 4096-token response budget for reasoning-capable models. |
+| FIX-20260713-18 | A backlog-triggered bottleneck conclusion exposed an unmatched rate predicate, allowing AI to treat `0.94 <= 0.75` as evidence. | Rule conclusions now include only satisfied predicates and select summaries from the actual trigger path; a regression test covers backlog-only bottlenecks. |
 
 ## Current Supported Runtime Truth
 
@@ -53,4 +62,7 @@ Last verified: 2026-07-13
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest result: all required tests and live checks passed. Optional Ruff lint remains skipped when Ruff is not installed; it is not part of the current mandatory gate.
+Latest result: all required tests and live checks passed. Canonical counts are
+central-api 162, node simulator 35, Dashboard 69 plus build, AI dispatcher 4,
+CLI/workflow 31 plus 9 subtests, and both Go modules. Ruff correctness lint is
+now part of the canonical gate and passes.

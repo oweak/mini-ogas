@@ -7,8 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from .config import settings
+from .migrations import Migration, apply_migrations
+from .phase2_schema import PHASE2_MIGRATIONS
+from .phase3_schema import PHASE3_MIGRATIONS
+from .phase4_schema import PHASE4_MIGRATIONS
+from .phase5_schema import PHASE5_MIGRATIONS
+from .phase6_schema import PHASE6_MIGRATIONS
+from .phase7_schema import PHASE7_MIGRATIONS
 
-SCHEMA_VERSION = "2026.07.13-v2.5-primary-facts"
+SCHEMA_VERSION = "2026.07.13-v3.0.1-nats-shadow"
+PHASE1_SCOPE_MIGRATION_VERSION = "2026.07.13-phase1-scope-outbox"
 
 SQLITE_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -82,13 +90,37 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS event_store (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    event_time TEXT NOT NULL,
+    ingest_time TEXT NOT NULL,
+    local_sequence INTEGER NOT NULL,
+    global_sequence INTEGER NOT NULL UNIQUE,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_store_run_global ON event_store(run_id, global_sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_store_source_local
+    ON event_store(source_node, run_id, local_sequence);
+
 CREATE TABLE IF NOT EXISTS part_queue_shadow (
     part_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL DEFAULT '',
+    scenario_id TEXT NOT NULL DEFAULT '',
+    batch_id TEXT NOT NULL DEFAULT '',
     parent_part_id TEXT NOT NULL DEFAULT '',
     order_id TEXT NOT NULL,
     product_code TEXT NOT NULL DEFAULT '',
     current_step TEXT NOT NULL,
+    current_operation TEXT NOT NULL DEFAULT '',
+    next_operation TEXT NOT NULL DEFAULT '',
+    quality_status TEXT NOT NULL DEFAULT 'pending',
+    event_sequence INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL,
     source_node TEXT NOT NULL,
     target_node TEXT NOT NULL,
@@ -110,6 +142,16 @@ CREATE TABLE IF NOT EXISTS command_shadow (
     parameters_json TEXT NOT NULL DEFAULT '{}',
     claimed_by TEXT NOT NULL DEFAULT '',
     result_message TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    expires_at TEXT,
+    dispatched_at TEXT,
+    received_at TEXT,
+    applied_at TEXT,
+    verified_at TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    verification_status TEXT NOT NULL DEFAULT 'not_started',
+    verification_baseline_json TEXT NOT NULL DEFAULT '{}',
+    verification_evidence_json TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -189,6 +231,31 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
     ON heartbeat_shadow(node_code, received_at);
+
+CREATE TABLE IF NOT EXISTS node_record_receipts (
+    node_code TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    local_id INTEGER NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_created_at TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    PRIMARY KEY (node_code, run_id, local_id)
+);
+
+CREATE TABLE IF NOT EXISTS nats_shadow_receipts (
+    message_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    local_sequence INTEGER NOT NULL,
+    correlation_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    ingested_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nats_shadow_source_run_sequence
+    ON nats_shadow_receipts(source_node, run_id, local_sequence);
 
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -295,13 +362,37 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS event_store (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    ingest_time TIMESTAMPTZ NOT NULL,
+    local_sequence BIGINT NOT NULL,
+    global_sequence BIGINT NOT NULL UNIQUE,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_store_run_global ON event_store(run_id, global_sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_store_source_local
+    ON event_store(source_node, run_id, local_sequence);
+
 CREATE TABLE IF NOT EXISTS part_queue_shadow (
     part_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL DEFAULT '',
+    scenario_id TEXT NOT NULL DEFAULT '',
+    batch_id TEXT NOT NULL DEFAULT '',
     parent_part_id TEXT NOT NULL DEFAULT '',
     order_id TEXT NOT NULL,
     product_code TEXT NOT NULL DEFAULT '',
     current_step TEXT NOT NULL,
+    current_operation TEXT NOT NULL DEFAULT '',
+    next_operation TEXT NOT NULL DEFAULT '',
+    quality_status TEXT NOT NULL DEFAULT 'pending',
+    event_sequence BIGINT NOT NULL DEFAULT 1,
     status TEXT NOT NULL,
     source_node TEXT NOT NULL,
     target_node TEXT NOT NULL,
@@ -323,6 +414,16 @@ CREATE TABLE IF NOT EXISTS command_shadow (
     parameters_json TEXT NOT NULL DEFAULT '{}',
     claimed_by TEXT NOT NULL DEFAULT '',
     result_message TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    expires_at TIMESTAMPTZ,
+    dispatched_at TIMESTAMPTZ,
+    received_at TIMESTAMPTZ,
+    applied_at TIMESTAMPTZ,
+    verified_at TIMESTAMPTZ,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    verification_status TEXT NOT NULL DEFAULT 'not_started',
+    verification_baseline_json TEXT NOT NULL DEFAULT '{}',
+    verification_evidence_json TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -403,6 +504,31 @@ CREATE TABLE IF NOT EXISTS runs (
 CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
     ON heartbeat_shadow(node_code, received_at);
 
+CREATE TABLE IF NOT EXISTS node_record_receipts (
+    node_code TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    local_id BIGINT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_created_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (node_code, run_id, local_id)
+);
+
+CREATE TABLE IF NOT EXISTS nats_shadow_receipts (
+    message_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    local_sequence BIGINT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_nats_shadow_source_run_sequence
+    ON nats_shadow_receipts(source_node, run_id, local_sequence);
+
 CREATE TABLE IF NOT EXISTS users (
     id BIGSERIAL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
@@ -461,6 +587,10 @@ def _translate_qmark_placeholders(sql: str) -> str:
 class PostgresConnection:
     def __init__(self, connection: Any):
         self._connection = connection
+        self._connection.execute(
+            "SELECT set_config('app.tenant_id', %s, false), set_config('app.site_id', %s, false)",
+            (settings.tenant_id, settings.site_id),
+        )
 
     def __enter__(self) -> PostgresConnection:
         return self
@@ -487,7 +617,9 @@ def _connect_postgres() -> PostgresConnection:
         import psycopg
         from psycopg.rows import dict_row
     except ImportError as exc:  # pragma: no cover - depends on deployment package set
-        raise RuntimeError("PostgreSQL persistence requires psycopg; install psycopg[binary]") from exc
+        raise RuntimeError(
+            "PostgreSQL persistence requires psycopg; install psycopg[binary]"
+        ) from exc
     return PostgresConnection(psycopg.connect(settings.postgres_dsn, row_factory=dict_row))
 
 
@@ -507,6 +639,27 @@ RUN_ID_TABLES = (
     "allocation_order_shadow",
 )
 
+SCOPED_TABLES = (
+    "metrics",
+    "alerts",
+    "ai_diagnosis",
+    "commands",
+    "audit_logs",
+    "event_store",
+    "part_queue_shadow",
+    "command_shadow",
+    "production_plan_shadow",
+    "dispatch_task_shadow",
+    "allocation_order_shadow",
+    "heartbeat_shadow",
+    "scenarios",
+    "runs",
+    "node_record_receipts",
+    "nats_shadow_receipts",
+    "users",
+    "outbox_messages",
+)
+
 RUN_ID_INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_alerts_run_created ON alerts(run_id, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_ai_diagnosis_run_created ON ai_diagnosis(run_id, created_at)",
@@ -521,18 +674,92 @@ RUN_ID_INDEX_SQL = (
 
 
 def _sqlite_table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
-    return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    return {
+        str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
 
 
 def _ensure_sqlite_run_id_columns(connection: sqlite3.Connection) -> None:
     for table_name in RUN_ID_TABLES:
         if "run_id" not in _sqlite_table_columns(connection, table_name):
-            connection.execute(f"ALTER TABLE {table_name} ADD COLUMN run_id TEXT NOT NULL DEFAULT ''")
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN run_id TEXT NOT NULL DEFAULT ''"
+            )
 
 
 def _ensure_postgres_run_id_columns(connection: PostgresConnection) -> None:
     for table_name in RUN_ID_TABLES:
-        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''")
+        connection.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS run_id TEXT NOT NULL DEFAULT ''"
+        )
+
+
+def _ensure_sqlite_command_verification_columns(connection: sqlite3.Connection) -> None:
+    definitions = {
+        "version": "INTEGER NOT NULL DEFAULT 1",
+        "expires_at": "TEXT",
+        "dispatched_at": "TEXT",
+        "received_at": "TEXT",
+        "applied_at": "TEXT",
+        "verified_at": "TEXT",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "verification_status": "TEXT NOT NULL DEFAULT 'not_started'",
+        "verification_baseline_json": "TEXT NOT NULL DEFAULT '{}'",
+        "verification_evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    existing = _sqlite_table_columns(connection, "command_shadow")
+    for name, definition in definitions.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE command_shadow ADD COLUMN {name} {definition}")
+
+
+def _ensure_postgres_command_verification_columns(connection: PostgresConnection) -> None:
+    definitions = {
+        "version": "INTEGER NOT NULL DEFAULT 1",
+        "expires_at": "TIMESTAMPTZ",
+        "dispatched_at": "TIMESTAMPTZ",
+        "received_at": "TIMESTAMPTZ",
+        "applied_at": "TIMESTAMPTZ",
+        "verified_at": "TIMESTAMPTZ",
+        "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+        "verification_status": "TEXT NOT NULL DEFAULT 'not_started'",
+        "verification_baseline_json": "TEXT NOT NULL DEFAULT '{}'",
+        "verification_evidence_json": "TEXT NOT NULL DEFAULT '{}'",
+    }
+    for name, definition in definitions.items():
+        connection.execute(
+            f"ALTER TABLE command_shadow ADD COLUMN IF NOT EXISTS {name} {definition}"
+        )
+
+
+def _ensure_sqlite_part_identity_columns(connection: sqlite3.Connection) -> None:
+    definitions = {
+        "scenario_id": "TEXT NOT NULL DEFAULT ''",
+        "batch_id": "TEXT NOT NULL DEFAULT ''",
+        "current_operation": "TEXT NOT NULL DEFAULT ''",
+        "next_operation": "TEXT NOT NULL DEFAULT ''",
+        "quality_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "event_sequence": "INTEGER NOT NULL DEFAULT 1",
+    }
+    existing = _sqlite_table_columns(connection, "part_queue_shadow")
+    for name, definition in definitions.items():
+        if name not in existing:
+            connection.execute(f"ALTER TABLE part_queue_shadow ADD COLUMN {name} {definition}")
+
+
+def _ensure_postgres_part_identity_columns(connection: PostgresConnection) -> None:
+    definitions = {
+        "scenario_id": "TEXT NOT NULL DEFAULT ''",
+        "batch_id": "TEXT NOT NULL DEFAULT ''",
+        "current_operation": "TEXT NOT NULL DEFAULT ''",
+        "next_operation": "TEXT NOT NULL DEFAULT ''",
+        "quality_status": "TEXT NOT NULL DEFAULT 'pending'",
+        "event_sequence": "BIGINT NOT NULL DEFAULT 1",
+    }
+    for name, definition in definitions.items():
+        connection.execute(
+            f"ALTER TABLE part_queue_shadow ADD COLUMN IF NOT EXISTS {name} {definition}"
+        )
 
 
 def _ensure_run_id_indexes(connection: Any) -> None:
@@ -545,8 +772,126 @@ def _record_schema_version(connection: Any) -> None:
         """INSERT INTO schema_migrations (version, description)
            VALUES (?, ?)
            ON CONFLICT(version) DO NOTHING""",
-        (SCHEMA_VERSION, "v2.5 PostgreSQL primary facts, formal runs/scenarios, and replay schema"),
+        (SCHEMA_VERSION, "v3.0.1 NATS JetStream shadow transport receipts"),
     )
+
+
+def _create_sqlite_outbox(connection: sqlite3.Connection) -> None:
+    tenant = settings.tenant_id.replace("'", "''")
+    site = settings.site_id.replace("'", "''")
+    connection.execute(
+        f"""CREATE TABLE IF NOT EXISTS outbox_messages (
+                message_id TEXT PRIMARY KEY,
+                tenant_id TEXT NOT NULL DEFAULT '{tenant}',
+                site_id TEXT NOT NULL DEFAULT '{site}',
+                aggregate_type TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                message_type TEXT NOT NULL,
+                subject TEXT NOT NULL,
+                schema_version TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempts INTEGER NOT NULL DEFAULT 0,
+                available_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                claimed_at TEXT,
+                claim_token TEXT NOT NULL DEFAULT '',
+                published_at TEXT,
+                last_error TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+    )
+
+
+def _phase1_sqlite_scope_outbox(connection: sqlite3.Connection) -> None:
+    _create_sqlite_outbox(connection)
+    tenant = settings.tenant_id.replace("'", "''")
+    site = settings.site_id.replace("'", "''")
+    for table_name in SCOPED_TABLES:
+        columns = _sqlite_table_columns(connection, table_name)
+        if "tenant_id" not in columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN tenant_id TEXT NOT NULL DEFAULT '{tenant}'"
+            )
+        if "site_id" not in columns:
+            connection.execute(
+                f"ALTER TABLE {table_name} ADD COLUMN site_id TEXT NOT NULL DEFAULT '{site}'"
+            )
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table_name}_scope ON {table_name}(tenant_id, site_id)"
+        )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_outbox_pending
+           ON outbox_messages(tenant_id, site_id, status, available_at, created_at)"""
+    )
+
+
+def _phase1_postgres_scope_outbox(connection: PostgresConnection) -> None:
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS outbox_messages (
+               message_id TEXT PRIMARY KEY,
+               tenant_id TEXT NOT NULL DEFAULT current_setting('app.tenant_id', true),
+               site_id TEXT NOT NULL DEFAULT current_setting('app.site_id', true),
+               aggregate_type TEXT NOT NULL,
+               aggregate_id TEXT NOT NULL,
+               message_type TEXT NOT NULL,
+               subject TEXT NOT NULL,
+               schema_version TEXT NOT NULL,
+               payload_json TEXT NOT NULL,
+               status TEXT NOT NULL DEFAULT 'pending',
+               attempts INTEGER NOT NULL DEFAULT 0,
+               available_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+               claimed_at TIMESTAMPTZ,
+               claim_token TEXT NOT NULL DEFAULT '',
+               published_at TIMESTAMPTZ,
+               last_error TEXT NOT NULL DEFAULT '',
+               created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+           )"""
+    )
+    for table_name in SCOPED_TABLES:
+        connection.execute(
+            f"""ALTER TABLE {table_name}
+                ADD COLUMN IF NOT EXISTS tenant_id TEXT NOT NULL
+                DEFAULT current_setting('app.tenant_id', true)"""
+        )
+        connection.execute(
+            f"""ALTER TABLE {table_name}
+                ADD COLUMN IF NOT EXISTS site_id TEXT NOT NULL
+                DEFAULT current_setting('app.site_id', true)"""
+        )
+        connection.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table_name}_scope ON {table_name}(tenant_id, site_id)"
+        )
+        connection.execute(f"ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY")
+        connection.execute(f"ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY")
+        connection.execute(f"DROP POLICY IF EXISTS miniogas_scope ON {table_name}")
+        connection.execute(
+            f"""CREATE POLICY miniogas_scope ON {table_name}
+                USING (
+                    tenant_id = current_setting('app.tenant_id', true)
+                    AND site_id = current_setting('app.site_id', true)
+                )
+                WITH CHECK (
+                    tenant_id = current_setting('app.tenant_id', true)
+                    AND site_id = current_setting('app.site_id', true)
+                )"""
+        )
+    connection.execute(
+        """CREATE INDEX IF NOT EXISTS idx_outbox_pending
+           ON outbox_messages(tenant_id, site_id, status, available_at, created_at)"""
+    )
+
+
+PHASE1_MIGRATIONS = [
+    Migration(
+        version=PHASE1_SCOPE_MIGRATION_VERSION,
+        description="Phase 1 tenant/site data scope, PostgreSQL RLS and transactional outbox foundation",
+        checksum_material=(
+            "scope-columns-v1|postgres-force-rls-v1|outbox-v1|" + "|".join(SCOPED_TABLES)
+        ),
+        sqlite_action=_phase1_sqlite_scope_outbox,
+        postgres_action=_phase1_postgres_scope_outbox,
+    ),
+]
 
 
 def init_db() -> None:
@@ -555,8 +900,21 @@ def init_db() -> None:
             for statement in _schema_statements(POSTGRES_SCHEMA_SQL):
                 connection.execute(statement)
             _ensure_postgres_run_id_columns(connection)
+            _ensure_postgres_command_verification_columns(connection)
+            _ensure_postgres_part_identity_columns(connection)
             _ensure_run_id_indexes(connection)
             _record_schema_version(connection)
+            apply_migrations(
+                connection,
+                "postgres",
+                PHASE1_MIGRATIONS
+                + PHASE2_MIGRATIONS
+                + PHASE3_MIGRATIONS
+                + PHASE4_MIGRATIONS
+                + PHASE5_MIGRATIONS
+                + PHASE6_MIGRATIONS
+                + PHASE7_MIGRATIONS,
+            )
             connection.commit()
         return
 
@@ -565,8 +923,21 @@ def init_db() -> None:
     with sqlite3.connect(db_path) as connection:
         connection.executescript(SQLITE_SCHEMA_SQL)
         _ensure_sqlite_run_id_columns(connection)
+        _ensure_sqlite_command_verification_columns(connection)
+        _ensure_sqlite_part_identity_columns(connection)
         _ensure_run_id_indexes(connection)
         _record_schema_version(connection)
+        apply_migrations(
+            connection,
+            "sqlite",
+            PHASE1_MIGRATIONS
+            + PHASE2_MIGRATIONS
+            + PHASE3_MIGRATIONS
+            + PHASE4_MIGRATIONS
+            + PHASE5_MIGRATIONS
+            + PHASE6_MIGRATIONS
+            + PHASE7_MIGRATIONS,
+        )
         connection.commit()
 
 

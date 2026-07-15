@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from ..core.security import (
     PERM_COMMAND_APPROVE,
@@ -13,6 +14,43 @@ from ..store import store
 from .control import execute_plan, plan_command
 
 router = APIRouter(prefix="/ops", tags=["ops"])
+
+
+class OperatorAgentCommandIn(BaseModel):
+    command_type: str = "set_target_rate"
+    target_rate: float = Field(gt=0, le=5)
+
+
+@router.post("/agents/{node_code}/commands")
+def issue_agent_command(
+    node_code: str,
+    payload: OperatorAgentCommandIn,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
+    if node_code not in store.nodes:
+        raise HTTPException(status_code=404, detail="node not found")
+    if payload.command_type != "set_target_rate":
+        raise HTTPException(status_code=400, detail="only set_target_rate is supported")
+    physical_limit = store.reported_physical_rate_limit_per_minute(node_code)
+    if physical_limit is not None and payload.target_rate > physical_limit + 1e-9:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "target_exceeds_physical_capacity",
+                "requested_rate": payload.target_rate,
+                "maximum_rate": round(physical_limit, 3),
+                "rate_unit": "parts_per_minute",
+                "node_code": node_code,
+            },
+        )
+    return store.add_command(
+        node_code,
+        "set_target_rate",
+        "low",
+        "pending",
+        actor.username or actor.role,
+        parameters={"target_rate": payload.target_rate},
+    )
 
 
 @router.get("/pending-approvals")

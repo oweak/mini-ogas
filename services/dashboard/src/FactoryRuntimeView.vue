@@ -200,7 +200,7 @@ const aiExplanationStatusLabel = computed(() => {
               <strong>{{ workshop.name }}</strong>
               <small>{{ workshop.node }}</small>
             </div>
-            <span class="load-meter">{{ workshop.load }}% 负载</span>
+            <span class="load-meter">节点 CPU {{ workshop.load }}%</span>
           </header>
 
           <div class="machine-grid">
@@ -231,8 +231,16 @@ const aiExplanationStatusLabel = computed(() => {
                   <dd>{{ machine.output }}/{{ machine.target }}</dd>
                 </div>
                 <div>
+                  <dt>SimPy 原始完工</dt>
+                  <dd>{{ machine.rawOutput ?? machine.output }}</dd>
+                </div>
+                <div>
+                  <dt>命令约束完工</dt>
+                  <dd>{{ machine.output }}</dd>
+                </div>
+                <div>
                   <dt>良品率</dt>
-                  <dd>{{ machine.yieldRate }}%</dd>
+                  <dd>{{ machine.yieldRate === null ? '未上报' : `${machine.yieldRate}%` }}</dd>
                 </div>
                 <div>
                   <dt>刀具磨损</dt>
@@ -245,6 +253,18 @@ const aiExplanationStatusLabel = computed(() => {
                 <div>
                   <dt>利用率</dt>
                   <dd>{{ machine.utilization !== undefined ? `${Math.round(machine.utilization * 100)}%` : '未上报' }}</dd>
+                </div>
+                <div>
+                  <dt>输入 WIP</dt>
+                  <dd>{{ machine.wipInput ?? 0 }}</dd>
+                </div>
+                <div>
+                  <dt>输出 WIP</dt>
+                  <dd>{{ machine.wipOutput ?? 0 }}</dd>
+                </div>
+                <div>
+                  <dt>WIP 事实源</dt>
+                  <dd>{{ machine.wipSource || 'heartbeat' }}</dd>
                 </div>
                 <div>
                   <dt>同步状态</dt>
@@ -308,7 +328,8 @@ const aiExplanationStatusLabel = computed(() => {
               <div>
                 <strong>{{ part.part_id }} / {{ partStatusLabel[part.status] ?? part.status }}</strong>
                 <small>{{ part.source_node }} → {{ part.target_node }}</small>
-                <small>{{ part.order_id }} / {{ part.current_step }} / {{ part.claimed_by || '未领取' }}</small>
+                <small>{{ part.batch_id || part.order_id }} / {{ part.current_operation || part.current_step }} → {{ part.next_operation || '完成' }}</small>
+                <small>{{ part.quality_status || 'pending' }} / seq {{ part.event_sequence ?? 0 }} / {{ part.claimed_by || '未领取' }}</small>
               </div>
             </li>
           </ol>

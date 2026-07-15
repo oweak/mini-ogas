@@ -2,11 +2,63 @@ session_token_auto = true
 api_port = 9099
 
 [[process]]
+name = "nats-server"
+command = "${NATS_SERVER_BIN}"
+args = ["-c", "${NATS_CONFIG_PATH}"]
+dir = "."
+[process.env]
+NATS_AUTH_TOKEN = "${NATS_AUTH_TOKEN}"
+NATS_STORE_DIR = "${NATS_STORE_DIR}"
+[process.health]
+type = "http"
+endpoint = "http://127.0.0.1:8222/healthz?js-enabled-only=true"
+session_agnostic = true
+interval = 5
+timeout = 3
+retries = 5
+
+[[process]]
+name = "redis-projection"
+command = "${REDIS_SERVER_BIN}"
+args = ["${REDIS_CONFIG_PATH}"]
+dir = "."
+[process.health]
+type = "process"
+interval = 5
+timeout = 3
+retries = 5
+
+[[process]]
+name = "minio-object-store"
+command = "${MINIO_SERVER_BIN}"
+args = ["server", "${MINIO_DATA_DIR}", "--address", "127.0.0.1:9000", "--console-address", "127.0.0.1:9001", "--quiet"]
+dir = "."
+[process.env]
+MINIO_ROOT_USER = "${MINIO_ROOT_USER}"
+MINIO_ROOT_PASSWORD = "${MINIO_ROOT_PASSWORD}"
+[process.health]
+type = "http-status"
+endpoint = "http://127.0.0.1:9000/minio/health/live"
+session_agnostic = true
+interval = 5
+timeout = 3
+retries = 5
+
+[[process]]
 name = "central-api"
-command = "python"
+command = "${CENTRAL_API_PYTHON}"
 args = ["-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8080", "--log-level", "warning"]
 dir = "services/central-api"
+depends_on = ["nats-server", "redis-projection", "minio-object-store"]
 [process.env]
+APP_ENV = "${APP_ENV}"
+DATA_SOURCE = "${DATA_SOURCE}"
+CONTROL_MODE = "${CONTROL_MODE}"
+DEMO_SEED_ENABLED = "${DEMO_SEED_ENABLED}"
+INDUSTRIAL_CONNECTOR_ENABLED = "${INDUSTRIAL_CONNECTOR_ENABLED}"
+PHYSICAL_WRITE_ENABLED = "${PHYSICAL_WRITE_ENABLED}"
+TENANT_ID = "${TENANT_ID}"
+SITE_ID = "${SITE_ID}"
 OGAS_API_TOKEN = "${OGAS_API_TOKEN}"
 API_ACCESS_TOKEN = "${API_ACCESS_TOKEN}"
 NODE_INGEST_TOKEN = "${NODE_INGEST_TOKEN}"
@@ -20,6 +72,21 @@ AUTH_BOOTSTRAP_PASSWORD = "${AUTH_BOOTSTRAP_PASSWORD}"
 AI_ENABLED = "true"
 AI_PROVIDER_CHAIN = "deepseek,ollama,lm_studio,groq"
 AI_TIMEOUT_SECONDS = "60"
+NATS_ENABLED = "${NATS_ENABLED}"
+NATS_URL = "nats://127.0.0.1:4222"
+NATS_AUTH_TOKEN = "${NATS_AUTH_TOKEN}"
+NATS_STREAM = "OGAS_V3_SHADOW"
+NATS_CONSUMER = "ogas-v3-postgres-worker"
+REDIS_ENABLED = "true"
+REDIS_URL = "${REDIS_URL}"
+OBJECT_STORAGE_ENABLED = "true"
+OBJECT_STORAGE_ENDPOINT = "127.0.0.1:9000"
+OBJECT_STORAGE_ACCESS_KEY = "${MINIO_ROOT_USER}"
+OBJECT_STORAGE_SECRET_KEY = "${MINIO_ROOT_PASSWORD}"
+OBJECT_STORAGE_BUCKET = "miniogas-documents"
+OBJECT_STORAGE_SECURE = "false"
+TELEMETRY_BOOTSTRAP_CATALOG_ENABLED = "true"
+EXPECTED_SUPERVISOR_PROCESSES = "nats-server,redis-projection,minio-object-store,central-api,ai-dispatcher,market-simulator,production-planner,dashboard,turning-simpy-node,milling-simpy-node,grinding-simpy-node"
 OLLAMA_BASE_URL = "http://localhost:11434"
 OLLAMA_MODEL = "deepseek-r1:7b-local"
 [process.health]
@@ -105,6 +172,7 @@ SIMULATION_ENGINE = "simpy"
 SIMULATION_SPEED = "1"
 SIMULATION_RANDOM_SEED = "20260713"
 OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SIMULATION_START_TIME = "${OGAS_SIMULATION_START_TIME}"
 OGAS_SCENARIO_ID = "SCN-NORMAL-SIMPY-FLOW-001"
 NODE_DEPLOYMENT_MODE = "process"
 [process.health]
@@ -132,6 +200,7 @@ SIMULATION_ENGINE = "simpy"
 SIMULATION_SPEED = "1"
 SIMULATION_RANDOM_SEED = "20260713"
 OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SIMULATION_START_TIME = "${OGAS_SIMULATION_START_TIME}"
 OGAS_SCENARIO_ID = "SCN-NORMAL-SIMPY-FLOW-001"
 NODE_DEPLOYMENT_MODE = "process"
 [process.health]
@@ -159,6 +228,7 @@ SIMULATION_ENGINE = "simpy"
 SIMULATION_SPEED = "1"
 SIMULATION_RANDOM_SEED = "20260713"
 OGAS_RUN_ID = "${OGAS_RUN_ID}"
+OGAS_SIMULATION_START_TIME = "${OGAS_SIMULATION_START_TIME}"
 OGAS_SCENARIO_ID = "SCN-NORMAL-SIMPY-FLOW-001"
 NODE_DEPLOYMENT_MODE = "process"
 [process.health]

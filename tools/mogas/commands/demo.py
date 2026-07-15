@@ -38,5 +38,5 @@ def run(scenario: str = "normal") -> None:
     )
 
     print(json.dumps(result, indent=2, ensure_ascii=False))
-    print(f"\n  Dashboard: http://127.0.0.1:5173")
+    print("\n  Dashboard: http://127.0.0.1:5173")
     print()

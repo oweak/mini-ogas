@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from enum import Enum
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -133,10 +134,16 @@ class DispatchTask(BaseModel):
 class PartQueueItem(BaseModel):
     part_id: str
     run_id: str = ""
+    scenario_id: str = ""
+    batch_id: str = ""
     parent_part_id: str = ""
     order_id: str
     product_code: str = ""
     current_step: str = "milling"
+    current_operation: str = "milling"
+    next_operation: str = ""
+    quality_status: str = "pending"
+    event_sequence: int = 1
     status: str = "ready"
     source_node: str = "turning-workshop-01"
     target_node: str = "milling-workshop-01"
@@ -219,6 +226,16 @@ class NodeCommand(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
     claimed_by: str = ""
     result_message: str = ""
+    version: int = 1
+    expires_at: datetime | None = None
+    dispatched_at: datetime | None = None
+    received_at: datetime | None = None
+    applied_at: datetime | None = None
+    verified_at: datetime | None = None
+    attempt_count: int = 0
+    verification_status: str = "not_started"
+    verification_baseline: dict[str, dict[str, object]] = Field(default_factory=dict)
+    verification_evidence: dict[str, object] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
@@ -230,6 +247,17 @@ class IncidentEvent(BaseModel):
     severity: Severity
     message: str
     run_id: str = ""
+    event_id: str = Field(default_factory=lambda: str(uuid4()))
+    event_type: str = ""
+    schema_version: str = "2.5"
+    source_node: str = ""
+    event_time: datetime = Field(default_factory=utc_now)
+    ingest_time: datetime = Field(default_factory=utc_now)
+    local_sequence: int = 0
+    global_sequence: int = 0
+    correlation_id: str = ""
+    scenario_id: str = ""
+    payload: dict[str, object] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
 
 

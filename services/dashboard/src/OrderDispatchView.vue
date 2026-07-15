@@ -59,8 +59,8 @@ defineEmits<{
               </td>
               <td>
                 <div class="progress-cell">
-                  <span>{{ order.completed }}/{{ order.quantity }}</span>
-                  <meter :value="order.completed" :max="order.quantity"></meter>
+                  <span>{{ order.completed === null ? '未上报' : `${order.completed}/${order.quantity}` }}</span>
+                  <meter v-if="order.completed !== null" :value="order.completed" :max="order.quantity"></meter>
                 </div>
               </td>
               <td>{{ order.due }}</td>

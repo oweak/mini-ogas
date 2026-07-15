@@ -2,16 +2,11 @@
 
 from __future__ import annotations
 
-import sys
-import time
-
 from ..core.health import check
 
 
 def run() -> None:
     """Gracefully stop the running system."""
-    import os
-
     ended = 0
 
     # Use REST to shut down agents cleanly

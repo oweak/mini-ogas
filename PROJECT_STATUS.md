@@ -41,7 +41,7 @@ The three workshop nodes are separate supervised processes on one Windows host. 
 
 | Item | Result |
 | --- | --- |
-| v2.5.0 debt freeze | Every debt has status, owner and exit evidence in `docs/architecture-debt.md`. |
+| v2.5.0 debt freeze | Every debt has status, owner and exit evidence in `docs/ARCHITECTURE_DEBT.md`. |
 | v2.5.1 Snapshot migration | Core Dashboard runtime uses snapshot; legacy state is a wrapper. |
 | v2.5.2 PostgreSQL primary facts | Repository/projection, schema migration, degraded state, rollback mode and restart recovery are implemented. |
 | v2.5.3 API wrappers | Canonical agent heartbeat exists; legacy heartbeat/dashboard routes are deprecated wrappers. |
@@ -63,6 +63,12 @@ The latest strict check confirmed:
 - administrator login issued JWT and completed a real DeepSeek API smoke call.
 - current snapshot contained no historical alerts or notifications.
 - current WIP projection excluded historical runs.
+- live target-rate commands changed physical constrained output and were verified
+  from later heartbeat observations.
+- AI rule explanation polling was reduced to one semantic request while snapshots
+  continued to refresh every second.
+- reasoning-capable AI responses use a configurable 4096-token budget; empty or
+  unusable provider output is reported as rule fallback rather than live success.
 - replay listed formal runs and showed `replay / 只读`.
 - desktop and 390 px mobile browser checks had no horizontal overflow or clipped buttons.
 
@@ -70,16 +76,17 @@ The latest strict check confirmed:
 
 | Suite | Result |
 | --- | ---: |
-| central-api | 133 passed |
-| Python node simulator | 26 passed |
-| Dashboard | 63 passed |
+| central-api | 162 passed |
+| Python node simulator | 35 passed |
+| Dashboard | 69 passed |
 | AI dispatcher | 4 passed |
-| CLI/workflow | 30 passed + 9 subtests |
+| CLI/workflow | 31 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
 | Dashboard production build | passed |
 | Real fault-to-archive workflow | passed |
 | Secret scan | passed |
+| Ruff correctness lint | passed |
 
 ## Important Boundaries
 

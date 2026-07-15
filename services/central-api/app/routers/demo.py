@@ -15,6 +15,11 @@ def apply_demo_scenario(
     payload: DemoScenario,
     actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
 ):
+    if settings.app_env == "production" or not settings.demo_seed_enabled:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "demo_disabled", "message": "Demo scenarios are disabled in this environment."},
+        )
     action = "simulate_hostile_attack" if payload.scenario == "hostile_attack" else f"simulate_{payload.scenario}"
     target = "turning-workshop-01" if payload.scenario == "hostile_attack" else ""
     decision = safety_governor.review_control_action(
@@ -98,7 +103,8 @@ def _enrich_node(node, store) -> dict:
         "defect_quantity": lm.defect_quantity if lm else 0,
         "tool_wear_level": first_machine.tool_wear_level if first_machine else 0,
     }
-    data["production"] = {**production, **heartbeat_production}
+    reported_production = {**production, **heartbeat_production}
+    data["production"] = store.part_queue_flow_projection(node.node_code, reported_production)
     runtime = heartbeat_v2.get("runtime")
     if isinstance(runtime, dict):
         data["runtime"] = runtime
@@ -119,6 +125,7 @@ def _enrich_node(node, store) -> dict:
     # Sync status (Node model has no sync field; backends signal online via heartbeat)
     heartbeat_sync = heartbeat_v2.get("sync") if isinstance(heartbeat_v2.get("sync"), dict) else {}
     data["sync"] = {"pending_records": int(heartbeat_sync.get("pending_records") or 0)}
+    data["received_at"] = heartbeat_v2.get("_received_at")
 
     return data
 
@@ -133,8 +140,8 @@ def _build_work_orders(store) -> list[dict]:
                 "route": task.route,
                 "priority": f"P{min(3, max(1, task.priority // 3 + 1))}",
                 "quantity": task.quantity,
-                "completed": 0,
-                "due": "",
+                "completed": None,
+                "due": None,
                 "assigned_node": task.assigned_node,
                 "assigned_machine": task.assigned_machine,
                 "status": task.status,
@@ -151,8 +158,8 @@ def _build_work_orders(store) -> list[dict]:
             "route": plan.route,
             "priority": f"P{min(3, max(1, plan.priority // 3 + 1))}",
             "quantity": plan.target_quantity,
-            "completed": 0,
-            "due": "",
+            "completed": None,
+            "due": None,
             "status": "scheduled",
         })
     for ao in store.allocation_orders[-20:]:
@@ -162,8 +169,8 @@ def _build_work_orders(store) -> list[dict]:
             "route": [],
             "priority": f"P{min(3, max(1, ao.priority // 3 + 1))}",
             "quantity": ao.required_quantity,
-            "completed": 0,
-            "due": "",
+            "completed": None,
+            "due": None,
             "status": "in_progress",
         })
     return orders
@@ -190,16 +197,29 @@ def _safe_int(value, default=0):
 def _snapshot_data_source(nodes: list[dict]) -> str:
     if not nodes:
         return "fallback"
-    runtime_sources = [
-        node.get("runtime", {}).get("runtime_source")
-        for node in nodes
-        if isinstance(node.get("runtime"), dict)
-    ]
-    if any(source == "fixture" for source in runtime_sources):
-        return "fixture"
-    if any(source for source in runtime_sources):
-        return "live"
-    return "fallback"
+    runtime_sources: set[str] = set()
+    for node in nodes:
+        runtime = node.get("runtime")
+        if not isinstance(runtime, dict) or not runtime:
+            continue
+        source = str(runtime.get("runtime_source") or "").strip().lower()
+        engine = str(runtime.get("simulation_engine") or "").strip().lower()
+        deployment = str(runtime.get("deployment_mode") or "").strip().lower()
+        if source == "fixture":
+            runtime_sources.add("fixture")
+        elif source == "replay":
+            runtime_sources.add("replay")
+        elif source == "simulated" or engine in {"simple", "simpy"}:
+            runtime_sources.add("simulated")
+        elif source == "live" or engine == "physical" or deployment == "physical":
+            runtime_sources.add("live")
+        elif source == "fallback":
+            runtime_sources.add("fallback")
+    if not runtime_sources:
+        return "fallback"
+    if len(runtime_sources) == 1:
+        return next(iter(runtime_sources))
+    return "mixed"
 
 
 def _snapshot_run(nodes: list[dict]) -> dict:
@@ -250,15 +270,36 @@ def _snapshot_node(node: dict) -> dict:
         "runtime": runtime,
         "deployment_mode": runtime.get("deployment_mode") or node.get("deployment_mode") or "unknown",
         "simulation_mode": runtime.get("simulation_mode") or node.get("simulation_mode") or "unknown",
+        "last_heartbeat": node.get("last_heartbeat"),
+        "received_at": node.get("received_at"),
         "production": {
             "finished_quantity": finished_quantity,
+            "raw_finished_quantity": _safe_int(
+                production.get("raw_finished_quantity"),
+                finished_quantity,
+            ),
             "defect_quantity": defect_quantity,
             "wip_input": _safe_int(production.get("wip_input")),
             "wip_output": _safe_int(production.get("wip_output")),
+            "reported_wip_input": _safe_int(production.get("reported_wip_input")),
+            "reported_wip_output": _safe_int(production.get("reported_wip_output")),
+            "wip_source": production.get("wip_source") or "heartbeat",
+            "flow_run_id": production.get("flow_run_id") or "",
+            "milling_queue_depth": _safe_int(production.get("milling_queue_depth")),
+            "grinding_queue_depth": _safe_int(production.get("grinding_queue_depth")),
+            "finished_goods_buffer": _safe_int(production.get("finished_goods_buffer")),
             "target_rate": _safe_number(production.get("target_rate")),
             "actual_rate": _safe_number(production.get("actual_rate")),
             "utilization": _safe_number(production.get("utilization")),
             "defect_rate": _safe_number(production.get("defect_rate")),
+            "defect_rate_delta": _safe_number(production.get("defect_rate_delta")),
+            "tool_wear_level": _safe_number(production.get("tool_wear_level")),
+            "machine_count": _safe_int(production.get("machine_count")),
+            "process_time_sec": _safe_int(production.get("process_time_sec")),
+            "nominal_capacity_per_hour": _safe_number(production.get("nominal_capacity_per_hour")),
+            "target_rate_per_hour": _safe_number(production.get("target_rate_per_hour")),
+            "actual_rate_per_hour": _safe_number(production.get("actual_rate_per_hour")),
+            "rate_unit": production.get("rate_unit") or "parts_per_minute",
         },
         "metrics": metrics,
         "sync": node.get("sync") or {"pending_records": 0},
@@ -341,6 +382,11 @@ def _apply_rule_demo_mode(mode: str, nodes: list[dict]) -> list[dict]:
 
 
 def _build_dashboard_snapshot(mode: str = "normal") -> dict:
+    if mode != "normal" and (settings.app_env == "production" or not settings.demo_seed_enabled):
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "demo_disabled", "message": "Dashboard demo overlays are disabled."},
+        )
     projection = store.refresh_primary_projection()
     state = _build_legacy_dashboard_state(mode)
     expected_node_codes = set(settings.expected_production_nodes)
@@ -358,12 +404,14 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
         ai_runtime = {"status": "unknown", "provider": "unknown", "model": "unknown"}
     snapshot_nodes = _apply_rule_demo_mode(mode, [_snapshot_node(node) for node in nodes])
     snapshot_run = _snapshot_run(nodes)
+    data_source = "fixture" if mode != "normal" else _snapshot_data_source(nodes)
     active_run_id = str(snapshot_run.get("run_id") or "")
     current_notifications = _current_run_notifications(state.get("notifications", []), active_run_id)
     snapshot = {
         "schema_version": "2.2",
         "generated_at": utc_now().isoformat(),
-        "data_source": _snapshot_data_source(nodes),
+        "data_source": data_source,
+        "presentation_mode": mode,
         "run": snapshot_run,
         "system": {
             "status": "ok" if connected == len(expected_node_codes) and nodes else "degraded",
@@ -372,6 +420,25 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
             "logical_nodes_registered": len(state.get("nodes", [])),
             "ai_runtime": ai_runtime,
             "persistence": projection,
+            "environment": settings.environment_status(),
+            "data_provenance": {
+                "node_telemetry": {
+                    "source": data_source,
+                    "authority": "edge-heartbeat",
+                },
+                "machine_and_work_order_context": {
+                    "source": "mixed",
+                    "authority": "postgresql-shadow-and-demo-seed",
+                },
+                "market_and_inventory": {
+                    "source": "demo-seed",
+                    "authority": "central-memory-store",
+                },
+                "device_connection": {
+                    "source": "none",
+                    "write_enabled": settings.physical_write_enabled,
+                },
+            },
         },
         "nodes": snapshot_nodes,
         "work_orders": work_orders,
@@ -383,6 +450,17 @@ def _build_dashboard_snapshot(mode: str = "normal") -> dict:
         ],
         "notifications": current_notifications,
         "dispatch_plan": _snapshot_dispatch_plan(work_orders),
+        "commands": [command.model_dump(mode="json") for command in store.commands[-20:]],
+        "pending_commands": [
+            command.model_dump(mode="json")
+            for command in store.commands
+            if command.status in {"pending", "queued", "claimed", "applied"}
+        ],
+        "pending_approvals": [
+            command.model_dump(mode="json")
+            for command in store.commands
+            if command.status == "waiting_approval"
+        ],
         "audit": {
             "recent_events": [
                 event.model_dump(mode="json")

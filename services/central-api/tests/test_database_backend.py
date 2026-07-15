@@ -278,6 +278,48 @@ def test_command_and_audit_event_transaction_rolls_back_together(tmp_path, monke
     assert transactional_store._persistence_write_failures["command_event_transaction"]["count"] == 1
 
 
+def test_event_sequences_rebase_when_store_instances_overlap(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models import Severity
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "overlapping-event-writers.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    monkeypatch.setattr(settings, "demo_seed_enabled", False)
+    database.init_db()
+
+    first = MemoryStore()
+    stale_second = MemoryStore()
+    first_event = first.add_event("milling-workshop-01", "writer-one", Severity.info, "first")
+    second_event = stale_second.add_event(
+        "milling-workshop-01",
+        "writer-two",
+        Severity.info,
+        "second",
+    )
+
+    with database.get_db() as db:
+        rows = db.execute(
+            """SELECT local_sequence, global_sequence, event_type
+               FROM event_store
+               WHERE source_node = ? AND run_id = ?
+               ORDER BY local_sequence""",
+            ("milling-workshop-01", ""),
+        ).fetchall()
+
+    assert [dict(row)["local_sequence"] for row in rows] == [1, 2]
+    assert [dict(row)["global_sequence"] for row in rows] == [1, 2]
+    assert [dict(row)["event_type"] for row in rows] == ["writer-one", "writer-two"]
+    assert first_event.local_sequence == 1
+    assert second_event.local_sequence == 2
+    assert second_event.id == 2
+    assert stale_second._persistence_write_failures == {}
+
+
 def test_heartbeat_shadow_restores_runtime_cache(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.store import MemoryStore
 
@@ -517,6 +559,41 @@ def test_alert_ai_and_audit_shadows_survive_new_store_instance(tmp_path, monkeyp
     assert readiness["shadow"]["audit_events"] >= readiness["live"]["audit_logs"]
 
 
+def test_alert_state_write_updates_current_projection_after_stale_reference(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.models import Severity
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "central.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+
+    store = MemoryStore()
+    stale_alert = store.create_alert(
+        "milling-workshop-01",
+        "pytest_projection_race",
+        Severity.high,
+        "projection refresh race",
+        "human-required",
+    )
+    current_alert = stale_alert.model_copy(update={"status": "confirmed"})
+    store.alerts = [
+        current_alert if item.id == stale_alert.id else item
+        for item in store.alerts
+    ]
+
+    stale_alert.status = "diagnosed"
+    store.persist_alert_state(stale_alert)
+
+    assert next(item for item in store.alerts if item.id == stale_alert.id).status == "diagnosed"
+    with database.get_db() as db:
+        row = db.execute("SELECT status FROM alerts WHERE id=?", (stale_alert.id,)).fetchone()
+    assert dict(row)["status"] == "diagnosed"
+
+
 def test_planning_and_dispatch_shadows_survive_new_store_instance(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     from app.models import AllocationOrderIn
     from app.store import MemoryStore
@@ -747,6 +824,87 @@ def test_replay_api_rebuilds_run_timeline_from_persistence(tmp_path, monkeypatch
         "parts": [(item.part_id, item.status, item.updated_at) for item in store.part_queue],
         "alerts": [(item.id, item.status) for item in store.alerts],
     }
+
+
+def test_offline_node_records_are_durable_deduplicated_and_do_not_regress_live_projection(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.store import MemoryStore
+
+    db_path = tmp_path / "offline-sync.db"
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
+
+    node_code = "turning-workshop-01"
+    live = {
+        "node_code": node_code,
+        "timestamp": "2026-07-13T03:00:00+00:00",
+        "status": "running",
+        "runtime": {
+            "run_id": "RUN-OFFLINE-SYNC",
+            "scenario_id": "SCN-OFFLINE-SYNC",
+            "simulation_engine": "simpy",
+            "random_seed": 42,
+            "simulation_time": "2026-07-13T03:00:00+00:00",
+        },
+        "metrics": {"cpu_usage": 20, "memory_usage": 30, "disk_usage": 40},
+        "production": {
+            "machine_code": "LATHE-SYNC",
+            "workshop_type": "turning",
+            "finished_quantity": 20,
+            "target_rate": 1.0,
+            "actual_rate": 0.9,
+            "utilization": 0.75,
+        },
+    }
+    store = MemoryStore()
+    store.record_node_heartbeat_v2(live)
+    projection_before = json.dumps(store.node_heartbeats_v2[node_code], sort_keys=True, default=str)
+    records = [
+        {
+            "local_id": 2,
+            "created_at": "2026-07-13T02:00:00+00:00",
+            "payload": {
+                **live,
+                "timestamp": "2026-07-13T02:00:00+00:00",
+                "production": {**live["production"], "finished_quantity": 12},
+            },
+        },
+        {
+            "local_id": 1,
+            "created_at": "2026-07-13T01:00:00+00:00",
+            "payload": {
+                **live,
+                "timestamp": "2026-07-13T01:00:00+00:00",
+                "production": {**live["production"], "finished_quantity": 5},
+            },
+        },
+    ]
+
+    first = store.record_node_records(node_code, records)
+    duplicate = store.record_node_records(node_code, list(reversed(records)))
+    projection_after = json.dumps(store.node_heartbeats_v2[node_code], sort_keys=True, default=str)
+    restored = MemoryStore()
+
+    with database.get_db() as db:
+        receipt_count = int(db.execute("SELECT COUNT(*) AS count FROM node_record_receipts").fetchone()["count"])
+        heartbeat_count = int(db.execute("SELECT COUNT(*) AS count FROM heartbeat_shadow").fetchone()["count"])
+
+    assert first["records_accepted"] == 2
+    assert first["records_duplicate"] == 0
+    assert duplicate["records_accepted"] == 0
+    assert duplicate["records_duplicate"] == 2
+    assert receipt_count == 2
+    assert heartbeat_count == 3
+    assert projection_after == projection_before
+    assert restored.node_heartbeats_v2[node_code]["production"]["finished_quantity"] == 20
+
+    conflicting = [{**records[0], "payload": {**records[0]["payload"], "status": "fault"}}]
+    with pytest.raises(ValueError, match="identity conflict"):
+        store.record_node_records(node_code, conflicting)
 
 
 def test_replay_run_uses_full_bounds_and_latest_heartbeat_sample(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -3,7 +3,6 @@ from typing import Optional
 
 from fastapi import APIRouter, Query
 
-from ..models import AiDiagnosis, Alert, AuditLog, IncidentEvent, NodeCommand
 from ..store import store
 
 router = APIRouter(tags=["audit"])
@@ -37,6 +36,7 @@ def list_incident_events():
 @router.get("/audit-logs")
 def list_audit_logs():
     store.refresh_primary_projection()
+    store.load_audit_log_shadow(allow_disabled_persistence=True)
     return store.audit_logs
 
 

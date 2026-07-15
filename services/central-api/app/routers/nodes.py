@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -11,12 +12,26 @@ from ..core.security import (
     ActorInfo,
     require_permission,
 )
+from ..core.nats_publisher import nats_runtime
+from ..core.config import settings
+from ..core.outbox import outbox_repository
 from ..models import MetricIn
 from ..safety_governor import safety_governor
 from ..store import store
 
 router = APIRouter(tags=["nodes"])
 logger = logging.getLogger(__name__)
+
+
+def _require_operator_control() -> None:
+    if settings.control_mode == "read_only":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "control_mode_read_only",
+                "message": "The configured CONTROL_MODE does not permit control actions.",
+            },
+        )
 
 
 class NodeHeartbeatIn(BaseModel):
@@ -100,29 +115,56 @@ def ingest_metric(metric: MetricIn):
     return {"accepted": True, "generated_alerts": alerts}
 
 
-def ingest_agent_heartbeat(node_code: str, heartbeat: NodeHeartbeatV2In):
+async def ingest_agent_heartbeat(node_code: str, heartbeat: NodeHeartbeatV2In):
     if heartbeat.node_code != node_code:
         raise HTTPException(status_code=400, detail="node_code mismatch")
+    payload = heartbeat.model_dump(exclude_none=True)
+    runtime = dict(payload.get("runtime") or {})
     try:
-        result = store.record_node_heartbeat_v2(heartbeat.model_dump(exclude_none=True))
+        runtime["runtime_source"] = settings.validate_runtime_source(runtime)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "data_source_mismatch", "message": str(exc)},
+        ) from exc
+    payload["runtime"] = runtime
+    try:
+        result = await asyncio.to_thread(store.record_node_heartbeat_v2, payload)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return {"ok": True, **result}
+    shadow = await nats_runtime.publish_heartbeat(payload)
+    if settings.persist_enabled and settings.nats_enabled and shadow.message_id:
+        if shadow.status == "published":
+            await asyncio.to_thread(outbox_repository.mark_published, shadow.message_id)
+        elif shadow.status not in {"disabled"}:
+            await asyncio.to_thread(
+                outbox_repository.mark_failed,
+                shadow.message_id,
+                shadow.error_category or shadow.status,
+            )
+    return {
+        "ok": True,
+        **result,
+        "transport": {
+            "rest": "accepted",
+            "nats": shadow.model_dump(mode="json"),
+        },
+    }
 
 
 @router.post("/agents/{node_code}/heartbeat")
-def agent_heartbeat_v2(node_code: str, heartbeat: NodeHeartbeatV2In):
-    return ingest_agent_heartbeat(node_code, heartbeat)
+async def agent_heartbeat_v2(node_code: str, heartbeat: NodeHeartbeatV2In):
+    return await ingest_agent_heartbeat(node_code, heartbeat)
 
 
 @router.post("/node-heartbeats")
-def node_heartbeat_v2(heartbeat: NodeHeartbeatV2In, response: Response):
+async def node_heartbeat_v2(heartbeat: NodeHeartbeatV2In, response: Response):
     logger.warning("deprecated_api path=/node-heartbeats replacement=/agents/{node_code}/heartbeat node=%s", heartbeat.node_code)
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = f'</agents/{heartbeat.node_code}/heartbeat>; rel="successor-version"'
-    return ingest_agent_heartbeat(heartbeat.node_code, heartbeat)
+    return await ingest_agent_heartbeat(heartbeat.node_code, heartbeat)
 
 
 @router.get("/node-dispatches/{node_code}")
@@ -132,7 +174,12 @@ def node_dispatch(node_code: str):
 
 @router.post("/node-records/sync")
 def sync_node_records(payload: NodeRecordSyncIn):
-    return store.record_node_records(payload.node_code, [record.model_dump() for record in payload.records])
+    try:
+        return store.record_node_records(payload.node_code, [record.model_dump() for record in payload.records])
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.put("/api/nodes/{node_code}/heartbeat")
@@ -170,10 +217,24 @@ def claim_agent_pending_commands(node_code: str):
 @router.post("/api/agents/{node_code}/commands")
 @router.post("/agents/{node_code}/commands")
 def create_agent_command(node_code: str, payload: AgentCommandCreateIn):
+    _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     if payload.command_type != "set_target_rate":
         raise HTTPException(status_code=400, detail="only set_target_rate is supported in v2.2.8")
+    physical_limit = store.reported_physical_rate_limit_per_minute(node_code)
+    if physical_limit is not None and payload.target_rate > physical_limit + 1e-9:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "target_exceeds_physical_capacity",
+                "message": "target_rate exceeds the latest node-reported physical capacity",
+                "requested_rate": payload.target_rate,
+                "maximum_rate": round(physical_limit, 3),
+                "rate_unit": "parts_per_minute",
+                "node_code": node_code,
+            },
+        )
     command = store.add_command(
         node_code,
         "set_target_rate",
@@ -232,6 +293,7 @@ def isolate_node(
     payload: NodeSafetyActionIn,
     actor: ActorInfo = Depends(require_permission(PERM_NODE_ISOLATE)),
 ):
+    _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     decision = safety_governor.review_control_action(
@@ -255,6 +317,7 @@ def restore_node(
     payload: NodeSafetyActionIn,
     actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE)),
 ):
+    _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     decision = safety_governor.review_control_action(
@@ -278,6 +341,7 @@ def retire_node(
     payload: NodeSafetyActionIn,
     actor: ActorInfo = Depends(require_permission(PERM_NODE_RESTORE)),
 ):
+    _require_operator_control()
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     try:

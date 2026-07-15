@@ -133,3 +133,12 @@ For each v2.2 requirement, record: source contract, implementation location, con
 - Command creation had two event writers. Store/Command Manager is now the single event owner and transaction boundary.
 - Live browser truth after fixes: 3/3 nodes, 0 active faults, 0 warnings, 0 stale popups, current-run WIP only, DeepSeek API verified, formal replay read-only.
 - The accepted v2.5 architecture is local multi-process, PostgreSQL-primary and HTTP-connected. NATS, Redis, separate edge hosts and a registered Kali VM are not current implementation claims.
+
+## Engineering master prompt Phase 0/1 findings - 2026-07-13
+
+- The frontend previously derived OEE, yield, due time and completion from unrelated or browser-local values. Those fields now remain missing unless the backend reports them.
+- SimPy heartbeats previously labeled their runtime source as `node-agent`; they now carry explicit simulated provenance, and snapshots distinguish simulated/live/replay/fixture/mixed/fallback.
+- Phase 1 database scope is real, not API filtering: the `mini_ogas` application role is neither superuser nor `BYPASSRLS`, all 18 scoped tables force the same tenant/site policy, and a negative scope query returns no audit or Outbox rows.
+- Heartbeat persistence and its NATS intent now share one transaction. Other event, command and audit message contracts remain explicitly marked as not transactionally wired.
+- The current Windows secret files had inherited broad ACLs. Nine actual repository/runtime targets are now protected and checked; managed-vault rotation and per-node identity remain future production requirements.
+- The current module is still a modular monolith with `MemoryStore` authority and seven frozen router-to-router dependencies. Phase 1 prevents new coupling but does not falsely claim the target domain architecture is complete.

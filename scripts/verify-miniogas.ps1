@@ -16,13 +16,25 @@ function Invoke-Step {
 
 Push-Location $ProjectRoot
 try {
+  $centralPython = Get-ServicePython "central-api"
+  $aiDispatcherPython = Get-ServicePython "ai-dispatcher"
+  if (-not (Test-Path -LiteralPath $centralPython)) {
+    throw "central-api virtual environment is missing: $centralPython"
+  }
+  if (-not (Test-Path -LiteralPath $aiDispatcherPython)) {
+    throw "ai-dispatcher virtual environment is missing: $aiDispatcherPython"
+  }
   Invoke-Step "API contract check" { python .\scripts\check_api_contract.py }
+  Invoke-Step "generated OpenAPI and AsyncAPI contract check" { & $centralPython .\tools\export_contracts.py --check }
   Invoke-Step "dashboard gate check" { python .\scripts\check_dashboard_gate.py }
   Invoke-Step "secret scan" { python .\scripts\check_secrets.py }
   Invoke-Step "secret scan tests" { python .\scripts\test_check_secrets.py }
+  if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+    Invoke-Step "secret ACL check" { & .\scripts\protect-secrets.ps1 -CheckOnly }
+  }
   Invoke-Step "central-api tests" {
     Push-Location .\services\central-api
-    try { python -m pytest -q } finally { Pop-Location }
+    try { & $centralPython -m pytest -q } finally { Pop-Location }
   }
   Invoke-Step "Python simulator tests" {
     Push-Location .\services\node-agent
@@ -38,7 +50,7 @@ try {
   }
   Invoke-Step "AI dispatcher tests" {
     Push-Location .\services\ai-dispatcher
-    try { python -m pytest .\tests -q } finally { Pop-Location }
+    try { & $aiDispatcherPython -m pytest .\tests -q } finally { Pop-Location }
   }
   Invoke-Step "CLI and workflow tests" {
     python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py -q
@@ -47,15 +59,34 @@ try {
     Push-Location .\services\dashboard
     try { npm.cmd run test -- --run; npm.cmd run build } finally { Pop-Location }
   }
-  if (Get-Command ruff -ErrorAction SilentlyContinue) {
-    Invoke-Step "Python lint" { ruff check .\services .\scripts .\tools }
+  $ruffExe = Join-Path $ProjectRoot "services\central-api\.venv\Scripts\ruff.exe"
+  if (Test-Path -LiteralPath $ruffExe) {
+    Invoke-Step "Python correctness lint" { & $ruffExe check .\services .\scripts .\tools --select F }
   } else {
-    Write-Host "==> Python lint skipped: install ruff to enable the optional local lint gate"
+    Write-Host "==> Python correctness lint skipped: run scripts\setup-dev.ps1 to install Ruff"
   }
   if (-not $SkipRuntime) {
     $runtimeArgs = @("-File", (Join-Path $ProjectRoot "scripts\start-system.ps1"), "-CheckOnly")
     if ($RequireAiUnlocked) { $runtimeArgs += "-RequireAiApi" }
     Invoke-Step "strict runtime check" { & powershell.exe -NoProfile -ExecutionPolicy Bypass @runtimeArgs }
+    Invoke-Step "Phase 1 PostgreSQL scope, migration, audit and Outbox gate" {
+      & $centralPython .\scripts\check_phase1_database.py
+    }
+    Invoke-Step "Phase 3 durable production-execution gate" {
+      & $centralPython .\scripts\check_phase3_execution.py
+    }
+    Invoke-Step "Phase 4 material-flow, genealogy and reconciliation gate" {
+      & $centralPython .\scripts\check_phase4_material_flow.py
+    }
+    Invoke-Step "Phase 5 quality, hold, disposition and release gate" {
+      & $centralPython .\scripts\check_phase5_quality.py
+    }
+    Invoke-Step "Phase 6 maintenance, tooling, downtime and verification gate" {
+      & $centralPython .\scripts\check_phase6_maintenance.py
+    }
+    Invoke-Step "Phase 7 Historian, projection, object integrity and retention gate" {
+      & $centralPython .\scripts\check_phase7_data_platform.py
+    }
   }
 } finally {
   Pop-Location

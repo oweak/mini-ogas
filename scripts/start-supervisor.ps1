@@ -2,6 +2,15 @@ param(
   [string]$RuntimeRoot = "D:\MiniOGAS-VMs",
   [switch]$ReplaceRunning,
   [switch]$Foreground,
+  [switch]$DisableNats,
+  [ValidateSet("development", "test", "digital_twin", "staging", "pilot", "production")]
+  [string]$AppEnv = "digital_twin",
+  [ValidateSet("simulated", "replay", "shadow", "live")]
+  [string]$DataSource = "simulated",
+  [ValidateSet("read_only", "operator_assisted", "controlled_write")]
+  [string]$ControlMode = "operator_assisted",
+  [string]$TenantId = "tenant-local",
+  [string]$SiteId = "site-digital-twin",
   [ValidateSet("postgresql", "memory")]
   [string]$FactSource = "postgresql"
 )
@@ -17,8 +26,24 @@ $GoExe = "C:\Program Files\Go\bin\go.exe"
 $TokenPath = Join-Path $RuntimeRoot "miniogas-token.txt"
 $PostgresConfigPath = Join-Path $RuntimeRoot "postgres.env"
 $AuthConfigPath = Join-Path $RuntimeRoot "auth.env"
+$NatsConfigPath = Join-Path $ProjectRoot "config\nats-server.conf"
+$NatsRuntimeRoot = Join-Path $RuntimeRoot "nats"
+$NatsBinary = Join-Path $NatsRuntimeRoot "bin\nats-server.exe"
+$NatsStorePath = Join-Path $NatsRuntimeRoot "jetstream"
+$NatsEnvPath = Join-Path $NatsRuntimeRoot "nats.env"
+$DataPlatformRoot = Join-Path $RuntimeRoot "data-platform"
+$RedisRuntimeRoot = Join-Path $DataPlatformRoot "redis"
+$RedisDataPath = Join-Path $RedisRuntimeRoot "data"
+$RedisEnvPath = Join-Path $RedisRuntimeRoot "redis.env"
+$RedisConfigPath = Join-Path $RedisRuntimeRoot "memurai.conf"
+$RedisBinary = Join-Path $RuntimeRoot "memurai-portable\Memurai\memurai.exe"
+$RedisCli = Join-Path $RuntimeRoot "memurai-portable\Memurai\memurai-cli.exe"
+$MinioRuntimeRoot = Join-Path $DataPlatformRoot "minio"
+$MinioDataPath = Join-Path $MinioRuntimeRoot "data"
+$MinioEnvPath = Join-Path $MinioRuntimeRoot "minio.env"
+$CentralApiPython = Join-Path $ProjectRoot "services\central-api\.venv\Scripts\python.exe"
 $SessionPath = Join-Path $RuntimeRoot "miniogas-session-token.txt"
-$Ports = @(8080, 8081, 8082, 8083, 5173, 9099)
+$Ports = @(4222, 8222, 6379, 9000, 9001, 8080, 8081, 8082, 8083, 5173, 9099)
 
 function Get-ConfigValue {
   param([string]$Path, [string]$Name)
@@ -33,6 +58,13 @@ function Get-PortProcessIds {
   return @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
     Select-Object -ExpandProperty OwningProcess -Unique |
     Where-Object { $_ -and $_ -gt 0 })
+}
+
+function New-RandomHexToken {
+  $bytes = New-Object byte[] 32
+  $generator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $generator.GetBytes($bytes) } finally { $generator.Dispose() }
+  return ([System.BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
 }
 
 function Stop-ExistingSimulatorProcesses {
@@ -56,30 +88,119 @@ $jwtSecret = Get-ConfigValue $AuthConfigPath "JWT_SECRET"
 $bootstrapPassword = Get-ConfigValue $AuthConfigPath "AUTH_BOOTSTRAP_PASSWORD"
 if (-not $postgresDsn) { throw "POSTGRES_DSN is missing from $PostgresConfigPath" }
 if (-not $jwtSecret -or -not $bootstrapPassword) { throw "auth.env is incomplete: $AuthConfigPath" }
+if (-not (Test-Path -LiteralPath $NatsBinary)) { throw "NATS Server is missing: $NatsBinary" }
+if (-not (Test-Path -LiteralPath $NatsConfigPath)) { throw "NATS configuration is missing: $NatsConfigPath" }
+if (-not (Test-Path -LiteralPath $RedisBinary)) { throw "Memurai runtime is missing: $RedisBinary" }
+if (-not (Test-Path -LiteralPath $RedisCli)) { throw "Memurai CLI is missing: $RedisCli" }
+if (-not (Test-Path -LiteralPath $CentralApiPython)) {
+  throw "Central API virtual environment is missing: $CentralApiPython"
+}
+$MinioBinary = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Packages") -Recurse -Filter "minio.exe" -ErrorAction SilentlyContinue |
+  Where-Object { $_.FullName -match "MinIO\.Server" } |
+  Select-Object -First 1 -ExpandProperty FullName
+if (-not $MinioBinary -or -not (Test-Path -LiteralPath $MinioBinary)) {
+  throw "MinIO Server installed binary was not found under the WinGet package root."
+}
 
 $occupied = @($Ports | ForEach-Object { Get-PortProcessIds $_ } | Select-Object -Unique)
 if ($occupied.Count -gt 0 -and -not $ReplaceRunning) {
   throw "Mini-OGAS service ports are already occupied. Use start-system.ps1 for the running stack, or pass -ReplaceRunning to transfer ownership to the Go supervisor."
 }
 if ($ReplaceRunning) {
+  # Stop the old supervisor first so it cannot restart children while their
+  # occupied ports are being transferred to the new supervisor session.
+  foreach ($supervisorPid in @(Get-PortProcessIds 9099)) {
+    Stop-Process -Id $supervisorPid -Force -ErrorAction SilentlyContinue
+  }
+  $occupied = @($Ports | ForEach-Object { Get-PortProcessIds $_ } | Select-Object -Unique)
   foreach ($processId in $occupied) {
-    Stop-Process -Id $processId -Force -ErrorAction Stop
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
   }
   Stop-ExistingSimulatorProcesses
   Start-Sleep -Seconds 2
 }
 
-New-Item -ItemType Directory -Force -Path $RuntimeRoot, $RuntimeBin, $RuntimeLogRoot | Out-Null
+New-Item -ItemType Directory -Force -Path @(
+  $RuntimeRoot,
+  $RuntimeBin,
+  $RuntimeLogRoot,
+  $NatsRuntimeRoot,
+  $NatsStorePath,
+  $DataPlatformRoot,
+  $RedisRuntimeRoot,
+  $RedisDataPath,
+  $MinioRuntimeRoot,
+  $MinioDataPath
+) | Out-Null
+if (-not (Test-Path -LiteralPath $NatsEnvPath)) {
+  Set-Content -LiteralPath $NatsEnvPath -Value "NATS_AUTH_TOKEN=$(New-RandomHexToken)" -Encoding ASCII
+}
+$natsAuthToken = Get-ConfigValue $NatsEnvPath "NATS_AUTH_TOKEN"
+if (-not $natsAuthToken) { throw "NATS_AUTH_TOKEN is missing from $NatsEnvPath" }
+if (-not (Test-Path -LiteralPath $RedisEnvPath)) {
+  Set-Content -LiteralPath $RedisEnvPath -Value "REDIS_PASSWORD=$(New-RandomHexToken)" -Encoding ASCII
+}
+$redisPassword = Get-ConfigValue $RedisEnvPath "REDIS_PASSWORD"
+if (-not $redisPassword) { throw "REDIS_PASSWORD is missing from $RedisEnvPath" }
+@(
+  "bind 127.0.0.1",
+  "port 6379",
+  "protected-mode yes",
+  "requirepass $redisPassword",
+  "dir $($RedisDataPath.Replace('\', '/'))",
+  "appendonly yes",
+  "appendfsync everysec",
+  "save 900 1",
+  "loglevel notice"
+) | Set-Content -LiteralPath $RedisConfigPath -Encoding ASCII
+if (-not (Test-Path -LiteralPath $MinioEnvPath)) {
+  @(
+    "MINIO_ROOT_USER=miniogas-admin",
+    "MINIO_ROOT_PASSWORD=$(New-RandomHexToken)"
+  ) | Set-Content -LiteralPath $MinioEnvPath -Encoding ASCII
+}
+$minioRootUser = Get-ConfigValue $MinioEnvPath "MINIO_ROOT_USER"
+$minioRootPassword = Get-ConfigValue $MinioEnvPath "MINIO_ROOT_PASSWORD"
+if (-not $minioRootUser -or -not $minioRootPassword) {
+  throw "MinIO credentials are incomplete: $MinioEnvPath"
+}
 $env:OGAS_SESSION_TOKEN = [guid]::NewGuid().ToString()
+$env:APP_ENV = $AppEnv
+$env:DATA_SOURCE = $DataSource
+$env:CONTROL_MODE = $ControlMode
+$env:DEMO_SEED_ENABLED = if (
+  $AppEnv -in @("development", "test", "digital_twin") -and $DataSource -eq "simulated"
+) { "true" } else { "false" }
+$env:INDUSTRIAL_CONNECTOR_ENABLED = "false"
+$env:PHYSICAL_WRITE_ENABLED = "false"
+$env:TENANT_ID = $TenantId
+$env:SITE_ID = $SiteId
 $env:OGAS_API_TOKEN = $token
 $env:API_ACCESS_TOKEN = $token
 $env:NODE_INGEST_TOKEN = $token
 $env:POSTGRES_DSN = $postgresDsn
 $env:JWT_SECRET = $jwtSecret
 $env:AUTH_BOOTSTRAP_PASSWORD = $bootstrapPassword
+$env:NATS_SERVER_BIN = $NatsBinary
+$env:NATS_CONFIG_PATH = $NatsConfigPath
+$env:NATS_STORE_DIR = $NatsStorePath.Replace("\", "/")
+$env:NATS_AUTH_TOKEN = $natsAuthToken
+$env:NATS_ENABLED = if ($DisableNats) { "false" } else { "true" }
+$env:REDIS_SERVER_BIN = $RedisBinary
+$env:REDIS_CONFIG_PATH = $RedisConfigPath
+$env:REDIS_URL = "redis://:$redisPassword@127.0.0.1:6379/0"
+$env:MINIO_SERVER_BIN = $MinioBinary
+$env:MINIO_DATA_DIR = $MinioDataPath
+$env:MINIO_ROOT_USER = $minioRootUser
+$env:MINIO_ROOT_PASSWORD = $minioRootPassword
+$env:CENTRAL_API_PYTHON = $CentralApiPython
 $env:CENTRAL_FACT_SOURCE = $FactSource
 $env:OGAS_RUN_ID = "RUN-LOCAL-$(Get-Date -Format yyyyMMdd-HHmmss)"
+$env:OGAS_SIMULATION_START_TIME = (Get-Date).ToUniversalTime().ToString("o")
 Set-Content -LiteralPath $SessionPath -Value $env:OGAS_SESSION_TOKEN -Encoding ASCII
+$protectSecrets = Join-Path $PSScriptRoot "protect-secrets.ps1"
+& $protectSecrets -RuntimeRoot $RuntimeRoot
+if (-not $?) { throw "Secret ACL provisioning failed." }
 
 if (-not (Test-Path -LiteralPath $GoExe)) { throw "Go toolchain was not found: $GoExe" }
 $env:GOMODCACHE = Join-Path $ProjectRoot ".runtime\go\modcache"
@@ -129,6 +250,20 @@ while ((Get-Date) -lt $deadline) {
 if ((Get-Date) -ge $deadline) {
   throw "Go supervisor readiness timed out: $($lastStates -join ', ')"
 }
+$previousRedisCliAuth = $env:REDISCLI_AUTH
+$env:REDISCLI_AUTH = $redisPassword
+try {
+  $redisPing = (& $RedisCli -h 127.0.0.1 -p 6379 ping 2>$null | Select-Object -Last 1).Trim()
+} finally {
+  $env:REDISCLI_AUTH = $previousRedisCliAuth
+}
+if ($redisPing -ne "PONG") {
+  throw "Redis authenticated PING failed after supervisor readiness."
+}
+$minioHealth = Invoke-WebRequest -Uri "http://127.0.0.1:9000/minio/health/live" -UseBasicParsing -TimeoutSec 5
+if ($minioHealth.StatusCode -ne 200) {
+  throw "MinIO liveness endpoint returned HTTP $($minioHealth.StatusCode)."
+}
 [pscustomobject]@{
   supervisor_pid = $process.Id
   management_url = "http://127.0.0.1:9099/supervisor/status"
@@ -136,4 +271,6 @@ if ((Get-Date) -ge $deadline) {
   log = $stdout
   ownership = "go-supervisor"
   healthy_processes = $expectedProcessCount
+  redis_authenticated = $true
+  minio_live = $true
 } | ConvertTo-Json

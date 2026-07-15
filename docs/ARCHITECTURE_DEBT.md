@@ -12,7 +12,9 @@ Scope: v2.2 trusted loop and v2.5 architecture-debt cleanup. This register separ
 | `mitigated` | The v2.5 boundary is safe, but a named v3.0 extension remains. |
 | `open` | Acceptance evidence is missing or a supported path is unsafe. |
 
-No P0/P1 debt remains open for the v2.5 acceptance scope. Deferred multi-host work does not count as locally implemented.
+The stricter long-cycle audit reopened P0/P1 debt that the earlier local-runtime
+acceptance did not test. Deferred multi-host work does not count as locally
+implemented.
 
 ## Debt Matrix
 
@@ -20,11 +22,11 @@ No P0/P1 debt remains open for the v2.5 acceptance scope. Deferred multi-host wo
 | --- | --- | --- | --- | --- |
 | DEBT-001 Dashboard legacy aggregation | P1 | `resolved` | `services/dashboard/src/runtimeState.ts`, `app/routers/demo.py` | Dashboard reads `/api/dashboard/snapshot`; `/api/dashboard-state` wrapper parity test passes. |
 | DEBT-002 Heartbeat schema drift | P1 | `resolved` | `app/routers/nodes.py`, `services/node-agent/simulator.py` | Three live nodes report schema/run/scenario/simulation fields; canonical and legacy route tests pass. |
-| DEBT-003 Simulation truth vs display truth | P0 | `resolved` | snapshot projection, Dashboard runtime presentation | Live browser shows `data_source=live`, SimPy, one shared scenario/run and 3/3 nodes; fallback is visibly labelled. |
+| DEBT-003 Simulation truth vs display truth | P0 | `resolved` for v2.5 | node simulator, snapshot projection | Physical 3x135/2x144/2x111 second profiles, live 80/50/64.9 capacities, raw/controlled output divergence, PostgreSQL projection and UI parity pass. |
 | DEBT-004 Alert lifecycle side effects | P1 | `resolved` | alert workflow, Store, compatibility routes | Fault workflow proves open -> confirm -> diagnose -> approve -> close -> archive -> notification acknowledgement. |
 | DEBT-005 AI orchestration coupling | P1 | `mitigated` | AI registry, AI dispatcher, control/ops routers | Provider/model/source provenance tests pass; real login smoke reports DeepSeek API. Multi-agent model plane remains v3.0 work. |
-| DEBT-006 Command queue lifecycle | P1 | `resolved` | `app/command_manager.py`, node command loop | Timeout/retry/supersede/cancel/idempotency/concurrent claim/result/heartbeat verification tests pass. |
-| DEBT-007 WIP/part flow too shallow | P1 | `resolved` | `part_queue_shadow`, Store part queue, Dashboard WIP view | Turning -> milling -> grinding transfer and claim/complete tests pass; live current-run WIP is visible. |
+| DEBT-006 Command queue lifecycle | P0 | `resolved` for v2.5 | command manager, verifier, node loop | Commands 54/55 prove pending -> claimed -> applied -> verified, physical throttle/restore and latest-result rule retirement; durable outbox tests pass. |
+| DEBT-007 WIP/part flow too shallow | P1 | `resolved` for v2.5 | `part_queue_shadow`, Store flow projection, Dashboard WIP view | Identity, monotonic sequence, current-run filtering, live PostgreSQL queue and SimPy-delta flow pass. Multi-host part transport remains v3. |
 | DEBT-008 Memory as primary fact source | P1 | `resolved` for v2.5 | `app/persistence_repository.py`, database projection | PostgreSQL primary mode, restart recovery, degraded status, schema migration, replay drill and transaction rollback tests pass. Memory is a cache/projection. |
 | DEBT-009 VirtualBox and production status confusion | P2 | `resolved` for production, `mitigated` for lab | startup workflow, runtime presentation, Kali tooling | Production count depends only on heartbeats. VirtualBox is optional Kali lab evidence and never production availability. |
 | DEBT-010 Attack-lab safety boundary | P1 | `mitigated` | `scripts/kali_redteam_workflow.py`, Safety Governor | Private-target guard, explicit lab acknowledgement, isolated attack run, evidence output and approval gate tests pass. Kali VM registration is v3.0 deployment work. |
@@ -33,6 +35,11 @@ No P0/P1 debt remains open for the v2.5 acceptance scope. Deferred multi-host wo
 | DEBT-013 Run identity leakage across facts | P0 | `resolved` | models, Store, repository, snapshot | Alerts, events, commands, diagnoses and part queue carry `run_id`; current projection excludes historical open rows; mixed scenario/seed is rejected. |
 | DEBT-014 Frontend audit contract mismatch | P1 | `resolved` | `runtimeState.ts`, `App.vue` | Paginated `{events: []}` response is normalized to archive rows; UI no longer renders `undefined`; tests cover malformed payloads. |
 | DEBT-015 Central Store size/coupling | P2 | `mitigated` | Store, `persistence_repository.py`, preflight, command/safety modules | Key SQL writes and transitions have dedicated modules and transaction tests. Full bounded-context split is intentionally deferred to v3.0. |
+| DEBT-016 Stable event envelope absent | P0 | `mitigated` | models, persistence, publisher | Full envelope, unique ordered persistence, restart restoration and replay tests pass; final resolution waits for distributed transport proof. |
+| DEBT-017 Required rule coverage incomplete | P1 | `mitigated` | `app/rules.py` | Required deterministic conclusions and calculation summaries pass focused/full tests; final resolution waits for live scenario/UI evidence. |
+| DEBT-018 Distributed transport/current cache absent | P2 | `open` | EventPublisher, future NATS/Redis adapters | Add NATS only after event contract stabilizes; add Redis only as rebuildable current projection. |
+| DEBT-019 AI explanation request amplification | P1 | `resolved` | Dashboard refresh gate, central AI cache | Semantic signatures ignore per-second evidence values, requests are single-flight, failures back off, server cache deduplicates and manual refresh bypasses; browser observed one AI request in 12 seconds. |
+| DEBT-020 Diagnostic command leaked secret prefixes | P1 | `resolved` | `tools/mogas/commands/doctor.py` | Sensitive values now render only `SET (redacted)`; regression test and Ruff correctness gate pass. |
 
 ## Detailed Exit State
 
@@ -83,12 +90,13 @@ The following are roadmap items, not hidden v2.5 claims:
 
 On 2026-07-13:
 
-- central-api: 133 tests passed.
-- Python node simulator: 26 tests passed.
-- Dashboard: 63 tests passed and production build passed.
+- central-api: 162 tests passed.
+- Python node simulator: 35 tests passed.
+- Dashboard: 69 tests passed and production build passed.
 - AI dispatcher: 4 tests passed.
-- CLI/workflow: 30 tests and 9 subtests passed.
+- CLI/workflow: 31 tests and 9 subtests passed, including doctor redaction.
 - Go node-agent and Go supervisor tests passed.
 - Strict runtime check: 8/8 supervised processes, 3/3 production nodes, PostgreSQL primary facts, live DeepSeek API.
 - Real workflow: heartbeat fault through archive and notification acknowledgement passed.
-- Browser: current alerts 0, stale popups 0, live WIP current-run only, replay read-only, desktop/mobile layouts without horizontal overflow.
+- Browser: current alerts 0, stale popups 0, live WIP current-run only, replay read-only, desktop/mobile layouts without horizontal overflow, and AI polling deduplicated.
+- Ruff correctness lint (`F`) passes across repository-owned Python source.

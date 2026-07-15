@@ -1,0 +1,903 @@
+{
+  "$defs": {
+    "AlarmData": {
+      "additionalProperties": false,
+      "properties": {
+        "severity": {
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "open",
+            "acknowledged",
+            "resolved"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "threshold": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Threshold"
+        },
+        "type": {
+          "pattern": "^[A-Z][A-Z0-9_]{0,63}$",
+          "title": "Type",
+          "type": "string"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "maxLength": 32,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "type",
+        "severity",
+        "status"
+      ],
+      "title": "AlarmData",
+      "type": "object"
+    },
+    "AuditData": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "actor": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Actor",
+          "type": "string"
+        },
+        "detail": {
+          "default": "",
+          "maxLength": 4096,
+          "title": "Detail",
+          "type": "string"
+        },
+        "resource_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Resource Id",
+          "type": "string"
+        },
+        "resource_type": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Resource Type",
+          "type": "string"
+        },
+        "result": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Result",
+          "type": "string"
+        }
+      },
+      "required": [
+        "actor",
+        "action",
+        "resource_type",
+        "resource_id",
+        "result"
+      ],
+      "title": "AuditData",
+      "type": "object"
+    },
+    "CommandData": {
+      "additionalProperties": false,
+      "properties": {
+        "command_id": {
+          "minimum": 1,
+          "title": "Command Id",
+          "type": "integer"
+        },
+        "command_type": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "title": "Command Type",
+          "type": "string"
+        },
+        "confirmation_required": {
+          "default": false,
+          "title": "Confirmation Required",
+          "type": "boolean"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "operator": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Operator",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Parameters",
+          "type": "object"
+        },
+        "reason": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Reason",
+          "type": "string"
+        },
+        "risk_level": {
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Risk Level",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "approved",
+            "dispatched",
+            "received",
+            "applied",
+            "verified",
+            "rejected",
+            "expired",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "command_id",
+        "version",
+        "command_type",
+        "risk_level",
+        "status",
+        "operator",
+        "parameters",
+        "expires_at"
+      ],
+      "title": "CommandData",
+      "type": "object"
+    },
+    "EventData": {
+      "additionalProperties": false,
+      "properties": {
+        "event_type": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Event Type",
+          "type": "string"
+        },
+        "local_sequence": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Local Sequence",
+          "type": "integer"
+        },
+        "message": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "title": "Message",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Payload",
+          "type": "object"
+        },
+        "scenario_id": {
+          "default": "",
+          "maxLength": 128,
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "severity": {
+          "enum": [
+            "info",
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "title": "Severity",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_type",
+        "severity",
+        "message",
+        "payload"
+      ],
+      "title": "EventData",
+      "type": "object"
+    },
+    "HeartbeatData": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_version": {
+          "maxLength": 32,
+          "minLength": 1,
+          "title": "Agent Version",
+          "type": "string"
+        },
+        "alarms": {
+          "items": {
+            "$ref": "#/$defs/AlarmData"
+          },
+          "maxItems": 64,
+          "title": "Alarms",
+          "type": "array"
+        },
+        "metrics": {
+          "$ref": "#/$defs/MetricsData"
+        },
+        "node_code": {
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+          "title": "Node Code",
+          "type": "string"
+        },
+        "production": {
+          "$ref": "#/$defs/ProductionData"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeData"
+        },
+        "status": {
+          "enum": [
+            "running",
+            "warning",
+            "fault",
+            "degraded",
+            "isolated",
+            "shutting_down"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "sync": {
+          "$ref": "#/$defs/SyncData"
+        },
+        "timestamp": {
+          "format": "date-time",
+          "title": "Timestamp",
+          "type": "string"
+        },
+        "uptime_sec": {
+          "minimum": 0,
+          "title": "Uptime Sec",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "node_code",
+        "status",
+        "timestamp",
+        "agent_version",
+        "uptime_sec",
+        "metrics",
+        "production",
+        "alarms",
+        "sync",
+        "runtime"
+      ],
+      "title": "HeartbeatData",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "MetricsData": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu_usage": {
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Cpu Usage",
+          "type": "number"
+        },
+        "db_latency_ms": {
+          "minimum": 0,
+          "title": "Db Latency Ms",
+          "type": "integer"
+        },
+        "disk_usage": {
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Disk Usage",
+          "type": "number"
+        },
+        "memory_usage": {
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Memory Usage",
+          "type": "number"
+        },
+        "network_latency_ms": {
+          "minimum": 0,
+          "title": "Network Latency Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "cpu_usage",
+        "memory_usage",
+        "disk_usage",
+        "db_latency_ms",
+        "network_latency_ms"
+      ],
+      "title": "MetricsData",
+      "type": "object"
+    },
+    "ProductionData": {
+      "additionalProperties": false,
+      "properties": {
+        "active_order": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Order"
+        },
+        "active_part_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Active Part Id"
+        },
+        "actual_rate": {
+          "minimum": 0.0,
+          "title": "Actual Rate",
+          "type": "number"
+        },
+        "actual_rate_per_hour": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Actual Rate Per Hour"
+        },
+        "defect_quantity": {
+          "minimum": 0,
+          "title": "Defect Quantity",
+          "type": "integer"
+        },
+        "defect_rate": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Defect Rate",
+          "type": "number"
+        },
+        "dispatch_policy": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dispatch Policy"
+        },
+        "finished_quantity": {
+          "minimum": 0,
+          "title": "Finished Quantity",
+          "type": "integer"
+        },
+        "machine_code": {
+          "maxLength": 64,
+          "minLength": 1,
+          "title": "Machine Code",
+          "type": "string"
+        },
+        "machine_count": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Machine Count"
+        },
+        "nominal_capacity_per_hour": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Nominal Capacity Per Hour"
+        },
+        "process_time_sec": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Process Time Sec"
+        },
+        "rate_unit": {
+          "enum": [
+            "parts_per_minute",
+            "parts_per_hour"
+          ],
+          "title": "Rate Unit",
+          "type": "string"
+        },
+        "raw_finished_quantity": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Finished Quantity"
+        },
+        "spindle_temp": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spindle Temp"
+        },
+        "target_rate": {
+          "minimum": 0.0,
+          "title": "Target Rate",
+          "type": "number"
+        },
+        "target_rate_per_hour": {
+          "anyOf": [
+            {
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Rate Per Hour"
+        },
+        "tool_wear_level": {
+          "anyOf": [
+            {
+              "maximum": 100.0,
+              "minimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Wear Level"
+        },
+        "utilization": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Utilization",
+          "type": "number"
+        },
+        "wip_input": {
+          "minimum": 0,
+          "title": "Wip Input",
+          "type": "integer"
+        },
+        "wip_output": {
+          "minimum": 0,
+          "title": "Wip Output",
+          "type": "integer"
+        },
+        "workshop_type": {
+          "enum": [
+            "turning",
+            "milling",
+            "grinding"
+          ],
+          "title": "Workshop Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workshop_type",
+        "machine_code",
+        "finished_quantity",
+        "defect_quantity",
+        "target_rate",
+        "actual_rate",
+        "rate_unit",
+        "utilization",
+        "defect_rate",
+        "wip_input",
+        "wip_output"
+      ],
+      "title": "ProductionData",
+      "type": "object"
+    },
+    "RuntimeData": {
+      "additionalProperties": false,
+      "properties": {
+        "clock_offset_ms": {
+          "title": "Clock Offset Ms",
+          "type": "number"
+        },
+        "clock_source": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Clock Source"
+        },
+        "clock_synchronized": {
+          "title": "Clock Synchronized",
+          "type": "boolean"
+        },
+        "deployment_mode": {
+          "enum": [
+            "process",
+            "vm",
+            "physical"
+          ],
+          "title": "Deployment Mode",
+          "type": "string"
+        },
+        "heartbeat_sec": {
+          "anyOf": [
+            {
+              "maximum": 60,
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Heartbeat Sec"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "part_flow_mode": {
+          "anyOf": [
+            {
+              "maxLength": 64,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Part Flow Mode"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pid"
+        },
+        "random_seed": {
+          "minimum": 0,
+          "title": "Random Seed",
+          "type": "integer"
+        },
+        "run_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime_source": {
+          "enum": [
+            "live",
+            "simulated",
+            "replay",
+            "fixture",
+            "fallback"
+          ],
+          "title": "Runtime Source",
+          "type": "string"
+        },
+        "scenario_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Scenario Id",
+          "type": "string"
+        },
+        "simulation_engine": {
+          "enum": [
+            "simple",
+            "simpy",
+            "physical"
+          ],
+          "title": "Simulation Engine",
+          "type": "string"
+        },
+        "simulation_mode": {
+          "maxLength": 64,
+          "title": "Simulation Mode",
+          "type": "string"
+        },
+        "simulation_speed": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Simulation Speed"
+        },
+        "simulation_started_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Simulation Started At"
+        },
+        "simulation_time": {
+          "format": "date-time",
+          "title": "Simulation Time",
+          "type": "string"
+        },
+        "wall_clock_time": {
+          "format": "date-time",
+          "title": "Wall Clock Time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "scenario_id",
+        "simulation_engine",
+        "simulation_mode",
+        "random_seed",
+        "simulation_time",
+        "wall_clock_time",
+        "deployment_mode",
+        "runtime_source",
+        "clock_offset_ms",
+        "clock_synchronized"
+      ],
+      "title": "RuntimeData",
+      "type": "object"
+    },
+    "SyncData": {
+      "additionalProperties": false,
+      "properties": {
+        "last_sync_id": {
+          "minimum": 0,
+          "title": "Last Sync Id",
+          "type": "integer"
+        },
+        "pending_records": {
+          "minimum": 0,
+          "title": "Pending Records",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "last_sync_id",
+        "pending_records"
+      ],
+      "title": "SyncData",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "correlation_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "data": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HeartbeatData"
+        },
+        {
+          "$ref": "#/$defs/EventData"
+        },
+        {
+          "$ref": "#/$defs/CommandData"
+        },
+        {
+          "$ref": "#/$defs/AuditData"
+        }
+      ],
+      "title": "Data"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "message_type": {
+      "enum": [
+        "event",
+        "heartbeat",
+        "command",
+        "audit"
+      ],
+      "title": "Message Type",
+      "type": "string"
+    },
+    "node_code": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Node Code",
+      "type": "string"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    },
+    "published_at": {
+      "format": "date-time",
+      "title": "Published At",
+      "type": "string"
+    },
+    "run_id": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "3.0",
+      "default": "3.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "sequence": {
+      "minimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "source": {
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
+      "title": "Source",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "message_type",
+    "source",
+    "node_code",
+    "occurred_at",
+    "published_at",
+    "correlation_id",
+    "run_id",
+    "sequence",
+    "data"
+  ],
+  "title": "TransportEnvelope",
+  "type": "object"
+}

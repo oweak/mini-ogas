@@ -53,19 +53,59 @@ func TestProjectSupervisorConfigParses(t *testing.T) {
 	t.Setenv("JWT_SECRET", "test-jwt-secret")
 	t.Setenv("AUTH_BOOTSTRAP_PASSWORD", "test-password")
 	t.Setenv("OGAS_RUN_ID", "RUN-TEST-001")
+	t.Setenv("NATS_SERVER_BIN", "nats-server")
+	t.Setenv("NATS_CONFIG_PATH", "nats-server.conf")
+	t.Setenv("NATS_AUTH_TOKEN", "test-nats-token")
+	t.Setenv("NATS_STORE_DIR", "test-nats-store")
+	t.Setenv("NATS_ENABLED", "true")
+	t.Setenv("REDIS_SERVER_BIN", "memurai")
+	t.Setenv("REDIS_CONFIG_PATH", "memurai.conf")
+	t.Setenv("REDIS_URL", "redis://:test@127.0.0.1:6379/0")
+	t.Setenv("MINIO_SERVER_BIN", "minio")
+	t.Setenv("MINIO_DATA_DIR", "test-minio-data")
+	t.Setenv("MINIO_ROOT_USER", "test-minio-user")
+	t.Setenv("MINIO_ROOT_PASSWORD", "test-minio-password")
+	t.Setenv("CENTRAL_API_PYTHON", "python")
 
 	path := filepath.Join("..", "..", "..", "..", "config", "supervisor.toml")
 	cfg, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load(project config) error = %v", err)
 	}
-	if len(cfg.Processes) != 8 {
-		t.Fatalf("process count = %d, want 8", len(cfg.Processes))
+	if len(cfg.Processes) != 11 {
+		t.Fatalf("process count = %d, want 11", len(cfg.Processes))
 	}
+	foundSessionAgnostic := false
+	foundNATSEnabled := false
+	foundDataPlatform := false
+	foundMinIOProbe := false
 	for _, process := range cfg.Processes {
-		if process.Health.Type == "http" && process.Health.Endpoint == "" {
+		if (process.Health.Type == "http" || process.Health.Type == "http-status") && process.Health.Endpoint == "" {
 			t.Fatalf("HTTP process %q has no endpoint", process.Name)
 		}
+		if process.Name == "nats-server" {
+			foundSessionAgnostic = process.Health.SessionAgnostic
+		}
+		if process.Name == "central-api" {
+			foundNATSEnabled = process.Env["NATS_ENABLED"] == "true"
+			foundDataPlatform = process.Env["REDIS_ENABLED"] == "true" &&
+				process.Env["OBJECT_STORAGE_ENABLED"] == "true"
+		}
+		if process.Name == "minio-object-store" {
+			foundMinIOProbe = process.Health.Type == "http-status"
+		}
+	}
+	if !foundSessionAgnostic {
+		t.Fatal("nats-server health must be session agnostic")
+	}
+	if !foundNATSEnabled {
+		t.Fatal("central-api must receive the configured NATS_ENABLED value")
+	}
+	if !foundDataPlatform {
+		t.Fatal("central-api must receive enabled Redis and object-storage settings")
+	}
+	if !foundMinIOProbe {
+		t.Fatal("MinIO must use the third-party HTTP status health probe")
 	}
 }
 

@@ -19,10 +19,11 @@ machining factory with turning, milling, and grinding workshops.
 - Central host: one Windows workstation running the Go supervisor.
 - Central facts: PostgreSQL primary database.
 - Workshop nodes: three supervised SimPy processes (`turning`, `milling`, `grinding`).
-- Transport: authenticated HTTP heartbeat, command polling and REST management.
+- Authoritative transport: authenticated HTTP heartbeat, command polling and REST management.
+- Shadow transport: local NATS Server + JetStream with schema-valid v3 envelopes and a PostgreSQL receipt worker.
 - Optional attack lab: prepared Kali disk/tooling, not a production availability dependency.
 
-Separate edge hosts, NATS transport and a registered Kali lab belong to the v3.0 roadmap and are not current runtime claims.
+Separate edge hosts, Redis projection and a registered Kali lab remain later v3.0 work and are not current runtime claims. NATS is currently a loopback-only v3.0.1 shadow path; it is not yet the authoritative edge transport.
 
 ## Architecture
 
@@ -34,6 +35,8 @@ central-control
 |-- market-simulator
 |-- production-planner
 |-- postgres (primary facts)
+|-- nats-server + JetStream (shadow messages)
+|-- nats-event-worker (idempotent PostgreSQL receipts)
 `-- go-supervisor
 
 workshop-node
@@ -84,15 +87,20 @@ mini-ogas/
 - AI dispatcher: Python FastAPI with provider-chain fallback.
 - Central database: PostgreSQL.
 - Node/local test database: SQLite.
-- Current event transport: HTTP via `EventPublisher` / `HTTPPublisher`.
-- Future transport option: NATS behind the publisher interface; not deployed.
+- Authoritative event transport: existing HTTP/REST path.
+- Shadow event transport: `NATSPublisher` using strict schema `3.0` envelopes, JetStream file persistence, explicit ACKs and deterministic message IDs.
+- NATS failure policy: `/health.status` remains `ok` for liveness while `/health.overall_status` and `/health.nats.status` report `degraded`; REST remains authoritative.
 
 ## Current Verification
 
 The current implementation is a Python FastAPI `central-api`, Vue 3 dashboard,
 Python `node-agent`, SimPy process-mode workshop nodes, and optional isolated
-Kali/VirtualBox red-team lab support. Start the local system through the v2.5
-supervisor entrypoint:
+Kali/VirtualBox red-team lab support. Install the pinned NATS Server runtime once,
+then start the local system through the supervisor entrypoint:
+
+```powershell
+.\scripts\install-nats.ps1
+```
 
 ```powershell
 .\scripts\start-miniogas.ps1
@@ -104,6 +112,17 @@ supervisor to take ownership, run:
 ```powershell
 .\scripts\start-miniogas.ps1 -ReplaceRunning
 ```
+
+To roll back only the NATS shadow publisher/worker while preserving the REST
+fact path, start the supervisor with:
+
+```powershell
+.\scripts\start-miniogas.ps1 -ReplaceRunning -DisableNats
+```
+
+The NATS process may remain available in this rollback mode, but Central does
+not publish or consume shadow messages. The authoritative HTTP/PostgreSQL path
+is unchanged.
 
 The legacy lightweight launcher remains available with:
 
@@ -120,7 +139,9 @@ Use the verification script below as the current truth check:
 This runs API contract checks, central API tests, node-agent tests, dashboard
 tests, dashboard build, and a runtime check that verifies protected API access,
 live SimPy heartbeats, PostgreSQL persistence, AI runtime state, and dispatch
-alignment. Optional Kali/VirtualBox state is not used as production-node proof.
+alignment. It also runs Ruff correctness rules when the project development
+environment is installed. Optional Kali/VirtualBox state is not used as
+production-node proof.
 
 AI model calls are only proven when the runtime check is run with:
 

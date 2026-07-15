@@ -8,6 +8,14 @@ param(
   [switch]$CheckOnly,
   [switch]$RequireAiApi,
   [switch]$StartKali,
+  [ValidateSet("development", "test", "digital_twin", "staging", "pilot", "production")]
+  [string]$AppEnv = "digital_twin",
+  [ValidateSet("simulated", "replay", "shadow", "live")]
+  [string]$DataSource = "simulated",
+  [ValidateSet("read_only", "operator_assisted", "controlled_write")]
+  [string]$ControlMode = "operator_assisted",
+  [string]$TenantId = "tenant-local",
+  [string]$SiteId = "site-digital-twin",
   [ValidateSet("postgresql", "memory")]
   [string]$FactSource = "postgresql"
 )
@@ -20,6 +28,9 @@ if (-not $TokenPath) { $TokenPath = Join-Path $RuntimeRoot "miniogas-token.txt" 
 $PostgresConfigPath = Join-Path $RuntimeRoot "postgres.env"
 $SessionTokenPath = Join-Path $RuntimeRoot "miniogas-session-token.txt"
 $AuthConfigPath = Join-Path $RuntimeRoot "auth.env"
+$RedisEnvPath = Join-Path $RuntimeRoot "data-platform\redis\redis.env"
+$RedisCliPath = Join-Path $RuntimeRoot "memurai-portable\Memurai\memurai-cli.exe"
+$MinioHealthUrl = "http://127.0.0.1:9000/minio/health/live"
 $RuntimeLogRoot = Join-Path $ProjectRoot ".runtime\logs"
 New-Item -ItemType Directory -Force -Path $RuntimeLogRoot | Out-Null
 
@@ -80,6 +91,16 @@ if ($CheckOnly -and (Test-Path -LiteralPath $SessionTokenPath)) {
 }
 $env:OGAS_SESSION_TOKEN = $LaunchSessionToken
 $env:CENTRAL_FACT_SOURCE = $FactSource
+$env:APP_ENV = $AppEnv
+$env:DATA_SOURCE = $DataSource
+$env:CONTROL_MODE = $ControlMode
+$env:DEMO_SEED_ENABLED = if (
+  $AppEnv -in @("development", "test", "digital_twin") -and $DataSource -eq "simulated"
+) { "true" } else { "false" }
+$env:INDUSTRIAL_CONNECTOR_ENABLED = "false"
+$env:PHYSICAL_WRITE_ENABLED = "false"
+$env:TENANT_ID = $TenantId
+$env:SITE_ID = $SiteId
 
 function Test-PortListening {
   param([int]$Port)
@@ -180,6 +201,47 @@ try {
   $dashboardHeaders = @{}
   $authConfig = Initialize-AuthConfig
 
+  if ($CheckOnly) {
+    if (-not (Test-Path -LiteralPath $RedisCliPath)) {
+      $checks.Add((New-CheckResult "redis-projection-runtime" $false "Redis-compatible CLI is missing: $RedisCliPath"))
+    } elseif (-not (Test-Path -LiteralPath $RedisEnvPath)) {
+      $checks.Add((New-CheckResult "redis-projection-runtime" $false "Redis runtime configuration is missing: $RedisEnvPath"))
+    } else {
+      $redisPasswordLine = Get-Content -LiteralPath $RedisEnvPath | Where-Object { $_ -match '^REDIS_PASSWORD=' } | Select-Object -First 1
+      $redisPassword = if ($redisPasswordLine) { $redisPasswordLine.Substring('REDIS_PASSWORD='.Length).Trim() } else { "" }
+      if (-not $redisPassword) {
+        $checks.Add((New-CheckResult "redis-projection-runtime" $false "REDIS_PASSWORD is missing from the protected runtime configuration."))
+      } else {
+        $previousRedisCliAuth = $env:REDISCLI_AUTH
+        $env:REDISCLI_AUTH = $redisPassword
+        try {
+          $redisPing = @(& $RedisCliPath -h 127.0.0.1 -p 6379 ping 2>$null | Select-Object -Last 1)
+          $appendOnly = @(& $RedisCliPath -h 127.0.0.1 -p 6379 --raw CONFIG GET appendonly 2>$null)
+          $redisOk = ($redisPing -join "").Trim() -eq "PONG" -and $appendOnly -contains "yes"
+          $checks.Add((New-CheckResult "redis-projection-runtime" $redisOk "Authenticated Redis PING and append-only persistence checked; credentials were not printed." @{
+            authenticated = (($redisPing -join "").Trim() -eq "PONG")
+            appendonly = ($appendOnly -contains "yes")
+          }))
+        } catch {
+          $checks.Add((New-CheckResult "redis-projection-runtime" $false "Authenticated Redis runtime check failed: $($_.Exception.Message)"))
+        } finally {
+          $env:REDISCLI_AUTH = $previousRedisCliAuth
+        }
+      }
+    }
+
+    try {
+      $minioHealth = Invoke-WebRequest -Uri $MinioHealthUrl -UseBasicParsing -TimeoutSec 5
+      $checks.Add((New-CheckResult "minio-object-store" ($minioHealth.StatusCode -eq 200) "MinIO liveness returned HTTP $($minioHealth.StatusCode)." @{
+        endpoint = $MinioHealthUrl
+      }))
+    } catch {
+      $checks.Add((New-CheckResult "minio-object-store" $false "MinIO liveness check failed: $($_.Exception.Message)" @{
+        endpoint = $MinioHealthUrl
+      }))
+    }
+  }
+
   if (-not $CheckOnly) {
     $microservices = @(
       @{ name = "ai-dispatcher"; port = 8081; directory = "ai-dispatcher" },
@@ -232,6 +294,14 @@ $apiCommand = @"
 `$env:API_ACCESS_TOKEN = '$token'
 `$env:NODE_INGEST_TOKEN = '$token'
 `$env:OGAS_SESSION_TOKEN = '$LaunchSessionToken'
+`$env:APP_ENV = '$AppEnv'
+`$env:DATA_SOURCE = '$DataSource'
+`$env:CONTROL_MODE = '$ControlMode'
+`$env:DEMO_SEED_ENABLED = '$($env:DEMO_SEED_ENABLED)'
+`$env:INDUSTRIAL_CONNECTOR_ENABLED = 'false'
+`$env:PHYSICAL_WRITE_ENABLED = 'false'
+`$env:TENANT_ID = '$TenantId'
+`$env:SITE_ID = '$SiteId'
 `$env:PERSIST_ENABLED = 'true'
 `$env:PERSIST_BACKEND = 'postgres'
 `$env:CENTRAL_FACT_SOURCE = '$FactSource'
@@ -263,6 +333,17 @@ python -m uvicorn app.main:app --host 127.0.0.1 --port $ApiPort *> '$apiLog'
       $dashboardLogin = Invoke-RestMethod -Uri "$ApiUrl/api/auth/login" -Method Post -ContentType "application/json" -Body $loginBody -TimeoutSec 70
       $dashboardHeaders = @{ "Authorization" = "Bearer $($dashboardLogin.access_token)" }
       $checks.Add((New-CheckResult "dashboard-auth" ([bool]$dashboardLogin.access_token) "Administrator bearer token issued for runtime verification."))
+      try {
+        $projection = Invoke-RestMethod -Uri "$ApiUrl/api/telemetry/projection/status" -Headers $dashboardHeaders -Method Get -TimeoutSec 10
+        $projectionOk = [bool]$projection.available -and [string]$projection.provider -eq "redis" -and [string]$projection.authority -eq "postgresql-historian" -and [bool]$projection.active_generation
+        $checks.Add((New-CheckResult "telemetry-projection" $projectionOk "Redis projection status and PostgreSQL Historian authority checked." @{
+          provider = $projection.provider
+          authority = $projection.authority
+          active_generation_present = [bool]$projection.active_generation
+        }))
+      } catch {
+        $checks.Add((New-CheckResult "telemetry-projection" $false "Telemetry projection check failed: $($_.Exception.Message)"))
+      }
     } catch {
       $checks.Add((New-CheckResult "dashboard-auth" $false "Dashboard JWT login failed: $($_.Exception.Message)"))
     }

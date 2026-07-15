@@ -5,6 +5,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
 
 
@@ -125,22 +126,70 @@ def find_alert(issue_id: str) -> dict | None:
 
 def main() -> None:
     login()
+    now = datetime.now(UTC).isoformat()
+    snapshot = request("GET", "/api/dashboard/snapshot", params={"mode": "normal"})
+    active_run = snapshot.get("run", {}) if isinstance(snapshot, dict) else {}
+    snapshot_nodes = snapshot.get("nodes", []) if isinstance(snapshot, dict) else []
+    runtime_template = next(
+        (
+            node.get("runtime", {})
+            for node in snapshot_nodes
+            if isinstance(node, dict) and isinstance(node.get("runtime"), dict)
+        ),
+        {},
+    )
+    workflow_run_id = str(active_run.get("run_id") or f"RUN-{NODE_CODE}")
+    workflow_scenario_id = str(
+        active_run.get("scenario_id") or runtime_template.get("scenario_id") or "SCN-RUNTIME-WORKFLOW"
+    )
+    simulation_engine = str(
+        active_run.get("simulation_engine") or runtime_template.get("simulation_engine") or "simple"
+    )
+    random_seed = int(runtime_template.get("random_seed") or 3001)
+    simulation_mode = str(runtime_template.get("simulation_mode") or "workflow-check")
     heartbeat = {
         "node_code": NODE_CODE,
+        "timestamp": now,
         "status": "fault",
-        "metrics": {"cpu_usage": 81, "memory_usage": 52, "network_latency_ms": 42},
+        "agent_version": "3.0.0-gate",
+        "uptime_sec": 60,
+        "metrics": {
+            "cpu_usage": 81,
+            "memory_usage": 52,
+            "disk_usage": 37,
+            "db_latency_ms": 18,
+            "network_latency_ms": 42,
+        },
         "production": {
             "active_order": "WO-RUNTIME-WORKFLOW",
             "machine_code": "QA-MILL",
             "workshop_type": "milling",
             "finished_quantity": 17,
             "defect_quantity": 1,
+            "target_rate": 1.0,
+            "actual_rate": 0.72,
+            "rate_unit": "parts_per_minute",
+            "utilization": 0.81,
+            "defect_rate": 1 / 18,
+            "wip_input": 4,
+            "wip_output": 2,
             "tool_wear_level": 42,
             "spindle_temp": 93,
         },
         "alarms": [{"type": ISSUE_TYPE, "severity": "critical", "status": "open"}],
-        "sync": {"pending_records": 0},
-        "runtime": {"deployment_mode": "runtime-workflow", "simulation_mode": "workflow-check"},
+        "sync": {"last_sync_id": 1, "pending_records": 0},
+        "runtime": {
+            "run_id": workflow_run_id,
+            "scenario_id": workflow_scenario_id,
+            "simulation_engine": simulation_engine,
+            "simulation_mode": simulation_mode,
+            "part_flow_mode": "workflow-check",
+            "random_seed": random_seed,
+            "simulation_time": now,
+            "wall_clock_time": now,
+            "deployment_mode": "process",
+            "runtime_source": "simulated",
+        },
     }
     hb = request("POST", "/api/node-heartbeats", heartbeat, auth="node")
     require(bool(hb.get("ok")), "fault heartbeat was not accepted", hb)
@@ -245,10 +294,23 @@ def main() -> None:
 
     recovery_heartbeat = {
         **heartbeat,
+        "timestamp": datetime.now(UTC).isoformat(),
         "status": "running",
-        "production": {**heartbeat["production"], "spindle_temp": 62, "finished_quantity": 23},
+        "production": {
+            **heartbeat["production"],
+            "spindle_temp": 62,
+            "finished_quantity": 23,
+            "actual_rate": 0.96,
+            "defect_rate": 1 / 24,
+            "wip_output": 3,
+        },
         "alarms": [],
-        "sync": {"pending_records": 1},
+        "sync": {"last_sync_id": 2, "pending_records": 1},
+    }
+    recovery_heartbeat["runtime"] = {
+        **heartbeat["runtime"],
+        "simulation_time": recovery_heartbeat["timestamp"],
+        "wall_clock_time": recovery_heartbeat["timestamp"],
     }
     recovered = request("POST", "/api/node-heartbeats", recovery_heartbeat, auth="node")
     require(bool(recovered.get("ok")), "recovery heartbeat was not accepted", recovered)
@@ -262,7 +324,7 @@ def main() -> None:
                 {
                     "local_id": 1,
                     "payload": heartbeat,
-                    "created_at": heartbeat["timestamp"] if "timestamp" in heartbeat else "runtime-workflow",
+                    "created_at": heartbeat["timestamp"],
                     "original_request_id": "offline-heartbeat",
                     "original_http_status": 0,
                     "original_error": "central-api unavailable during offline window",

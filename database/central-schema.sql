@@ -147,12 +147,37 @@ CREATE TABLE IF NOT EXISTS audit_logs (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS event_store (
+    event_id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    schema_version TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    event_time TIMESTAMPTZ NOT NULL,
+    ingest_time TIMESTAMPTZ NOT NULL,
+    local_sequence BIGINT NOT NULL,
+    global_sequence BIGINT NOT NULL UNIQUE,
+    correlation_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    scenario_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_store_run_global ON event_store(run_id, global_sequence);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_event_store_source_local
+    ON event_store(source_node, run_id, local_sequence);
+
 CREATE TABLE IF NOT EXISTS part_queue_shadow (
     part_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL DEFAULT '',
+    scenario_id TEXT NOT NULL DEFAULT '',
+    batch_id TEXT NOT NULL DEFAULT '',
     parent_part_id TEXT NOT NULL DEFAULT '',
     order_id TEXT NOT NULL,
     product_code TEXT NOT NULL DEFAULT '',
     current_step TEXT NOT NULL,
+    current_operation TEXT NOT NULL DEFAULT '',
+    next_operation TEXT NOT NULL DEFAULT '',
+    quality_status TEXT NOT NULL DEFAULT 'pending',
+    event_sequence BIGINT NOT NULL DEFAULT 1,
     status TEXT NOT NULL,
     source_node TEXT NOT NULL,
     target_node TEXT NOT NULL,
@@ -173,6 +198,16 @@ CREATE TABLE IF NOT EXISTS command_shadow (
     parameters_json TEXT NOT NULL DEFAULT '{}',
     claimed_by TEXT NOT NULL DEFAULT '',
     result_message TEXT NOT NULL DEFAULT '',
+    version INTEGER NOT NULL DEFAULT 1,
+    expires_at TIMESTAMPTZ,
+    dispatched_at TIMESTAMPTZ,
+    received_at TIMESTAMPTZ,
+    applied_at TIMESTAMPTZ,
+    verified_at TIMESTAMPTZ,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    verification_status TEXT NOT NULL DEFAULT 'not_started',
+    verification_baseline_json TEXT NOT NULL DEFAULT '{}',
+    verification_evidence_json TEXT NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -189,3 +224,29 @@ CREATE TABLE IF NOT EXISTS heartbeat_shadow (
 
 CREATE INDEX IF NOT EXISTS idx_heartbeat_shadow_node_received
     ON heartbeat_shadow(node_code, received_at);
+
+CREATE TABLE IF NOT EXISTS node_record_receipts (
+    node_code TEXT NOT NULL,
+    run_id TEXT NOT NULL DEFAULT '',
+    local_id BIGINT NOT NULL,
+    payload_hash TEXT NOT NULL,
+    payload_created_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (node_code, run_id, local_id)
+);
+
+CREATE TABLE IF NOT EXISTS nats_shadow_receipts (
+    message_id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    message_type TEXT NOT NULL,
+    source_node TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    local_sequence BIGINT NOT NULL,
+    correlation_id TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    ingested_at TIMESTAMPTZ NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_nats_shadow_source_run_sequence
+    ON nats_shadow_receipts(source_node, run_id, local_sequence);

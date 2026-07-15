@@ -29,6 +29,50 @@ def test_node_ingest_stays_separate_from_dashboard_bearer_auth() -> None:
         assert denied.status_code == 401
 
 
+def test_operator_command_gateway_uses_jwt_and_keeps_agent_channel_machine_only(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    node_code = "turning-workshop-01"
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            "/node-heartbeats",
+            json={
+                "node_code": node_code,
+                "status": "running",
+                "runtime": {"run_id": "RUN-OPERATOR-COMMAND", "scenario_id": "SCN-NORMAL"},
+                "production": {
+                    "machine_count": 3,
+                    "process_time_sec": 135,
+                    "nominal_capacity_per_hour": 80.0,
+                },
+            },
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+        login = client.post("/auth/login", json={"operator": "admin", "password": "mini-ogas-dev-token"})
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        wrong_channel = client.post(
+            f"/api/agents/{node_code}/commands",
+            json={"command_type": "set_target_rate", "target_rate": 0.5},
+            headers=auth,
+        )
+        issued = client.post(
+            f"/ops/agents/{node_code}/commands",
+            json={"command_type": "set_target_rate", "target_rate": 0.5},
+            headers=auth,
+        )
+        machine_denied = client.post(
+            f"/ops/agents/{node_code}/commands",
+            json={"command_type": "set_target_rate", "target_rate": 0.4},
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+
+    assert heartbeat.status_code == 200
+    assert wrong_channel.status_code == 401
+    assert issued.status_code == 200
+    assert issued.json()["node_code"] == node_code
+    assert issued.json()["parameters"]["target_rate"] == 0.5
+    assert machine_denied.status_code == 401
+
+
 def test_production_snapshot_count_is_explicit_and_excludes_logical_cloud_nodes() -> None:
     with TestClient(app) as client:
         snapshot = client.get("/api/dashboard/snapshot", headers={"X-OGAS-Token": "mini-ogas-dev-token"})

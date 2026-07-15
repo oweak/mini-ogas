@@ -5,7 +5,7 @@ import json
 import random
 import threading
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
 
@@ -17,6 +17,7 @@ from .core.session import get_session_token
 from .core.database import get_db, init_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
 from .command_manager import CommandManager, CommandTransition
+from .command_verifier import CommandVerifier
 from .persistence_repository import central_fact_repository
 from .safety_governor import SafetyDecision, safety_governor
 
@@ -153,6 +154,7 @@ class MemoryStore:
         # Nodes (workshops + cloud) and their metrics
         self.nodes: dict[str, Node] = {}
         self.metrics: list[MetricIn] = []
+        self.runtime_metrics: dict[str, MetricIn] = {}
         self.machines: list[Machine] = []
         self.node_db_size_bytes: dict[str, int] = {}
         self.node_db_size_sources: dict[str, str] = {}
@@ -170,14 +172,16 @@ class MemoryStore:
         self.order_seq = 0
         self.part_queue: list[PartQueueItem] = []
         self.part_seq = 0
-        self.part_completion_watermark: dict[str, int] = {}
+        self.part_completion_watermark: dict[tuple[str, str], int] = {}
         # Alerts / audit / commands / events / diagnoses
         self.alerts: list[Alert] = []
         self.audit_logs: list[AuditLog] = []
         self.commands: list[NodeCommand] = []
         self.command_manager = CommandManager()
+        self.command_verifier = CommandVerifier()
         self.incident_events: list[IncidentEvent] = []
         self._incident_event_seq = 0
+        self._node_event_sequences: dict[tuple[str, str], int] = {}
         self._shadow_event_count = 0
         self.ai_diagnoses: list[AiDiagnosis] = []
         # Topology / governance
@@ -202,7 +206,8 @@ class MemoryStore:
 
         if settings.persist_enabled:
             init_db()
-        self.seed_demo()
+        if settings.demo_seed_enabled:
+            self.seed_demo()
         if settings.persist_enabled:
             self.load_heartbeat_shadow()
             self.load_command_shadow()
@@ -263,12 +268,87 @@ class MemoryStore:
         return not current_run_id or part.run_id == current_run_id
 
     def current_run_id_for_system(self) -> str:
-        for payload in self.node_heartbeats_v2.values():
+        latest: tuple[str, str] = ("", "")
+        expected_nodes = set(settings.expected_production_nodes)
+        for node_code, payload in self.node_heartbeats_v2.items():
+            if expected_nodes and node_code not in expected_nodes:
+                continue
             runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
             run_id = str(runtime.get("run_id") or "")
-            if run_id:
-                return run_id
-        return ""
+            if not run_id:
+                continue
+            received_at = str(payload.get("_received_at") or payload.get("timestamp") or "")
+            if received_at >= latest[0]:
+                latest = (received_at, run_id)
+        return latest[1]
+
+    def reported_physical_rate_limit_per_minute(self, node_code: str) -> float | None:
+        """Return the latest node-reported physical capacity in parts/minute."""
+        with self._lock:
+            heartbeat = self.node_heartbeats_v2.get(node_code) or {}
+            production = heartbeat.get("production") if isinstance(heartbeat.get("production"), dict) else {}
+            try:
+                capacity_per_hour = float(production.get("nominal_capacity_per_hour") or 0)
+            except (TypeError, ValueError):
+                capacity_per_hour = 0.0
+            if capacity_per_hour <= 0:
+                try:
+                    machine_count = float(production.get("machine_count") or 0)
+                    process_time_sec = float(production.get("process_time_sec") or 0)
+                except (TypeError, ValueError):
+                    return None
+                if machine_count <= 0 or process_time_sec <= 0:
+                    return None
+                capacity_per_hour = machine_count * 3600.0 / process_time_sec
+        return capacity_per_hour / 60.0 if capacity_per_hour > 0 else None
+
+    def part_queue_flow_projection(
+        self,
+        node_code: str,
+        reported_production: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        """Project operation-boundary WIP from durable current-run part facts."""
+        reported = reported_production or {}
+        with self._lock:
+            parts = [part for part in self.part_queue if self.part_in_current_run(part)]
+            active = [part for part in parts if part.status in {"ready", "claimed"}]
+            completed = [part for part in parts if part.status == "completed"]
+
+            milling_input = sum(part.current_operation == "milling" for part in active)
+            grinding_input = sum(part.current_operation == "grinding" for part in active)
+            grinding_output = sum(part.current_operation == "grinding" for part in completed)
+
+        reported_input = int(reported.get("wip_input") or 0)
+        reported_output = int(reported.get("wip_output") or 0)
+        if node_code == "turning-workshop-01":
+            projected_input = reported_input
+            projected_output = milling_input
+        elif node_code == "milling-workshop-01":
+            projected_input = milling_input
+            projected_output = grinding_input
+        elif node_code == "grinding-workshop-01":
+            projected_input = grinding_input
+            projected_output = grinding_output
+        else:
+            projected_input = reported_input
+            projected_output = reported_output
+
+        return {
+            **reported,
+            "reported_wip_input": reported_input,
+            "reported_wip_output": reported_output,
+            "wip_input": projected_input,
+            "wip_output": projected_output,
+            "wip_source": "part_queue" if node_code in {
+                "turning-workshop-01",
+                "milling-workshop-01",
+                "grinding-workshop-01",
+            } else "heartbeat",
+            "flow_run_id": self.current_run_id_for_system(),
+            "milling_queue_depth": milling_input,
+            "grinding_queue_depth": grinding_input,
+            "finished_goods_buffer": grinding_output,
+        }
 
     def current_run_id_for_audit(self, audit: AuditLog) -> str:
         if audit.resource_type == "node":
@@ -372,7 +452,7 @@ class MemoryStore:
                     """
                     SELECT node_code, payload_json, received_at
                     FROM heartbeat_shadow
-                    ORDER BY id DESC LIMIT ?
+                    ORDER BY received_at DESC, id DESC LIMIT ?
                     """,
                     (max(1, limit),),
                 ).fetchall()
@@ -495,21 +575,35 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            with get_db() as db:
-                db.execute(
-                    """
-                    UPDATE alerts
-                    SET handled_by = ?, status = ?,
-                        resolved_at = CASE
-                            WHEN ? IN ('closed', 'resolved') THEN CURRENT_TIMESTAMP
-                            ELSE resolved_at
-                        END
-                    WHERE id = ?
-                    """,
-                    (alert.handled_by, alert.status, alert.status, alert.id),
-                )
+            # A provider call may outlive a projection refresh. Serialize the
+            # durable transition with refresh and then update the current cache
+            # object, not only the stale object held by the request thread.
+            with self._primary_projection_refresh_lock:
+                with get_db() as db:
+                    cursor = db.execute(
+                        """
+                        UPDATE alerts
+                        SET handled_by = ?, status = ?,
+                            resolved_at = CASE
+                                WHEN ? IN ('closed', 'resolved') THEN CURRENT_TIMESTAMP
+                                ELSE resolved_at
+                            END
+                        WHERE id = ?
+                        """,
+                        (alert.handled_by, alert.status, alert.status, alert.id),
+                    )
+                    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+                        raise RuntimeError(f"alert state update matched no row: {alert.id}")
+                with self._lock:
+                    for current in self.alerts:
+                        if current.id == alert.id:
+                            current.status = alert.status
+                            current.handled_by = alert.handled_by
+                            break
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("alert_state", exc)
+            if self.primary_projection_enabled():
+                raise RuntimeError(f"failed to persist alert state {alert.id}") from exc
 
     def load_alert_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
@@ -619,7 +713,10 @@ class MemoryStore:
                 rows = db.execute(
                     """
                     SELECT command_id, node_code, command_type, risk_level, status, operator,
-                           parameters_json, claimed_by, result_message, created_at, updated_at
+                           parameters_json, claimed_by, result_message, version, expires_at,
+                           dispatched_at, received_at, applied_at, verified_at, attempt_count,
+                           verification_status, verification_baseline_json,
+                           verification_evidence_json, created_at, updated_at
                     FROM command_shadow
                     ORDER BY command_id ASC
                     """
@@ -634,6 +731,12 @@ class MemoryStore:
                 parameters = json.loads(data.get("parameters_json") or "{}")
             except json.JSONDecodeError:
                 parameters = {}
+            try:
+                verification_baseline = json.loads(data.get("verification_baseline_json") or "{}")
+                verification_evidence = json.loads(data.get("verification_evidence_json") or "{}")
+            except json.JSONDecodeError:
+                verification_baseline = {}
+                verification_evidence = {}
             loaded.append(NodeCommand(
                 id=int(data["command_id"]),
                 node_code=data["node_code"],
@@ -644,6 +747,16 @@ class MemoryStore:
                 parameters=parameters if isinstance(parameters, dict) else {},
                 claimed_by=data.get("claimed_by") or "",
                 result_message=data.get("result_message") or "",
+                version=int(data.get("version") or 1),
+                expires_at=_database_datetime(data["expires_at"]) if data.get("expires_at") else None,
+                dispatched_at=_database_datetime(data["dispatched_at"]) if data.get("dispatched_at") else None,
+                received_at=_database_datetime(data["received_at"]) if data.get("received_at") else None,
+                applied_at=_database_datetime(data["applied_at"]) if data.get("applied_at") else None,
+                verified_at=_database_datetime(data["verified_at"]) if data.get("verified_at") else None,
+                attempt_count=int(data.get("attempt_count") or 0),
+                verification_status=str(data.get("verification_status") or "not_started"),
+                verification_baseline=(verification_baseline if isinstance(verification_baseline, dict) else {}),
+                verification_evidence=(verification_evidence if isinstance(verification_evidence, dict) else {}),
                 created_at=_database_datetime(data["created_at"]),
                 updated_at=_database_datetime(data.get("updated_at") or data["created_at"]),
             ))
@@ -655,11 +768,27 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            central_fact_repository.persist_event(event, self.current_run_id_for_node(event.node_code))
+            inserted = central_fact_repository.persist_event(
+                event,
+                self.current_run_id_for_node(event.node_code),
+            )
             with self._lock:
-                self._shadow_event_count += 1
+                sequence_key = (event.source_node or event.node_code, event.run_id)
+                self._node_event_sequences[sequence_key] = max(
+                    self._node_event_sequences.get(sequence_key, 0),
+                    event.local_sequence,
+                )
+                self._incident_event_seq = max(
+                    self._incident_event_seq,
+                    event.id,
+                    event.global_sequence,
+                )
+                if inserted:
+                    self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover
             self._record_persistence_write_failure("event", exc)
+            if self.primary_projection_enabled():
+                raise RuntimeError(f"PostgreSQL event write failed: {exc}") from exc
 
     def persist_ai_diagnosis(self, diagnosis: AiDiagnosis) -> None:
         if not self._persisting():
@@ -728,8 +857,12 @@ class MemoryStore:
                 self.ai_diagnoses = loaded[-80:]
         return len(loaded)
 
-    def load_audit_log_shadow(self, replace_empty: bool = False) -> int:
-        if not settings.persist_enabled:
+    def load_audit_log_shadow(
+        self,
+        replace_empty: bool = False,
+        allow_disabled_persistence: bool = False,
+    ) -> int:
+        if not settings.persist_enabled and not allow_disabled_persistence:
             return 0
         loaded_audits: list[AuditLog] = []
         loaded_events: list[IncidentEvent] = []
@@ -740,6 +873,15 @@ class MemoryStore:
                     SELECT id, run_id, actor, action, resource_type, resource_id, result, detail, created_at
                     FROM audit_logs
                     ORDER BY created_at ASC, id ASC
+                    """
+                ).fetchall()
+                event_rows = db.execute(
+                    """
+                    SELECT event_id, event_type, schema_version, source_node, event_time,
+                           ingest_time, local_sequence, global_sequence, correlation_id,
+                           run_id, scenario_id, payload_json
+                    FROM event_store
+                    ORDER BY global_sequence ASC
                     """
                 ).fetchall()
         except Exception as exc:  # pragma: no cover
@@ -758,7 +900,7 @@ class MemoryStore:
                 result=str(data.get("result") or ""),
                 created_at=created_at,
             ))
-            if str(data.get("resource_type") or "") == "incident_event":
+            if not event_rows and str(data.get("resource_type") or "") == "incident_event":
                 try:
                     severity = Severity(str(data.get("result") or Severity.info.value))
                 except ValueError:
@@ -772,6 +914,39 @@ class MemoryStore:
                     run_id=str(data.get("run_id") or ""),
                     created_at=created_at,
                 ))
+        for row in event_rows:
+            data = dict(row)
+            try:
+                payload = json.loads(str(data.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            try:
+                severity = Severity(str(payload.get("severity") or Severity.info.value))
+            except ValueError:
+                severity = Severity.info
+            event_time = _database_datetime(data["event_time"])
+            loaded_events.append(IncidentEvent(
+                id=int(data.get("global_sequence") or 0),
+                node_code=str(data.get("source_node") or ""),
+                stage=str(payload.get("stage") or data.get("event_type") or ""),
+                severity=severity,
+                message=str(payload.get("message") or ""),
+                run_id=str(data.get("run_id") or ""),
+                event_id=str(data.get("event_id") or ""),
+                event_type=str(data.get("event_type") or ""),
+                schema_version=str(data.get("schema_version") or "2.5"),
+                source_node=str(data.get("source_node") or ""),
+                event_time=event_time,
+                ingest_time=_database_datetime(data["ingest_time"]),
+                local_sequence=int(data.get("local_sequence") or 0),
+                global_sequence=int(data.get("global_sequence") or 0),
+                correlation_id=str(data.get("correlation_id") or ""),
+                scenario_id=str(data.get("scenario_id") or ""),
+                payload=payload,
+                created_at=event_time,
+            ))
         with self._lock:
             if loaded_audits or replace_empty:
                 self.audit_logs = loaded_audits[-300:]
@@ -783,6 +958,13 @@ class MemoryStore:
                     self._incident_event_seq,
                     max(event.id for event in loaded_events),
                 )
+                self._node_event_sequences = {
+                    (event.source_node or event.node_code, event.run_id): max(
+                        event.local_sequence,
+                        self._node_event_sequences.get((event.source_node or event.node_code, event.run_id), 0),
+                    )
+                    for event in loaded_events
+                }
         return len(loaded_audits)
 
     def persist_part_queue_item(self, part: PartQueueItem) -> None:
@@ -793,17 +975,24 @@ class MemoryStore:
                 db.execute(
                     """
                     INSERT INTO part_queue_shadow (
-                        part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
+                        part_id, run_id, scenario_id, batch_id, parent_part_id, order_id, product_code,
+                        current_step, current_operation, next_operation, quality_status, event_sequence, status,
                         source_node, target_node, claimed_by, claim_token, claim_expires_at,
                         created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(part_id) DO UPDATE SET
                         run_id=excluded.run_id,
+                        scenario_id=excluded.scenario_id,
+                        batch_id=excluded.batch_id,
                         parent_part_id=excluded.parent_part_id,
                         order_id=excluded.order_id,
                         product_code=excluded.product_code,
                         current_step=excluded.current_step,
+                        current_operation=excluded.current_operation,
+                        next_operation=excluded.next_operation,
+                        quality_status=excluded.quality_status,
+                        event_sequence=excluded.event_sequence,
                         status=excluded.status,
                         source_node=excluded.source_node,
                         target_node=excluded.target_node,
@@ -816,10 +1005,16 @@ class MemoryStore:
                     (
                         part.part_id,
                         self.current_run_id_for_part(part),
+                        part.scenario_id,
+                        part.batch_id,
                         part.parent_part_id,
                         part.order_id,
                         part.product_code,
                         part.current_step,
+                        part.current_operation,
+                        part.next_operation,
+                        part.quality_status,
+                        part.event_sequence,
                         part.status,
                         part.source_node,
                         part.target_node,
@@ -841,7 +1036,8 @@ class MemoryStore:
             with get_db() as db:
                 rows = db.execute(
                     """
-                    SELECT part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
+                    SELECT part_id, run_id, scenario_id, batch_id, parent_part_id, order_id, product_code,
+                           current_step, current_operation, next_operation, quality_status, event_sequence, status,
                            source_node, target_node, claimed_by, claim_token, claim_expires_at,
                            created_at, updated_at
                     FROM part_queue_shadow
@@ -854,6 +1050,7 @@ class MemoryStore:
 
         for row in rows:
             data = dict(row)
+            data["current_operation"] = data.get("current_operation") or data.get("current_step") or ""
             loaded.append(PartQueueItem(
                 **{
                     **data,
@@ -1270,12 +1467,34 @@ class MemoryStore:
     def _append_event(self, node_code: str, stage: str, severity: Severity, message: str) -> IncidentEvent:
         with self._lock:
             self._incident_event_seq += 1
-            event = IncidentEvent(id=self._incident_event_seq, node_code=node_code,
-                                  stage=stage, severity=severity, message=message,
-                                  run_id=(
-                                      self.current_run_id_for_node(node_code)
-                                      or self.current_run_id_for_system()
-                                  ))
+            run_id = self.current_run_id_for_node(node_code) or self.current_run_id_for_system()
+            scenario_id = ""
+            heartbeat = self.node_heartbeats_v2.get(node_code)
+            if isinstance(heartbeat, dict):
+                runtime = heartbeat.get("runtime") if isinstance(heartbeat.get("runtime"), dict) else {}
+                scenario_id = str(runtime.get("scenario_id") or "")
+            sequence_key = (node_code, run_id)
+            local_sequence = self._node_event_sequences.get(sequence_key, 0) + 1
+            self._node_event_sequences[sequence_key] = local_sequence
+            now = utc_now()
+            event = IncidentEvent(
+                id=self._incident_event_seq,
+                node_code=node_code,
+                stage=stage,
+                severity=severity,
+                message=message,
+                run_id=run_id,
+                event_type=stage,
+                source_node=node_code,
+                event_time=now,
+                ingest_time=now,
+                local_sequence=local_sequence,
+                global_sequence=self._incident_event_seq,
+                correlation_id=f"{run_id or 'unbound'}:{node_code}:{self._incident_event_seq}",
+                scenario_id=scenario_id,
+                payload={"stage": stage, "severity": severity.value, "message": message},
+                created_at=now,
+            )
             self.incident_events.append(event)
             self.incident_events = self.incident_events[-160:]
         return event
@@ -1295,16 +1514,29 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            central_fact_repository.persist_command_events(
+            inserted = central_fact_repository.persist_command_events(
                 commands,
                 event,
                 self.current_run_id_for_node(event.node_code),
                 include_base=include_base,
             )
             with self._lock:
-                self._shadow_event_count += 1
+                sequence_key = (event.source_node or event.node_code, event.run_id)
+                self._node_event_sequences[sequence_key] = max(
+                    self._node_event_sequences.get(sequence_key, 0),
+                    event.local_sequence,
+                )
+                self._incident_event_seq = max(
+                    self._incident_event_seq,
+                    event.id,
+                    event.global_sequence,
+                )
+                if inserted:
+                    self._shadow_event_count += 1
         except Exception as exc:  # pragma: no cover - external backend behavior
             self._record_persistence_write_failure("command_event_transaction", exc)
+            if self.primary_projection_enabled():
+                raise RuntimeError(f"PostgreSQL command/event transaction failed: {exc}") from exc
 
     def _apply_command_transitions(
         self,
@@ -1330,6 +1562,11 @@ class MemoryStore:
         parameters: dict[str, object] | None = None,
     ) -> NodeCommand:
         with self._lock:
+            verification_baseline = {
+                code: dict(heartbeat.get("production") or {})
+                for code, heartbeat in self.node_heartbeats_v2.items()
+                if isinstance(heartbeat, dict) and isinstance(heartbeat.get("production"), dict)
+            }
             command, transitions, created = self.command_manager.create_command(
                 self.commands,
                 node_code=node_code,
@@ -1338,6 +1575,7 @@ class MemoryStore:
                 status=status,
                 operator=operator,
                 parameters=parameters,
+                verification_baseline=verification_baseline,
             )
         self._apply_command_transitions(transitions, Severity.medium)
         if created:
@@ -1503,10 +1741,29 @@ class MemoryStore:
             finished_quantity=int(production.get("finished_quantity") or 0),
             defect_quantity=int(production.get("defect_quantity") or 0),
         )
-        self.record_metric(metric, evaluate=False)
+        # Heartbeat-v2 is a current-state channel. Keep its machine load in the
+        # in-process projection without duplicating high-frequency samples into
+        # the legacy business metrics table or history list.
+        with self._lock:
+            self.runtime_metrics[node_code] = metric
 
         machine_code = str(production.get("machine_code") or node_code)
         with self._lock:
+            previous_heartbeat = self.node_heartbeats_v2.get(node_code) or {}
+            previous_production = (
+                previous_heartbeat.get("production")
+                if isinstance(previous_heartbeat, dict) and isinstance(previous_heartbeat.get("production"), dict)
+                else {}
+            )
+            enriched_production = dict(production)
+            try:
+                enriched_production["defect_rate_delta"] = round(
+                    float(production.get("defect_rate") or 0)
+                    - float(previous_production.get("defect_rate") or 0),
+                    6,
+                )
+            except (TypeError, ValueError):
+                enriched_production["defect_rate_delta"] = 0.0
             existing_machine = next((m for m in self.machines if m.machine_code == machine_code), None)
             if existing_machine is None:
                 existing_machine = Machine(
@@ -1523,14 +1780,21 @@ class MemoryStore:
             existing_machine.defect_count = int(production.get("defect_quantity") or existing_machine.defect_count)
             self.node_heartbeats_v2[node_code] = {
                 **payload,
-                "production": dict(production),
+                "production": enriched_production,
                 "metrics": dict(metrics),
                 "runtime": dict(runtime),
                 "sync": dict(sync),
                 "alarms": list(alarms),
                 "_received_at": utc_now().isoformat(),
             }
-            self._verify_target_rate_commands_locked(node_code, production)
+
+        flow_result = self._advance_part_flow_from_heartbeat(node_code, production)
+        with self._lock:
+            verification_transitions, observed_commands = self._observe_command_effects_locked(node_code)
+
+        for observed_command in observed_commands:
+            self.persist_command_shadow(observed_command)
+        self._apply_command_transitions(verification_transitions)
 
         incoming_alarm_types: set[str] = set()
         created_alerts = []
@@ -1584,8 +1848,6 @@ class MemoryStore:
                 f"v2 心跳确认 {len(resolved_alerts)} 个报警条件已恢复，已自动归档。",
             )
 
-        parts_created = self._create_parts_from_turning_heartbeat(node_code, production)
-
         return {
             **heartbeat_result,
             "schema_version": payload.get("schema_version") or "2.2",
@@ -1593,7 +1855,9 @@ class MemoryStore:
             "production": production,
             "alarms_accepted": len(created_alerts),
             "alarms_resolved": len(resolved_alerts),
-            "parts_created": parts_created,
+            "parts_created": flow_result["created"],
+            "parts_completed": flow_result["completed"],
+            "flow_limited_by_input": flow_result["limited_by_input"],
         }
 
     def node_dispatch_for_node(self, node_code: str) -> dict[str, object]:
@@ -1623,20 +1887,41 @@ class MemoryStore:
             }
 
     def record_node_records(self, node_code: str, records: list[dict[str, object]]) -> dict[str, object]:
-        """Acknowledge deduplicated local agent records after a transient outage."""
+        """Archive and acknowledge deduplicated local records after an outage."""
         accepted = 0
-        with self._lock:
-            for record in records:
-                local_id = record.get("local_id")
-                if not isinstance(local_id, int):
-                    continue
-                key = f"{node_code}:{local_id}"
-                if key in self.node_record_sync_ids:
-                    continue
-                self.node_record_sync_ids.add(key)
-                accepted += 1
-            if len(self.node_record_sync_ids) > 10000:
-                self.node_record_sync_ids = set(list(self.node_record_sync_ids)[-5000:])
+        duplicates = 0
+        if self._persisting():
+            try:
+                result = central_fact_repository.persist_synced_node_records(
+                    node_code,
+                    records,
+                    retention_per_node=settings.heartbeat_shadow_retention_per_node,
+                )
+                accepted = result["accepted"]
+                duplicates = result["duplicates"]
+            except ValueError:
+                raise
+            except Exception as exc:  # pragma: no cover - external backend behavior
+                self._record_persistence_write_failure("node_record_sync", exc)
+                if self.primary_projection_enabled():
+                    raise RuntimeError(f"PostgreSQL node record sync failed: {exc}") from exc
+        else:
+            with self._lock:
+                for record in records:
+                    local_id = record.get("local_id")
+                    if not isinstance(local_id, int):
+                        continue
+                    payload = record.get("payload")
+                    runtime = payload.get("runtime") if isinstance(payload, dict) and isinstance(payload.get("runtime"), dict) else {}
+                    run_id = str(runtime.get("run_id") or "")
+                    key = f"{node_code}:{run_id}:{local_id}"
+                    if key in self.node_record_sync_ids:
+                        duplicates += 1
+                        continue
+                    self.node_record_sync_ids.add(key)
+                    accepted += 1
+                if len(self.node_record_sync_ids) > 10000:
+                    self.node_record_sync_ids = set(list(self.node_record_sync_ids)[-5000:])
         if accepted:
             self.add_event(
                 node_code,
@@ -1644,7 +1929,12 @@ class MemoryStore:
                 Severity.info,
                 f"Agent local records acknowledged: {accepted}",
             )
-        return {"accepted": True, "node_code": node_code, "records_accepted": accepted}
+        return {
+            "accepted": True,
+            "node_code": node_code,
+            "records_accepted": accepted,
+            "records_duplicate": duplicates,
+        }
 
     def check_heartbeat_timeout(self) -> int:
         """Mark nodes as offline if their last heartbeat is older than the timeout.
@@ -1726,15 +2016,23 @@ class MemoryStore:
                           "车间节点入口流量异常，疑似敌对行为，建议立即隔离。", "system"))
             self.add_event(metric.node_code, "hostile-detected", Severity.high,
                            "检测到异常入站流量，策略引擎判定为敌对行为。")
-            decision = safety_governor.review_control_action(
-                action="isolate_node",
-                target_node=metric.node_code,
-                risk_level="high",
-                actor_role="safety_automation",
-                known_nodes=set(self.nodes),
-                run_mode="emergency_containment",
-            )
-            self.isolate_node(metric.node_code, "safety_automation", decision)
+            if settings.control_mode == "read_only":
+                self.add_event(
+                    metric.node_code,
+                    "containment-blocked",
+                    Severity.high,
+                    "CONTROL_MODE=read_only，系统仅告警，不执行逻辑隔离。",
+                )
+            else:
+                decision = safety_governor.review_control_action(
+                    action="isolate_node",
+                    target_node=metric.node_code,
+                    risk_level="high",
+                    actor_role="safety_automation",
+                    known_nodes=set(self.nodes),
+                    run_mode="emergency_containment",
+                )
+                self.isolate_node(metric.node_code, "safety_automation", decision)
 
         # ---- AI diagnosis (outside lock — slow DeepSeek call) ----
         if degraded_alert is not None:
@@ -1765,6 +2063,7 @@ class MemoryStore:
         result: dict[str, MetricIn] = {}
         for m in self.metrics:
             result[m.node_code] = m
+        result.update(self.runtime_metrics)
         return result
 
     # ------------------------------------------------------------------
@@ -1969,17 +2268,37 @@ class MemoryStore:
             raise ValueError(f"command {command_id} not found")
         return self.record_command_result(command.node_code, command_id, status, message)
 
-    def _verify_target_rate_commands_locked(self, node_code: str, production: dict) -> None:
-        try:
-            heartbeat_target = float(production.get("target_rate"))
-        except (TypeError, ValueError):
-            return
-        transitions = self.command_manager.verify_target_rate(
-            self.commands,
-            node_code=node_code,
-            target_rate=heartbeat_target,
-        )
-        self._apply_command_transitions(transitions)
+    def _observe_command_effects_locked(
+        self,
+        node_code: str,
+    ) -> tuple[list[CommandTransition], list[NodeCommand]]:
+        system_production = {
+            code: self.part_queue_flow_projection(code, dict(heartbeat.get("production") or {}))
+            for code, heartbeat in self.node_heartbeats_v2.items()
+            if isinstance(heartbeat, dict) and isinstance(heartbeat.get("production"), dict)
+        }
+        transitions: list[CommandTransition] = []
+        observed: list[NodeCommand] = []
+        for command in self.commands:
+            if command.node_code != node_code or command.status not in {"applied", "executed"}:
+                continue
+            previous_status = command.verification_status
+            result = self.command_verifier.observe(command, system_production)
+            if result.status == "not_started":
+                continue
+            observed.append(command)
+            if result.terminal and previous_status != result.status:
+                transitions.append(CommandTransition(
+                    command=command,
+                    stage=f"command-verification-{result.status}",
+                    message=(
+                        f"command_id={command.id} verification={result.status}; "
+                        f"observations={result.evidence.get('observation_count', 0)}; "
+                        f"target_applied={result.evidence.get('target_applied')}; "
+                        f"flow_improved={result.evidence.get('flow_improved')}."
+                    ),
+                ))
+        return transitions, observed
 
     def _expire_stale_commands(self) -> list[CommandTransition]:
         with self._lock:
@@ -2003,18 +2322,42 @@ class MemoryStore:
     ) -> PartQueueItem:
         with self._lock:
             self.part_seq += 1
+            run_id = self.current_run_id_for_system() or self.current_run_id_for_node(source_node)
+            heartbeat = self.node_heartbeats_v2.get(source_node) or {}
+            runtime = heartbeat.get("runtime") if isinstance(heartbeat, dict) and isinstance(heartbeat.get("runtime"), dict) else {}
+            if run_id and str(runtime.get("run_id") or "") != run_id:
+                heartbeat = next(
+                    (
+                        payload for payload in self.node_heartbeats_v2.values()
+                        if isinstance(payload, dict)
+                        and isinstance(payload.get("runtime"), dict)
+                        and str(payload["runtime"].get("run_id") or "") == run_id
+                    ),
+                    {},
+                )
+                runtime = heartbeat.get("runtime") if isinstance(heartbeat.get("runtime"), dict) else {}
+            scenario_id = str(runtime.get("scenario_id") or "")
+            route = product_route(product_code or "A3")
+            next_operation = ""
+            if current_step in route:
+                index = route.index(current_step)
+                if index + 1 < len(route):
+                    next_operation = route[index + 1]
             part = PartQueueItem(
                 part_id=f"PART-{self.part_seq:05d}",
-                run_id=(
-                    self.current_run_id_for_node(source_node)
-                    or self.current_run_id_for_system()
-                ),
+                run_id=run_id,
+                scenario_id=scenario_id,
+                batch_id=f"BATCH-{order_id}",
                 parent_part_id=parent_part_id,
                 order_id=order_id,
                 product_code=product_code or "A3",
                 source_node=source_node,
                 target_node=target_node,
                 current_step=current_step,
+                current_operation=current_step,
+                next_operation=next_operation,
+                quality_status="pending",
+                event_sequence=1,
             )
             self.part_queue.append(part)
             self.part_queue = self.part_queue[-500:]
@@ -2040,6 +2383,7 @@ class MemoryStore:
                 part.claimed_by = ""
                 part.claim_token = ""
                 part.claim_expires_at = None
+                part.event_sequence += 1
                 part.updated_at = now
                 released.append(part)
         return released
@@ -2086,6 +2430,7 @@ class MemoryStore:
                 ):
                     continue
                 part.status = "claimed"
+                part.event_sequence += 1
                 part.claimed_by = node_code
                 part.claim_token = str(uuid.uuid4())
                 part.claim_expires_at = now + timedelta(seconds=ttl)
@@ -2124,6 +2469,8 @@ class MemoryStore:
             if not claim_token or part.claim_token != claim_token:
                 raise ValueError("invalid claim token")
             part.status = "completed"
+            part.quality_status = "accepted"
+            part.event_sequence += 1
             part.claim_expires_at = None
             part.updated_at = utc_now()
             next_step = self._next_part_queue_step(part, node_code)
@@ -2133,10 +2480,21 @@ class MemoryStore:
                 downstream = PartQueueItem(
                     part_id=f"PART-{self.part_seq:05d}",
                     run_id=part.run_id,
+                    scenario_id=part.scenario_id,
+                    batch_id=part.batch_id,
                     parent_part_id=part.part_id,
                     order_id=part.order_id,
                     product_code=part.product_code,
                     current_step=step,
+                    current_operation=step,
+                    next_operation=(
+                        product_route(part.product_code)[product_route(part.product_code).index(step) + 1]
+                        if step in product_route(part.product_code)
+                        and product_route(part.product_code).index(step) + 1 < len(product_route(part.product_code))
+                        else ""
+                    ),
+                    quality_status="pending",
+                    event_sequence=part.event_sequence + 1,
                     source_node=node_code,
                     target_node=target_node,
                     status="ready",
@@ -2173,24 +2531,50 @@ class MemoryStore:
                 "items": [part.model_dump(mode="json") for part in current_parts[-100:]],
             }
 
-    def _create_parts_from_turning_heartbeat(self, node_code: str, production: dict[str, object]) -> int:
-        if node_code != "turning-workshop-01":
-            return 0
+    def _advance_part_flow_from_heartbeat(
+        self,
+        node_code: str,
+        production: dict[str, object],
+    ) -> dict[str, object]:
         try:
             finished = int(production.get("finished_quantity") or 0)
         except (TypeError, ValueError):
-            return 0
+            return {"created": 0, "completed": 0, "limited_by_input": False}
+        run_id = self.current_run_id_for_node(node_code)
+        watermark_key = (node_code, run_id)
         with self._lock:
-            previous = self.part_completion_watermark.get(node_code)
-            self.part_completion_watermark[node_code] = finished
+            previous = self.part_completion_watermark.get(watermark_key)
+            self.part_completion_watermark[watermark_key] = finished
         if previous is None or finished <= previous:
-            return 0
-        delta = min(finished - previous, 5)
+            return {"created": 0, "completed": 0, "limited_by_input": False}
+        delta = min(finished - previous, 20)
         order_id = str(production.get("active_order") or "WO-LIVE")
         product_code = str(production.get("product_code") or "A3")
+        if node_code == "turning-workshop-01":
+            for _ in range(delta):
+                self.create_ready_part(order_id, product_code)
+            return {"created": delta, "completed": 0, "limited_by_input": False}
+
+        if node_code not in {"milling-workshop-01", "grinding-workshop-01"}:
+            return {"created": 0, "completed": 0, "limited_by_input": False}
+
+        completed = 0
         for _ in range(delta):
-            self.create_ready_part(order_id, product_code)
-        return delta
+            claimed = self.claim_next_part_for_node(node_code)
+            if not claimed.get("claimed"):
+                break
+            part = claimed["part"]
+            self.complete_claimed_part(node_code, part.part_id, part.claim_token)
+            completed += 1
+        return {
+            "created": 0,
+            "completed": completed,
+            "limited_by_input": completed < delta,
+        }
+
+    def _create_parts_from_turning_heartbeat(self, node_code: str, production: dict[str, object]) -> int:
+        """Compatibility wrapper for callers that only need Turning output count."""
+        return int(self._advance_part_flow_from_heartbeat(node_code, production)["created"])
 
     def pending_approvals(self) -> list[NodeCommand]:
         self.refresh_primary_projection()
@@ -3084,7 +3468,8 @@ class MemoryStore:
                 ).fetchall()
                 part_rows = db.execute(
                     """
-                    SELECT part_id, run_id, parent_part_id, order_id, product_code, current_step, status,
+                    SELECT part_id, run_id, scenario_id, batch_id, parent_part_id, order_id, product_code,
+                           current_step, current_operation, next_operation, quality_status, event_sequence, status,
                            source_node, target_node, claimed_by, created_at, updated_at
                     FROM part_queue_shadow
                     WHERE run_id = ?
@@ -3104,6 +3489,18 @@ class MemoryStore:
                     LIMIT ?
                     """,
                     (clean_run_id, started_at, ended_at, max(1, max_rows)),
+                ).fetchall()
+                operational_event_rows = db.execute(
+                    """
+                    SELECT event_id, event_type, schema_version, source_node, event_time,
+                           ingest_time, local_sequence, global_sequence, correlation_id,
+                           run_id, scenario_id, payload_json
+                    FROM event_store
+                    WHERE run_id = ?
+                    ORDER BY global_sequence ASC
+                    LIMIT ?
+                    """,
+                    (clean_run_id, max(1, max_rows)),
                 ).fetchall()
                 alert_rows = db.execute(
                     """
@@ -3223,6 +3620,24 @@ class MemoryStore:
                 "detail": item,
             })
 
+        operational_events: list[dict[str, object]] = []
+        for row in operational_event_rows:
+            data = dict(row)
+            try:
+                payload = json.loads(str(data.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            item = {**data, "payload": payload if isinstance(payload, dict) else {}}
+            operational_events.append(item)
+            timeline.append({
+                "time": str(data.get("event_time") or ""),
+                "kind": "operational_event",
+                "node_code": data.get("source_node"),
+                "title": data.get("event_type"),
+                "status": (item["payload"].get("severity") if isinstance(item["payload"], dict) else "info"),
+                "detail": item,
+            })
+
         alerts = [dict(row) for row in alert_rows]
         for item in alerts:
             timeline.append({
@@ -3261,6 +3676,7 @@ class MemoryStore:
                 "commands": len(commands),
                 "part_queue": len(part_queue),
                 "audit_events": len(audit_events),
+                "operational_events": len(operational_events),
                 "alerts": len(alerts),
                 "ai_diagnoses": len(ai_diagnoses),
                 "timeline": len(timeline),
@@ -3276,6 +3692,7 @@ class MemoryStore:
             "commands": commands,
             "part_queue": part_queue,
             "audit_events": audit_events,
+            "operational_events": operational_events,
             "alerts": alerts,
             "ai_diagnoses": ai_diagnoses,
             "timeline": timeline,
@@ -3369,6 +3786,8 @@ class MemoryStore:
             ),
             "read_model": "database_projection" if self.primary_projection_enabled() else "in_process_cache",
             "db_exists": db_path.exists() if backend == "sqlite" else False,
+            "scope": {"tenant_id": settings.tenant_id, "site_id": settings.site_id},
+            "scope_enforcement": "postgresql-rls" if backend == "postgres" else "single-scope-sqlite",
             "retention": {
                 "heartbeat_shadow_per_node": settings.heartbeat_shadow_retention_per_node,
                 "heartbeat_shadow_policy": (
@@ -3395,10 +3814,12 @@ class MemoryStore:
             "alerts",
             "ai_diagnosis",
             "audit_logs",
+            "event_store",
             "commands",
             "production_plan_shadow",
             "dispatch_task_shadow",
             "allocation_order_shadow",
+            "outbox_messages",
         )
         try:
             init_db()
@@ -3483,7 +3904,31 @@ class MemoryStore:
 
     def management_snapshot(self) -> dict[str, object]:
         integrations = self.integration_status()
+        configured_source = settings.data_source
+        snapshot_source = (
+            f"{configured_source}-with-demo-seed"
+            if settings.demo_seed_enabled
+            else configured_source
+        )
         return {
+            "environment": settings.environment_status(),
+            "data_source": snapshot_source,
+            "data_provenance": {
+                "node_telemetry": f"{configured_source} edge heartbeats persisted to PostgreSQL shadow tables",
+                "machines": (
+                    "heartbeat projection with central demo-seed fallback"
+                    if settings.demo_seed_enabled else "heartbeat/database projection"
+                ),
+                "work_orders": (
+                    "planner output and central demo seed"
+                    if settings.demo_seed_enabled else "planner/database projection"
+                ),
+                "market_and_inventory": (
+                    "randomized demo seed" if settings.demo_seed_enabled else "unavailable unless externally supplied"
+                ),
+                "device_connection": "none",
+                "device_write_enabled": settings.physical_write_enabled,
+            },
             "summary": self.summary(),
             "hosts": self.host_status(),
             "nodes": list(self.nodes.values()),

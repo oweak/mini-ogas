@@ -65,3 +65,60 @@
 - Fault-to-archive runtime workflow passed end to end.
 - Desktop/mobile browser QA and read-only replay checks passed.
 - Updated README, issue/status/debt/compatibility reports and added the full-system audit report.
+
+## 2026-07-13 Long-cycle directive audit
+
+- Reopened acceptance against the stricter VM-distributed and causal-effect
+  requirements. Added persistent master-plan, progress, handoff, debt and
+  verification documents plus repository engineering rules.
+- Confirmed that the local baseline is real but not VM-distributed.
+- Found P0 gaps in physical SimPy timing, command-effect verification and the
+  stable event envelope; found incomplete rule and part-identity coverage.
+- Began the first implementation unit with the physical simulation contract and
+  observation-window Verifier as the next code changes.
+
+## 2026-07-13 Long-cycle closure
+
+- Implemented physically constrained target-rate control with separate raw and
+  controlled SimPy output, capacity guards and Dashboard visibility.
+- Added a JWT operator command gateway while retaining machine-only edge channels.
+- Corrected verifier baseline/direction semantics and latest-command rule retirement.
+- Proved live command 54 throttle and command 55 nominal restore/effective status.
+- Added semantic AI refresh gating, single-flight/backoff and central caching;
+  browser proof showed one AI call during 12 seconds of snapshot polling.
+- Normalized provider summary arrays and reset AI state on lock/re-login.
+- Removed secret-prefix output from `mogas doctor` and made Ruff `F` checks canonical.
+- Final canonical gate: central 162, simulator 35, Dashboard 69 plus build,
+  AI dispatcher 4, CLI/workflow 31 plus 9 subtests, both Go modules, PostgreSQL,
+  3/3 nodes and live DeepSeek all passed.
+
+## 2026-07-13 v3.0.0 and v3.0.1 closure
+
+- Completed the v3.0.0 real-host baseline audit before any v3 code change and
+  froze deployment, network, backup/restore and message/agent contracts.
+- Installed official checksum-verified NATS Server 2.14.3 on D:, pinned
+  `nats-py==2.15.0`, and added it as the ninth supervised process.
+- Added strict schema 3.0 envelopes, deterministic IDs, subject validation,
+  JetStream file persistence, explicit-ACK durable consumption and idempotent
+  PostgreSQL shadow receipts while retaining authoritative REST behavior.
+- Live gates proved event, heartbeat, command and audit publication, zero
+  pending/redelivered messages, unique PostgreSQL receipt IDs and REST success
+  while a separate Central process had no reachable NATS server.
+- Fixed idle-pull false degradation and startup blocking under NATS outage.
+- Final canonical gate: Central 173, simulator 35, Dashboard 69 plus build, AI
+  dispatcher 4, CLI/workflow 31 plus 9 subtests, both Go modules, Ruff,
+  PostgreSQL, 3/3 nodes and live DeepSeek all passed.
+
+## 2026-07-13 engineering master prompt Phase 0 and Phase 1 closure
+
+- Completed all required Phase 0 truth, source, simulation, state-machine,
+  threat and debt records after inspecting the real repository and runtime.
+- Added explicit environment/source/control boundaries, Demo isolation,
+  tenant/site scope, checksum migrations and forced PostgreSQL RLS.
+- Added transactional heartbeat Outbox, generated OpenAPI/AsyncAPI contracts,
+  request correlation, UTC problem errors, login throttling and secret ACL gates.
+- Canonical verification passed with Central 196, simulator 35, Dashboard 69
+  plus build, AI 4, CLI/workflow 31 plus 9 subtests, both Go modules and Ruff.
+- Live database proof: 18/18 forced-RLS tables, zero alternate-scope rows,
+  7,843 audit rows and 112 published Outbox rows under a non-bypass role.
+- Phase 2 is now the first unmet gate.

@@ -68,3 +68,19 @@ func (c *Checker) ProbeHTTP(endpoint string, timeout time.Duration, expectedToke
 
 	return Status{Healthy: true, Detail: "ok"}
 }
+
+// ProbeHTTPStatus is for third-party dependencies that expose an HTTP status
+// endpoint but cannot return the Mini-OGAS process-identity envelope.
+func (c *Checker) ProbeHTTPStatus(endpoint string, timeout time.Duration) Status {
+	client := *c.httpClient
+	client.Timeout = timeout
+	resp, err := client.Get(endpoint)
+	if err != nil {
+		return Status{Healthy: false, Detail: fmt.Sprintf("connection failed: %v", err)}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Status{Healthy: false, Detail: fmt.Sprintf("HTTP %d", resp.StatusCode)}
+	}
+	return Status{Healthy: true, Detail: "ok"}
+}

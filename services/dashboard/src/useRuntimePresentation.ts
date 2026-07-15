@@ -28,8 +28,8 @@ export function normalizeMachineState(status: HostNode['status']): MachineState 
   return 'running'
 }
 
-export function calculateYieldRate(finished?: number, defects?: number, fallback = 100) {
-  if (!finished || finished <= 0) return fallback
+export function calculateYieldRate(finished?: number, defects?: number): number | null {
+  if (!finished || finished <= 0) return null
   return Number(Math.max(0, ((finished - (defects ?? 0)) / finished) * 100).toFixed(1))
 }
 
@@ -91,14 +91,18 @@ export function useRuntimePresentation(options: RuntimePresentationOptions) {
           workOrder: production.active_order ?? '未派发',
           process: production.dispatch_policy ?? '后端心跳',
           output: Number(production.finished_quantity ?? 0),
+          rawOutput: Number(production.raw_finished_quantity ?? production.finished_quantity ?? 0),
           target: Number(options.hostWorkOrders.value.find((order) => order.id === production.active_order)?.quantity ?? 0),
-          yieldRate: calculateYieldRate(production.finished_quantity, production.defect_quantity, 100),
-          oee: Math.max(0, Math.min(100, Math.round(Number(node.metrics?.cpu_usage ?? 0) + 22))),
+          yieldRate: calculateYieldRate(production.finished_quantity, production.defect_quantity),
+          oee: null,
           toolWear: Math.round(Number(production.tool_wear_level ?? 0)),
           targetRate: production.target_rate,
           actualRate: production.actual_rate,
           utilization: production.utilization,
           defectRate: production.defect_rate,
+          wipInput: production.wip_input,
+          wipOutput: production.wip_output,
+          wipSource: production.wip_source,
           sync: (node.sync?.pending_records ? 'delayed' : 'online') as 'online' | 'delayed' | 'offline',
           lastAlarm: alarmType ? alarmLabel(alarmType) : undefined
         }
@@ -116,16 +120,6 @@ export function useRuntimePresentation(options: RuntimePresentationOptions) {
       label: `${connected}/${total} 个节点已接入`
     }
   })
-  const backendOrderProgress = computed(() => {
-    const progress: Record<string, number> = {}
-    options.hostNodes.value.forEach((node) => {
-      const production = node.production ?? {}
-      const orderId = production.active_order
-      if (!orderId) return
-      progress[orderId] = (progress[orderId] ?? 0) + Number(production.finished_quantity ?? 0)
-    })
-    return progress
-  })
   const displayedWorkOrders = computed<DisplayedWorkOrder[]>(() => {
     return options.hostWorkOrders.value.map((order) => ({
       id: order.id,
@@ -133,8 +127,10 @@ export function useRuntimePresentation(options: RuntimePresentationOptions) {
       route: order.route,
       priority: order.priority,
       quantity: order.quantity,
-      completed: Math.min(order.quantity, Math.max(0, Math.round(backendOrderProgress.value[order.id] ?? 0))),
-      due: order.id.endsWith('004') ? '17:10' : order.id.endsWith('005') ? '16:30' : '18:00',
+      completed: typeof order.completed === 'number'
+        ? Math.min(order.quantity, Math.max(0, Math.round(order.completed)))
+        : null,
+      due: order.due?.trim() || '未上报',
       status: order.status as DisplayedWorkOrder['status']
     }))
   })
@@ -152,7 +148,7 @@ export function useRuntimePresentation(options: RuntimePresentationOptions) {
     simulation_time: node.runtime?.simulation_time ?? '',
     simulation_speed: node.runtime?.simulation_speed ?? '',
     simulation_engine: node.runtime?.simulation_engine ?? '',
-    runtime_source: node.runtime?.runtime_source ?? (node.runtime ? 'live' : '未上报'),
+    runtime_source: node.runtime?.runtime_source ?? '未上报',
     last_seen_sec: node.last_seen_sec,
     sync_records: node.sync?.pending_records ?? 0
   })))
@@ -195,7 +191,6 @@ export function useRuntimePresentation(options: RuntimePresentationOptions) {
     liveWorkshops,
     machines,
     nodeConnectionSummary,
-    backendOrderProgress,
     displayedWorkOrders,
     nodeRuntimeRows,
     controlServiceRows

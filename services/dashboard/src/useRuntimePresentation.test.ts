@@ -23,7 +23,7 @@ describe('runtime presentation helpers', () => {
     expect(normalizeMachineState('fault')).toBe('fault')
     expect(normalizeMachineState('running')).toBe('running')
     expect(calculateYieldRate(100, 3)).toBe(97)
-    expect(calculateYieldRate(0, 0, 99)).toBe(99)
+    expect(calculateYieldRate(0, 0)).toBeNull()
     expect(nodeIsConnected('running')).toBe(true)
     expect(nodeIsConnected('offline')).toBe(false)
     expect(alarmLabel('SPINDLE_TEMP_HIGH')).toBe('主轴温度过高')
@@ -42,12 +42,16 @@ describe('runtime presentation helpers', () => {
           active_order: 'WO-1',
           dispatch_policy: '后端心跳',
           finished_quantity: 80,
+          raw_finished_quantity: 96,
           defect_quantity: 2,
           tool_wear_level: 64,
           target_rate: 1,
           actual_rate: 0.87,
           utilization: 0.78,
-          defect_rate: 0.025
+          defect_rate: 0.025,
+          wip_input: 9,
+          wip_output: 3,
+          wip_source: 'part_queue'
         },
         alarms: [{ type: 'TOOL_WEAR_WARNING' }],
         sync: { pending_records: 2 },
@@ -62,7 +66,7 @@ describe('runtime presentation helpers', () => {
           simulation_time: '2026-06-13T10:20:00+08:00',
           simulation_speed: 12,
           simulation_engine: 'simpy',
-          runtime_source: 'node-agent'
+          runtime_source: 'simulated'
         },
         last_seen_sec: 1
       }
@@ -81,18 +85,23 @@ describe('runtime presentation helpers', () => {
       code: 'MILL-02',
       state: 'warning',
       output: 80,
+      rawOutput: 96,
       target: 160,
       yieldRate: 97.5,
       targetRate: 1,
       actualRate: 0.87,
       utilization: 0.78,
       defectRate: 0.025,
+      wipInput: 9,
+      wipOutput: 3,
+      wipSource: 'part_queue',
       sync: 'delayed',
       lastAlarm: '刀具/砂轮磨损预警'
     })
     expect(runtime.displayedWorkOrders.value[0]).toMatchObject({
       id: 'WO-1',
-      completed: 80,
+      completed: null,
+      due: '未上报',
       status: 'in_progress'
     })
     expect(runtime.nodeRuntimeRows.value[0]).toMatchObject({
@@ -103,7 +112,7 @@ describe('runtime presentation helpers', () => {
       simulation_time: '2026-06-13T10:20:00+08:00',
       simulation_speed: 12,
       simulation_engine: 'simpy',
-      runtime_source: 'node-agent',
+      runtime_source: 'simulated',
       sync_records: 2
     })
   })

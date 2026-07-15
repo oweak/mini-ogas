@@ -13,11 +13,19 @@ from ..base import AIProvider, DiagnosisResult
 class DeepSeekProvider(AIProvider):
     name = "deepseek"
 
-    def __init__(self, api_key: str, base_url: str, model: str, timeout: int = 25) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str,
+        model: str,
+        timeout: int = 25,
+        chat_max_tokens: int = 4096,
+    ) -> None:
         self._api_key = api_key
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout
+        self._chat_max_tokens = max(400, int(chat_max_tokens))
 
     # ------------------------------------------------------------------
     # AIProvider interface
@@ -57,7 +65,7 @@ class DeepSeekProvider(AIProvider):
         body = {
             "model": self._model,
             "temperature": 0.3,
-            "max_tokens": 400,
+            "max_tokens": self._chat_max_tokens,
             "messages": messages,
         }
         return self._raw_call(body, timeout=timeout)
@@ -109,10 +117,20 @@ class DeepSeekProvider(AIProvider):
         except urllib.error.URLError as exc:
             raise RuntimeError(f"DeepSeek network error: {exc.reason}") from exc
         try:
-            return str(payload["choices"][0]["message"]["content"])
+            choice = payload["choices"][0]
+            message = choice["message"]
+            content = message["content"]
         except (KeyError, IndexError, TypeError) as exc:
             error_detail = str(payload.get("error", payload))[:400]
             raise RuntimeError(f"DeepSeek API error response: {error_detail}") from exc
+        if not isinstance(content, str) or not content.strip():
+            reasoning = message.get("reasoning_content")
+            reasoning_length = len(reasoning) if isinstance(reasoning, str) else 0
+            raise RuntimeError(
+                "DeepSeek returned an empty content field "
+                f"(finish_reason={choice.get('finish_reason')}, reasoning_chars={reasoning_length})"
+            )
+        return content
 
     @staticmethod
     def _parse_json_content(content: str) -> dict:

@@ -37,10 +37,11 @@ class CommandManager:
         status: str,
         operator: str,
         parameters: dict[str, object] | None = None,
+        verification_baseline: dict[str, dict[str, object]] | None = None,
         now: datetime | None = None,
     ) -> tuple[NodeCommand, list[CommandTransition], bool]:
         now = now or utc_now()
-        normalized_parameters = parameters or {}
+        normalized_parameters = dict(parameters or {})
         idempotency_key = str(normalized_parameters.get("idempotency_key") or "")
         if idempotency_key:
             for command in commands:
@@ -52,6 +53,8 @@ class CommandManager:
                     return command, [], False
 
         next_id = max((item.id for item in commands), default=0) + 1
+        normalized_parameters.setdefault("idempotency_key", f"command-{next_id}")
+        ttl_seconds = int(normalized_parameters.get("ttl_seconds") or 300)
         command = NodeCommand(
             id=next_id,
             node_code=node_code,
@@ -60,6 +63,8 @@ class CommandManager:
             status=status,
             operator=operator,
             parameters=normalized_parameters,
+            expires_at=now + timedelta(seconds=max(1, ttl_seconds)),
+            verification_baseline=verification_baseline or {},
             created_at=now,
             updated_at=now,
         )
@@ -92,6 +97,9 @@ class CommandManager:
                 continue
             command.status = "claimed"
             command.claimed_by = agent_id or node_code
+            command.dispatched_at = command.dispatched_at or now
+            command.received_at = now
+            command.attempt_count += 1
             command.updated_at = now
             claimed.append(command)
         return claimed
@@ -108,20 +116,24 @@ class CommandManager:
     ) -> tuple[NodeCommand, bool]:
         now = now or utc_now()
         command = self._find_for_node(commands, node_code, command_id)
-        if status not in RESULT_STATUSES:
+        if status not in RESULT_STATUSES | {"applied"}:
             raise ValueError(f"unsupported command result status: {status}")
+        normalized_status = "applied" if status in {"executed", "applied"} else status
 
         if command.status == "verified":
             return command, False
-        if command.status == status and command.result_message == message:
+        if command.status == normalized_status and command.result_message == message:
             return command, False
         if command.status in {"expired", "superseded", "rejected", "cancelled"}:
             raise ValueError(f"command {command_id} is not executable (current: {command.status})")
-        if command.status not in {"claimed", "pending", "queued", "executed", "failed"}:
+        if command.status not in {"claimed", "pending", "queued", "executed", "applied", "failed"}:
             raise ValueError(f"command {command_id} cannot accept result from status {command.status}")
 
-        command.status = status
+        command.status = normalized_status
         command.result_message = message
+        if command.status == "applied":
+            command.applied_at = now
+            command.verification_status = "observing"
         command.updated_at = now
         return command, True
 
@@ -274,7 +286,7 @@ class CommandManager:
             if (
                 command.node_code != node_code
                 or command.command_type != "set_target_rate"
-                or command.status != "executed"
+                or command.status not in {"executed", "applied"}
             ):
                 continue
             try:

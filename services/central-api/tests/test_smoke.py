@@ -1,8 +1,10 @@
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI
+import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
 from app.main import app, setup_middleware
 from app.models import DispatchTask, IncidentEvent, Severity
 from app.store import store
@@ -17,10 +19,32 @@ def test_health_endpoint() -> None:
     assert response.status_code == 200
     payload = response.json()
     assert payload["status"] == "ok"
+    assert payload["overall_status"] in {"ready", "degraded"}
     assert payload["process_id"] > 0
     assert "T" in payload["process_started_at"]
     assert payload["session_token"]
     assert "supervisor" in payload
+
+
+def test_health_keeps_liveness_ok_when_nats_is_degraded(monkeypatch) -> None:
+    from app.routers import health as health_router
+
+    monkeypatch.setattr(
+        health_router,
+        "supervisor_health",
+        lambda _session: {"status": "ok"},
+    )
+    monkeypatch.setattr(
+        health_router.nats_runtime,
+        "health",
+        lambda: {"enabled": True, "status": "degraded", "mode": "shadow"},
+    )
+
+    payload = health_router.health()
+
+    assert payload["status"] == "ok"
+    assert payload["overall_status"] == "degraded"
+    assert payload["nats"]["status"] == "degraded"
 
 
 def test_health_supervisor_ok(monkeypatch) -> None:
@@ -358,6 +382,33 @@ def test_agent_set_target_rate_command_lifecycle() -> None:
                 },
             },
         )
+        downstream_baseline = client.post(
+            "/api/node-heartbeats",
+            headers=AUTH_HEADERS,
+            json={
+                "node_code": "grinding-workshop-01",
+                "status": "running",
+                "runtime": {"simulation_engine": "simpy", "run_id": "RUN-CMD", "scenario_id": "SCN-CMD"},
+                "metrics": {"cpu_usage": 28, "memory_usage": 38, "disk_usage": 48},
+                "production": {
+                    "machine_code": "GRIND-01",
+                    "workshop_type": "grinding",
+                    "target_rate": 1.08,
+                    "actual_rate": 0.7,
+                    "utilization": 0.72,
+                    "wip_input": 12,
+                    "wip_output": 4,
+                },
+                },
+            )
+        for index in range(6):
+            store.create_ready_part(
+                f"WO-CMD-FLOW-{index}",
+                "A3",
+                source_node="grinding-workshop-01",
+                target_node="grinding-workshop-01",
+                current_step="grinding",
+            )
         created = client.post(
             f"/api/agents/{node_code}/commands",
             headers=AUTH_HEADERS,
@@ -371,27 +422,55 @@ def test_agent_set_target_rate_command_lifecycle() -> None:
             headers=AUTH_HEADERS,
             json={"status": "executed", "message": "target rate override applied"},
         )
-        verified_heartbeat = client.post(
-            "/api/node-heartbeats",
-            headers=AUTH_HEADERS,
-            json={
-                "node_code": node_code,
-                "status": "running",
-                "runtime": {"simulation_engine": "simpy", "run_id": "RUN-CMD", "scenario_id": "SCN-CMD"},
-                "metrics": {"cpu_usage": 31, "memory_usage": 41, "disk_usage": 51},
-                "production": {
-                    "machine_code": "MILL-02",
-                    "workshop_type": "milling",
-                    "target_rate": 0.72,
-                    "actual_rate": 0.62,
-                    "utilization": 0.7,
-                    "wip_input": 8,
-                    "wip_output": 4,
+        verified_heartbeat = None
+        for grinding_backlog in (7, 5, 3):
+            client.post(
+                "/api/node-heartbeats",
+                headers=AUTH_HEADERS,
+                json={
+                    "node_code": "grinding-workshop-01",
+                    "status": "running",
+                    "runtime": {"simulation_engine": "simpy", "run_id": "RUN-CMD", "scenario_id": "SCN-CMD"},
+                    "metrics": {"cpu_usage": 28, "memory_usage": 38, "disk_usage": 48},
+                    "production": {
+                        "machine_code": "GRIND-01",
+                        "workshop_type": "grinding",
+                        "target_rate": 1.08,
+                        "actual_rate": 0.7,
+                        "utilization": 0.72,
+                        "wip_input": grinding_backlog + 4,
+                        "wip_output": 4,
+                    },
+                    },
+                )
+            grinding_claim = store.claim_next_part_for_node("grinding-workshop-01")
+            store.complete_claimed_part(
+                "grinding-workshop-01",
+                grinding_claim["part"].part_id,
+                grinding_claim["part"].claim_token,
+            )
+            verified_heartbeat = client.post(
+                "/api/node-heartbeats",
+                headers=AUTH_HEADERS,
+                json={
+                    "node_code": node_code,
+                    "status": "running",
+                    "runtime": {"simulation_engine": "simpy", "run_id": "RUN-CMD", "scenario_id": "SCN-CMD"},
+                    "metrics": {"cpu_usage": 31, "memory_usage": 41, "disk_usage": 51},
+                    "production": {
+                        "machine_code": "MILL-02",
+                        "workshop_type": "milling",
+                        "target_rate": 0.72,
+                        "actual_rate": 0.62,
+                        "utilization": 0.7,
+                        "wip_input": 8,
+                        "wip_output": 4,
+                    },
                 },
-            },
-        )
+            )
 
     assert heartbeat.status_code == 200
+    assert downstream_baseline.status_code == 200
     assert created.status_code == 200
     assert created.json()["parameters"]["target_rate"] == 0.72
     assert claimed.status_code == 200
@@ -399,11 +478,82 @@ def test_agent_set_target_rate_command_lifecycle() -> None:
     assert claimed_again.status_code == 200
     assert claimed_again.json() == []
     assert result.status_code == 200
-    assert result.json()["status"] == "executed"
+    assert result.json()["status"] == "applied"
     assert verified_heartbeat.status_code == 200
     command = next(item for item in store.commands if item.id == command_id)
     assert command.status == "verified"
-    assert "target_rate=0.72" in command.result_message
+    assert command.verification_status == "effective"
+    assert command.verification_evidence["flow_improved"] is True
+    assert command.verification_evidence["observation_count"] == 3
+
+
+def test_agent_command_rejects_target_above_reported_physical_capacity() -> None:
+    node_code = "milling-workshop-01"
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            "/api/node-heartbeats",
+            headers=AUTH_HEADERS,
+            json={
+                "node_code": node_code,
+                "status": "running",
+                "runtime": {
+                    "simulation_engine": "simpy",
+                    "run_id": "RUN-CAPACITY",
+                    "scenario_id": "SCN-CAPACITY",
+                },
+                "production": {
+                    "machine_code": "MILL-02",
+                    "workshop_type": "milling",
+                    "machine_count": 2,
+                    "process_time_sec": 144,
+                    "nominal_capacity_per_hour": 50.0,
+                    "target_rate": 0.833,
+                    "actual_rate": 0.7,
+                    "utilization": 0.84,
+                    "wip_input": 8,
+                    "wip_output": 4,
+                },
+            },
+        )
+        created = client.post(
+            f"/api/agents/{node_code}/commands",
+            headers=AUTH_HEADERS,
+            json={"command_type": "set_target_rate", "target_rate": 1.0, "operator": "pytest"},
+        )
+
+    assert heartbeat.status_code == 200
+    assert created.status_code == 422
+    assert created.json()["detail"]["code"] == "target_exceeds_physical_capacity"
+    assert created.json()["detail"]["maximum_rate"] == pytest.approx(50.0 / 60.0, abs=0.001)
+
+
+def test_dashboard_snapshot_preserves_raw_and_controlled_finished_quantities() -> None:
+    node_code = "turning-workshop-01"
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            "/api/node-heartbeats",
+            headers=AUTH_HEADERS,
+            json={
+                "node_code": node_code,
+                "status": "running",
+                "runtime": {"run_id": "RUN-RATE-AUDIT", "scenario_id": "SCN-RATE-AUDIT"},
+                "production": {
+                    "machine_code": "LATHE-01",
+                    "workshop_type": "turning",
+                    "finished_quantity": 9,
+                    "raw_finished_quantity": 12,
+                    "target_rate": 0.5,
+                    "actual_rate": 0.42,
+                },
+            },
+        )
+        snapshot = client.get("/api/dashboard/snapshot", headers=AUTH_HEADERS)
+
+    node = next(item for item in snapshot.json()["nodes"] if item["node_code"] == node_code)
+    assert heartbeat.status_code == 200
+    assert snapshot.status_code == 200
+    assert node["production"]["finished_quantity"] == 9
+    assert node["production"]["raw_finished_quantity"] == 12
 
 
 def test_node_agent_dispatch_and_local_record_sync() -> None:
@@ -435,7 +585,7 @@ def test_node_agent_dispatch_and_local_record_sync() -> None:
                 "node_code": node_code,
                 "records": [{
                     "local_id": 101,
-                    "payload": "{\"kind\": \"heartbeat\"}",
+                    "payload": {"kind": "heartbeat", "tick": 1},
                     "created_at": "2026-06-22T00:00:00+00:00",
                 }],
             },
@@ -447,6 +597,7 @@ def test_node_agent_dispatch_and_local_record_sync() -> None:
     assert first_sync.json()["records_accepted"] == 1
     assert duplicate_sync.status_code == 200
     assert duplicate_sync.json()["records_accepted"] == 0
+    assert duplicate_sync.json()["records_duplicate"] == 1
 
 
 def test_part_queue_api_claims_once_and_completes() -> None:
@@ -571,7 +722,9 @@ def test_v2_node_heartbeat_flows_into_dashboard_state() -> None:
     milling = next(node for node in nodes if node["node_code"] == "milling-workshop-01")
     assert milling["runtime"]["run_id"] == "RUN-20260613-001"
     assert milling["runtime"]["simulation_engine"] == "simpy"
-    assert milling["production"]["wip_input"] == 8
+    assert milling["runtime"]["runtime_source"] == "simulated"
+    assert milling["production"]["reported_wip_input"] == 8
+    assert milling["production"]["wip_source"] == "part_queue"
     assert milling["production"]["actual_rate"] == 0.82
     assert milling["sync"]["pending_records"] == 2
     assert any(alert["alert_type"] == "COOLANT_FLOW_LOW" for alert in milling["alarms"])
@@ -662,7 +815,12 @@ def test_dashboard_snapshot_exposes_v2_contract() -> None:
     assert snapshot.status_code == 200
     payload = snapshot.json()
     assert payload["schema_version"] == "2.2"
-    assert payload["data_source"] == "live"
+    assert payload["data_source"] == "simulated"
+    assert payload["presentation_mode"] == "normal"
+    assert payload["system"]["data_provenance"]["device_connection"] == {
+        "source": "none",
+        "write_enabled": False,
+    }
     assert payload["run"]["run_id"] == "RUN-20260613-SNAPSHOT"
     assert payload["run"]["scenario_id"] == "SCN-TURNING-NORMAL-001"
     assert payload["system"]["nodes_expected"] >= 3
@@ -685,6 +843,68 @@ def test_dashboard_snapshot_exposes_v2_contract() -> None:
     assert isinstance(payload["rule_conclusions"], list)
     assert "recent_events" in payload["audit"]
     assert "recent_logs" in payload["timeline"]
+
+
+def test_dashboard_demo_overlay_is_never_labeled_live() -> None:
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/dashboard/snapshot?mode=milling_bottleneck",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data_source"] == "fixture"
+    assert payload["presentation_mode"] == "milling_bottleneck"
+
+
+def test_environment_boundary_rejects_source_mismatch_and_read_only_control(monkeypatch) -> None:
+    with TestClient(app) as client:
+        monkeypatch.setattr(settings, "data_source", "live")
+        mismatch = client.post(
+            "/api/node-heartbeats",
+            headers=AUTH_HEADERS,
+            json={
+                "node_code": "turning-workshop-01",
+                "runtime": {"simulation_engine": "simpy", "run_id": "RUN-MISMATCH"},
+                "production": {"machine_code": "LATHE-01", "workshop_type": "turning"},
+            },
+        )
+
+        monkeypatch.setattr(settings, "data_source", "simulated")
+        monkeypatch.setattr(settings, "control_mode", "read_only")
+        command = client.post(
+            "/api/agents/turning-workshop-01/commands",
+            headers=AUTH_HEADERS,
+            json={"command_type": "set_target_rate", "target_rate": 0.5, "operator": "pytest"},
+        )
+
+    assert mismatch.status_code == 409
+    assert mismatch.json()["detail"]["code"] == "data_source_mismatch"
+    assert command.status_code == 409
+    assert command.json()["detail"]["code"] == "control_mode_read_only"
+
+
+def test_production_environment_disables_demo_overlays(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "demo_seed_enabled", False)
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/dashboard/snapshot?mode=grinding_starvation",
+            headers=AUTH_HEADERS,
+        )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "demo_disabled"
+
+
+def test_health_exposes_non_secret_environment_boundary() -> None:
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["environment"] == settings.environment_status()
 
 
 def test_dashboard_state_is_snapshot_wrapper() -> None:
@@ -836,7 +1056,13 @@ def test_value_error_handler_returns_400() -> None:
         response = client.get("/boom", headers=AUTH_HEADERS)
 
     assert response.status_code == 400
-    assert response.json() == {"detail": "bad input"}
+    payload = response.json()
+    assert payload["detail"] == "bad input"
+    assert payload["code"] == "INVALID_ARGUMENT"
+    assert payload["status"] == 400
+    assert payload["request_id"] == response.headers["X-Request-ID"]
+    assert payload["timestamp"].endswith("Z")
+    assert response.headers["content-type"].startswith("application/problem+json")
 
 
 def test_runtime_error_handler_hides_detail_by_default() -> None:
@@ -851,7 +1077,35 @@ def test_runtime_error_handler_hides_detail_by_default() -> None:
         response = client.get("/boom", headers=AUTH_HEADERS)
 
     assert response.status_code == 500
-    assert response.json() == {"detail": "Internal server error"}
+    payload = response.json()
+    assert payload["detail"] == "Internal server error"
+    assert payload["code"] == "INTERNAL_ERROR"
+    assert "database password" not in response.text
+
+
+def test_validation_and_auth_errors_use_problem_contract_and_request_id() -> None:
+    local_app = FastAPI()
+    setup_middleware(local_app)
+
+    @local_app.get("/validated")
+    def validated(quantity: int):
+        return {"quantity": quantity}
+
+    supplied_request_id = "external-trace-12345678"
+    with TestClient(local_app) as client:
+        invalid = client.get(
+            "/validated?quantity=not-a-number",
+            headers={**AUTH_HEADERS, "X-Request-ID": supplied_request_id},
+        )
+        unauthenticated = client.get("/validated?quantity=1")
+
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "VALIDATION_ERROR"
+    assert invalid.json()["request_id"] == supplied_request_id
+    assert invalid.headers["X-Request-ID"] == supplied_request_id
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["code"] == "UNAUTHENTICATED"
+    assert unauthenticated.headers["X-Request-ID"] == unauthenticated.json()["request_id"]
 
 
 def test_ops_pending_approve_and_reject_flow() -> None:
