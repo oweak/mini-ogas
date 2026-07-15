@@ -1,8 +1,8 @@
 """Persistent local RBAC and minimal HS256 JWT support.
 
 The dashboard uses bearer tokens issued after a password is verified against
-the persistence backend. Machine-to-machine ingestion remains separately
-authenticated with NODE_INGEST_TOKEN.
+the persistence backend. Machine identities use independently rotatable,
+revocable opaque credentials bound to a Principal and, for nodes, a node_code.
 """
 
 from __future__ import annotations
@@ -43,6 +43,12 @@ ALL_PERMISSIONS = (
     "telemetry:retention",
     "projection:rebuild",
     "document-object:manage",
+    "principal:manage",
+    "node:heartbeat",
+    "command:receive",
+    "command:report",
+    "production:execute",
+    "ai:suggest",
 )
 
 ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
@@ -88,6 +94,17 @@ ROLE_PERMISSIONS: dict[str, tuple[str, ...]] = {
         "document-object:manage",
     ),
     "viewer": ("node:view", "telemetry:read"),
+    "node_agent": (
+        "node:view",
+        "node:heartbeat",
+        "metric:ingest",
+        "telemetry:ingest",
+        "command:receive",
+        "command:report",
+        "production:execute",
+    ),
+    "service_reader": ("node:view", "telemetry:read"),
+    "ai_agent": ("node:view", "telemetry:read", "ai:suggest"),
 }
 
 
@@ -117,6 +134,7 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
 def initialize_auth_store() -> None:
     """Seed fixed RBAC policy and a first administrator exactly once."""
     init_db()
+    human_principals: list[dict[str, Any]] = []
     with get_db() as db:
         for permission in ALL_PERMISSIONS:
             db.execute(
@@ -167,6 +185,27 @@ def initialize_auth_store() -> None:
                    VALUES (?, ?) ON CONFLICT (username, role_name) DO NOTHING""",
                 (settings.auth_bootstrap_username, "system_admin"),
             )
+        users = db.execute(
+            "SELECT username, display_name FROM users WHERE active = ? ORDER BY username",
+            (True,),
+        ).fetchall()
+        for user in users:
+            roles = db.execute(
+                "SELECT role_name FROM user_roles WHERE username = ? ORDER BY role_name",
+                (user["username"],),
+            ).fetchall()
+            human_principals.append(
+                {
+                    "username": str(user["username"]),
+                    "display_name": str(user["display_name"]),
+                    "roles": [str(row["role_name"]) for row in roles],
+                }
+            )
+    from .principals import initialize_configured_node_principals, sync_human_principal
+
+    for human in human_principals:
+        sync_human_principal(human)
+    initialize_configured_node_principals()
 
 
 def authenticate_user(login_name: str, password: str) -> dict[str, Any] | None:
@@ -217,6 +256,9 @@ def issue_access_token(user: dict[str, Any]) -> str:
         "iat": now,
         "exp": now + settings.auth_jwt_ttl_seconds,
         "jti": secrets.token_urlsafe(12),
+        "principal_id": user.get("principal_id", f"user:{user['username']}"),
+        "principal_type": user.get("principal_type", "human"),
+        "node_code": user.get("node_code", ""),
     }
     signing_input = f"{_b64encode(_json_bytes(header))}.{_b64encode(_json_bytes(payload))}".encode(
         "ascii"

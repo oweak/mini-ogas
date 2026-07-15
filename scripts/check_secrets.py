@@ -8,7 +8,7 @@ from typing import Iterable
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {
     "node_modules", "dist", "__pycache__", ".git", ".venv",
-    ".playwright-mcp", ".pytest_cache", ".runtime",
+    ".playwright-mcp", ".pytest_cache", ".runtime", "output",
 }
 MAX_SCAN_BYTES = 500_000
 

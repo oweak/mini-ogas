@@ -31,4 +31,5 @@ os.environ["NATS_ENABLED"] = "false"
 # Existing endpoint tests use the legacy machine header. Production defaults to
 # bearer JWT only; focused migration tests exercise that path directly.
 os.environ["ALLOW_LEGACY_API_TOKEN_AUTH"] = "true"
+os.environ["ALLOW_LEGACY_NODE_TOKEN_AUTH"] = "true"
 os.environ["JWT_SECRET"] = "mini-ogas-test-jwt-secret"

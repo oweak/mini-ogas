@@ -7,12 +7,13 @@ from collections.abc import Awaitable, Callable
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .auth import decode_access_token
 from .config import settings
 from .errors import problem_response
 from .identity import REQUEST_ID_HEADER
+from .principals import authenticate_bearer_credential, authenticate_node_credential
 
 PUBLIC_PATHS = {
     "/health",
@@ -55,15 +56,31 @@ PERM_TELEMETRY_READ = "telemetry:read"
 PERM_TELEMETRY_RETENTION = "telemetry:retention"
 PERM_PROJECTION_REBUILD = "projection:rebuild"
 PERM_DOCUMENT_OBJECT_MANAGE = "document-object:manage"
+PERM_PRINCIPAL_MANAGE = "principal:manage"
+PERM_NODE_HEARTBEAT = "node:heartbeat"
+PERM_COMMAND_RECEIVE = "command:receive"
+PERM_COMMAND_REPORT = "command:report"
+PERM_PRODUCTION_EXECUTE = "production:execute"
+PERM_AI_SUGGEST = "ai:suggest"
 
 
 class ActorInfo(BaseModel):
     """Identity derived from a verified credential, never request payloads."""
 
+    principal_id: str = ""
+    principal_type: str = "human"
     username: str = ""
     display_name: str = ""
     role: str
+    roles: list[str] = Field(default_factory=list)
     permissions: set[str]
+    node_code: str = ""
+    credential_id: str = ""
+
+
+def actor_identity(actor: ActorInfo) -> str:
+    """Return a stable audit identity derived only from verified credentials."""
+    return actor.principal_id or actor.username or actor.display_name or actor.role
 
 
 def _is_node_ingest_path(path: str) -> bool:
@@ -82,6 +99,13 @@ def _is_node_ingest_path(path: str) -> bool:
         or path.startswith("/node-dispatches/")
         or (path.startswith("/commands/") and path.endswith("/result"))
     )
+
+
+def _path_node_code(path: str) -> str:
+    parts = [part for part in path.split("/") if part]
+    if len(parts) >= 2 and parts[0] in {"nodes", "agents", "node-dispatches"}:
+        return parts[1]
+    return ""
 
 
 def _bearer_token(request: Request) -> str:
@@ -146,17 +170,44 @@ async def security_middleware(
 
     if _is_node_ingest_path(path):
         token = request.headers.get("x-ogas-token", "")
-        if not secrets.compare_digest(token, settings.node_ingest_token):
-            return _json_error(request, 401, "missing or invalid node credential")
-        request.state.actor = ActorInfo(
-            username="node-agent",
-            display_name="node-agent",
-            role="node_agent",
-            permissions={PERM_NODE_VIEW, PERM_METRIC_INGEST, PERM_TELEMETRY_INGEST},
-        )
+        principal = authenticate_node_credential(token)
+        if principal is not None:
+            request.state.actor = ActorInfo.model_validate(principal)
+        elif settings.allow_legacy_node_token_auth and secrets.compare_digest(
+            token, settings.node_ingest_token
+        ):
+            request.state.actor = ActorInfo(
+                principal_id="legacy-node-token",
+                principal_type="node",
+                username="legacy-node-agent",
+                display_name="legacy-node-agent",
+                role="node_agent",
+                roles=["node_agent"],
+                permissions={
+                    PERM_NODE_VIEW,
+                    PERM_NODE_HEARTBEAT,
+                    PERM_METRIC_INGEST,
+                    PERM_TELEMETRY_INGEST,
+                    PERM_COMMAND_RECEIVE,
+                    PERM_COMMAND_REPORT,
+                    PERM_PRODUCTION_EXECUTE,
+                },
+            )
+        else:
+            return _json_error(request, 401, "missing, invalid, or revoked node credential")
+        target_node = _path_node_code(path)
+        actor = request.state.actor
+        if target_node and actor.node_code and target_node != actor.node_code:
+            return _json_error(request, 403, "node credential cannot access another node")
     else:
-        claims = decode_access_token(_bearer_token(request))
-        if claims is None and settings.allow_legacy_api_token_auth:
+        bearer_token = _bearer_token(request)
+        claims = decode_access_token(bearer_token)
+        opaque_principal = (
+            authenticate_bearer_credential(bearer_token) if claims is None else None
+        )
+        if opaque_principal is not None:
+            request.state.actor = ActorInfo.model_validate(opaque_principal)
+        elif claims is None and settings.allow_legacy_api_token_auth:
             legacy_token = request.headers.get("x-ogas-token", "")
             if secrets.compare_digest(legacy_token, settings.api_access_token):
                 claims = {
@@ -190,15 +241,22 @@ async def security_middleware(
                         PERM_DOCUMENT_OBJECT_MANAGE,
                     ],
                 }
-        if claims is None:
-            return _json_error(request, 401, "missing or invalid bearer access token")
-        roles = claims.get("roles") or []
-        request.state.actor = ActorInfo(
-            username=str(claims.get("sub") or ""),
-            display_name=str(claims.get("name") or claims.get("sub") or ""),
-            role=str(roles[0]) if roles else "viewer",
-            permissions={str(item) for item in claims.get("permissions", [])},
-        )
+        if opaque_principal is None:
+            if claims is None:
+                return _json_error(request, 401, "missing or invalid bearer access token")
+            roles = claims.get("roles") or []
+            request.state.actor = ActorInfo(
+                principal_id=str(
+                    claims.get("principal_id") or f"user:{claims.get('sub') or ''}"
+                ),
+                principal_type=str(claims.get("principal_type") or "human"),
+                username=str(claims.get("sub") or ""),
+                display_name=str(claims.get("name") or claims.get("sub") or ""),
+                role=str(roles[0]) if roles else "viewer",
+                roles=[str(item) for item in roles],
+                permissions={str(item) for item in claims.get("permissions", [])},
+                node_code=str(claims.get("node_code") or ""),
+            )
 
     limited = _rate_limit(request)
     if limited is not None:
@@ -211,6 +269,21 @@ def get_current_actor(request: Request) -> ActorInfo:
     if isinstance(actor, ActorInfo):
         return actor
     raise HTTPException(status_code=401, detail="authentication context is missing")
+
+
+def assert_node_resource_access(actor: ActorInfo, node_code: str) -> None:
+    if actor.principal_type != "node":
+        raise HTTPException(status_code=403, detail="this resource requires a node principal")
+    if actor.node_code:
+        if actor.node_code != node_code:
+            raise HTTPException(
+                status_code=403,
+                detail="node credential cannot access another node",
+            )
+        return
+    if actor.principal_id == "legacy-node-token" and settings.allow_legacy_node_token_auth:
+        return
+    raise HTTPException(status_code=403, detail="node credential is not bound to node_code")
 
 
 def require_permission(permission: str):

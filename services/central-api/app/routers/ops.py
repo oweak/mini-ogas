@@ -1,31 +1,21 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from ..command_control_service import command_control_service
 from ..core.security import (
     PERM_COMMAND_APPROVE,
     PERM_COMMAND_ISSUE,
     PERM_COMMAND_REJECT,
     ActorInfo,
+    actor_identity,
     require_permission,
 )
-from ..core.config import settings
 from ..models import ControlCommandRequest, ControlCommandResponse
 from ..safety_governor import safety_governor
 from ..store import store
 from .control import execute_plan, plan_command
 
 router = APIRouter(prefix="/ops", tags=["ops"])
-
-
-def _require_operator_control() -> None:
-    if settings.control_mode == "read_only":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "control_mode_read_only",
-                "message": "The configured CONTROL_MODE does not permit control actions.",
-            },
-        )
 
 
 class OperatorAgentCommandIn(BaseModel):
@@ -39,30 +29,12 @@ def issue_agent_command(
     payload: OperatorAgentCommandIn,
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
 ):
-    _require_operator_control()
-    if node_code not in store.nodes:
-        raise HTTPException(status_code=404, detail="node not found")
     if payload.command_type != "set_target_rate":
         raise HTTPException(status_code=400, detail="only set_target_rate is supported")
-    physical_limit = store.reported_physical_rate_limit_per_minute(node_code)
-    if physical_limit is not None and payload.target_rate > physical_limit + 1e-9:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "target_exceeds_physical_capacity",
-                "requested_rate": payload.target_rate,
-                "maximum_rate": round(physical_limit, 3),
-                "rate_unit": "parts_per_minute",
-                "node_code": node_code,
-            },
-        )
-    return store.add_command(
-        node_code,
-        "set_target_rate",
-        "low",
-        "pending",
-        actor.username or actor.role,
-        parameters={"target_rate": payload.target_rate},
+    return command_control_service.issue_target_rate(
+        node_code=node_code,
+        target_rate=payload.target_rate,
+        actor=actor,
     )
 
 
@@ -81,13 +53,21 @@ def list_pending_approvals():
 
 
 @router.post("/approve/{command_id}")
-def approve_command(command_id: int, actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE))):
-    return store.approve_command(command_id, actor.role)
+def approve_command(
+    command_id: int,
+    confirmation_code: str = Query(default=""),
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE)),
+):
+    return command_control_service.approve(
+        command_id,
+        actor=actor,
+        confirmation_code=confirmation_code,
+    )
 
 
 @router.post("/reject/{command_id}")
 def reject_command(command_id: int, reason: str = Query(default=""), actor: ActorInfo = Depends(require_permission(PERM_COMMAND_REJECT))):
-    return store.reject_command(command_id, actor.role, reason)
+    return command_control_service.reject(command_id, actor=actor, reason=reason)
 
 
 @router.post("/commands/{command_id}/cancel")
@@ -96,15 +76,20 @@ def cancel_command(
     reason: str = Query(default=""),
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_REJECT)),
 ):
-    return store.cancel_command(command_id, actor.username or actor.role, reason)
+    return command_control_service.cancel(command_id, actor=actor, reason=reason)
 
 
 @router.post("/commands/{command_id}/retry")
 def retry_command(
     command_id: int,
+    confirmation_code: str = Query(default=""),
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
 ):
-    return store.retry_command(command_id, actor.username or actor.role)
+    return command_control_service.retry(
+        command_id,
+        actor=actor,
+        confirmation_code=confirmation_code,
+    )
 
 
 @router.get("/escalations")
@@ -131,7 +116,12 @@ def list_escalations():
 
 
 @router.post("/escalate")
-def escalate(node_code: str, issue_type: str, description: str):
+def escalate(
+    node_code: str,
+    issue_type: str,
+    description: str,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
     return store.escalate_to_human(node_code, issue_type, description)
 
 
@@ -161,6 +151,7 @@ def issue_command(
         target_node=plan.target_node,
         risk_level=plan.risk_level,
         actor_role=actor.role,
+        actor_id=actor_identity(actor),
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirm,
     )
@@ -179,7 +170,7 @@ def issue_command(
             safety=decision.model_dump(mode="json"),
         )
 
-    result = execute_plan(plan, actor.role, decision)
+    result = execute_plan(plan, actor_identity(actor), decision)
     return ControlCommandResponse(
         accepted=True,
         executed=True,

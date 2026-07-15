@@ -3,8 +3,9 @@ import hashlib
 import json
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from ..core.security import PERM_TELEMETRY_MANAGE, ActorInfo, require_permission
 from ..models import TransferDataTestIn, TransferFileTestIn, TransferTestResult
 from ..store import store
 
@@ -28,7 +29,10 @@ def _ensure_target_node(target_node: str) -> None:
 
 
 @router.post("/data-test", response_model=TransferTestResult)
-def data_transfer_test(payload: TransferDataTestIn) -> TransferTestResult:
+def data_transfer_test(
+    payload: TransferDataTestIn,
+    actor: ActorInfo = Depends(require_permission(PERM_TELEMETRY_MANAGE)),
+) -> TransferTestResult:
     _ensure_target_node(payload.target_node)
     raw = json.dumps(payload.model_dump(), ensure_ascii=False, sort_keys=True).encode("utf-8")
     checksum = hashlib.sha256(raw).hexdigest()
@@ -50,7 +54,10 @@ def data_transfer_test(payload: TransferDataTestIn) -> TransferTestResult:
 
 
 @router.post("/file-test", response_model=TransferTestResult)
-def file_transfer_test(payload: TransferFileTestIn) -> TransferTestResult:
+def file_transfer_test(
+    payload: TransferFileTestIn,
+    actor: ActorInfo = Depends(require_permission(PERM_TELEMETRY_MANAGE)),
+) -> TransferTestResult:
     _ensure_target_node(payload.target_node)
     try:
         raw = base64.b64decode(payload.content_base64, validate=True)

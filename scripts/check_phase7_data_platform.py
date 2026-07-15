@@ -202,9 +202,8 @@ def run_gate(
     redis_env = _read_env_file(runtime_root / "data-platform" / "redis" / "redis.env")
     minio_env = _read_env_file(runtime_root / "data-platform" / "minio" / "minio.env")
     password = auth.get("AUTH_BOOTSTRAP_PASSWORD", "")
-    node_token = (runtime_root / "miniogas-token.txt").read_text(encoding="ascii").strip()
     dsn = read_env_value(runtime_root / "postgres.env", "POSTGRES_DSN")
-    _require(bool(password and node_token and dsn), "runtime credentials or PostgreSQL DSN missing")
+    _require(bool(password and dsn), "runtime administrator credential or PostgreSQL DSN missing")
 
     client = ApiClient(api_url)
     login = client.post(
@@ -214,6 +213,18 @@ def run_gate(
     )
     client.token = str(login.get("access_token") or "")
     _require(bool(client.token), "administrator login returned no bearer token")
+    prefix = f"P7G{datetime.now(UTC):%m%d%H%M%S}{uuid4().hex[:6].upper()}"
+    validation_source = f"{prefix.lower()}-validation-node"
+    issued = client.post(
+        f"/security/node-credentials/{validation_source}/rotate",
+        {},
+        expected=(200,),
+    )
+    node_token = str(issued.get("token") or "")
+    _require(
+        bool(node_token) and issued.get("node_code") == validation_source,
+        "temporary telemetry Principal did not return a bound node credential",
+    )
 
     structure = _verify_database_structure(dsn, tenant_id, site_id)
     quality = client.get("/telemetry/quality/summary")
@@ -261,9 +272,8 @@ def run_gate(
     _require(telemetry_delta > 0, "typed telemetry did not grow while node agents were running")
     _require(legacy_delta == 0, "heartbeat telemetry polluted the legacy business metrics table")
 
-    prefix = f"P7G{datetime.now(UTC):%m%d%H%M%S}{uuid4().hex[:6].upper()}"
     benchmark_at = datetime.now(UTC) - timedelta(days=raw_retention_days + 1)
-    benchmark_source = f"{prefix}-load-source"
+    benchmark_source = validation_source
     benchmark_samples = [
         {
             "sample_id": f"{prefix}-LOAD-{index:04d}",
@@ -401,7 +411,7 @@ def run_gate(
     _require(int(revision.get("content_length") or -1) == len(object_body), "length mismatch")
 
     old_at = datetime.now(UTC) - timedelta(days=raw_retention_days + 1)
-    retention_source = f"{prefix}-retention-source"
+    retention_source = validation_source
     retention_sample = f"{prefix}-RETENTION-SAMPLE"
     _node_post(
         api_url,
@@ -468,6 +478,15 @@ def run_gate(
         ),
         "validation telemetry survived the aggregate-before-delete retention cycle",
     )
+    revoked = client.post(
+        f"/security/node-credentials/{validation_source}/revoke",
+        {},
+        expected=(200,),
+    )
+    _require(
+        int(revoked.get("revoked_credentials") or 0) >= 1,
+        "temporary telemetry Principal credential was not revoked",
+    )
 
     return {
         "status": "PASS",
@@ -499,6 +518,10 @@ def run_gate(
             "document_revision_id": int(revision["id"]),
         },
         "retention": retention_db,
+        "temporary_principal": {
+            "principal_id": issued.get("principal_id"),
+            "credential_revoked": True,
+        },
     }
 
 

@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -23,7 +25,15 @@ def production_settings(**overrides) -> Settings:
         "postgres_dsn": "postgresql://miniogas:secret@127.0.0.1:5432/miniogas",
         "auth_jwt_secret": "j" * 48,
         "node_ingest_token": "n" * 48,
+        "node_credentials_json": json.dumps(
+            {
+                "turning-workshop-01": "t" * 48,
+                "milling-workshop-01": "m" * 48,
+                "grinding-workshop-01": "g" * 48,
+            }
+        ),
         "allow_legacy_api_token_auth": False,
+        "allow_legacy_node_token_auth": False,
         "tenant_id": "tenant-production",
         "site_id": "site-production-01",
     }
@@ -67,8 +77,32 @@ def test_direct_runtime_dependencies_are_declared_for_clean_install() -> None:
         ({"data_source": "simulated"}, "DATA_SOURCE must be shadow or live"),
         ({"demo_seed_enabled": True, "data_source": "simulated"}, "Demo Seed must be disabled"),
         ({"auth_jwt_secret": LOCAL_DEVELOPMENT_JWT_SECRET}, "JWT_SECRET"),
-        ({"node_ingest_token": "short"}, "NODE_INGEST_TOKEN"),
+        (
+            {
+                "node_credentials_json": json.dumps(
+                    {
+                        "turning-workshop-01": "same" * 12,
+                        "milling-workshop-01": "same" * 12,
+                        "grinding-workshop-01": "same" * 12,
+                    }
+                )
+            },
+            "must be unique per node",
+        ),
+        (
+            {
+                "node_credentials_json": json.dumps(
+                    {
+                        "turning-workshop-01": "replace_turning_node_token_000000000000",
+                        "milling-workshop-01": "replace_milling_node_token_000000000000",
+                        "grinding-workshop-01": "replace_grinding_node_token_000000000000",
+                    }
+                )
+            },
+            "must not use placeholder values",
+        ),
         ({"allow_legacy_api_token_auth": True}, "legacy API token"),
+        ({"allow_legacy_node_token_auth": True}, "legacy shared node token"),
     ],
 )
 def test_invalid_production_boundaries_fail_fast(overrides: dict, message: str) -> None:

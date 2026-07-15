@@ -83,6 +83,8 @@ if (-not (Test-Path -LiteralPath $TokenPath)) {
   throw "Node API token file is missing: $TokenPath"
 }
 $token = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
+. (Join-Path $PSScriptRoot "node-credentials.ps1")
+$nodeCredentialState = Get-MiniOgasNodeCredentialState -RuntimeRoot $RuntimeRoot -CreateIfMissing
 $postgresDsn = Get-ConfigValue $PostgresConfigPath "POSTGRES_DSN"
 $jwtSecret = Get-ConfigValue $AuthConfigPath "JWT_SECRET"
 $bootstrapPassword = Get-ConfigValue $AuthConfigPath "AUTH_BOOTSTRAP_PASSWORD"
@@ -178,6 +180,11 @@ $env:SITE_ID = $SiteId
 $env:OGAS_API_TOKEN = $token
 $env:API_ACCESS_TOKEN = $token
 $env:NODE_INGEST_TOKEN = $token
+$env:NODE_CREDENTIALS_JSON = $nodeCredentialState.Json
+$env:ALLOW_LEGACY_NODE_TOKEN_AUTH = "false"
+$env:TURNING_NODE_TOKEN = $nodeCredentialState.Credentials["turning-workshop-01"]
+$env:MILLING_NODE_TOKEN = $nodeCredentialState.Credentials["milling-workshop-01"]
+$env:GRINDING_NODE_TOKEN = $nodeCredentialState.Credentials["grinding-workshop-01"]
 $env:POSTGRES_DSN = $postgresDsn
 $env:JWT_SECRET = $jwtSecret
 $env:AUTH_BOOTSTRAP_PASSWORD = $bootstrapPassword

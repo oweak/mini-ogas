@@ -2082,7 +2082,7 @@ class MemoryStore:
             raise PermissionError(f"approved safety decision required for {action}")
         if decision.action != action or decision.target_node != node_code:
             raise PermissionError("safety decision does not match the requested action and target")
-        if decision.actor_role != actor:
+        if (decision.actor_id or decision.actor_role) != actor:
             raise PermissionError("safety decision actor does not match the executing actor")
         return decision
 
@@ -2100,7 +2100,7 @@ class MemoryStore:
             sort_keys=True,
         )
         return self.add_audit_log(
-            decision.actor_role or "unknown",
+            decision.actor_id or decision.actor_role or "unknown",
             f"safety:{decision.action}",
             "node" if decision.target_node else "control_action",
             decision.target_node or decision.action,

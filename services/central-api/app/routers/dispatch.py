@@ -1,5 +1,6 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
+from ..core.security import PERM_COMMAND_ISSUE, ActorInfo, require_permission
 from ..store import store
 
 router = APIRouter(prefix="/dispatch", tags=["dispatch"])
@@ -16,7 +17,9 @@ def list_resource_allocations():
 
 
 @router.post("/rebuild")
-def rebuild_dispatch():
+def rebuild_dispatch(
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
     tasks = store.rebuild_dispatch()
     blocked = sum(1 for task in tasks if task.status == "blocked")
     return {

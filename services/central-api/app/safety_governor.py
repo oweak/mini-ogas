@@ -26,6 +26,7 @@ class SafetyDecision(BaseModel):
     target_node: str = ""
     risk_level: str = "low"
     actor_role: str = ""
+    actor_id: str = ""
     run_mode: str = "normal"
 
 
@@ -39,6 +40,7 @@ class SafetyGovernor:
         target_node: str | None,
         risk_level: str,
         actor_role: str,
+        actor_id: str = "",
         known_nodes: set[str],
         confirmation_code: str | None = None,
         run_mode: str = "normal",
@@ -53,6 +55,7 @@ class SafetyGovernor:
                 target,
                 risk,
                 actor_role,
+                actor_id,
                 run_mode,
             )
         if action == "isolate_node" and target in CONTROL_PLANE_NODES:
@@ -63,6 +66,7 @@ class SafetyGovernor:
                 target,
                 risk,
                 actor_role,
+                actor_id,
                 run_mode,
             )
         return self._confirmation_gate(
@@ -70,6 +74,7 @@ class SafetyGovernor:
             target_node=target,
             risk_level=risk,
             actor_role=actor_role,
+            actor_id=actor_id,
             confirmation_code=confirmation_code,
             run_mode=run_mode,
         )
@@ -79,6 +84,7 @@ class SafetyGovernor:
         *,
         action: str,
         actor_role: str,
+        actor_id: str = "",
         confirmation_code: str | None,
         target_node: str = "",
         risk_level: str = "high",
@@ -90,6 +96,7 @@ class SafetyGovernor:
             target_node=target_node,
             risk_level=risk,
             actor_role=actor_role,
+            actor_id=actor_id,
             confirmation_code=confirmation_code,
             run_mode=run_mode,
         )
@@ -101,6 +108,7 @@ class SafetyGovernor:
         target_node: str,
         risk_level: str,
         actor_role: str,
+        actor_id: str,
         confirmation_code: str | None,
         run_mode: str,
     ) -> SafetyDecision:
@@ -119,6 +127,7 @@ class SafetyGovernor:
                 target_node=target_node,
                 risk_level=risk_level,
                 actor_role=actor_role,
+                actor_id=actor_id,
                 run_mode=run_mode,
             )
         requires_confirmation = risk_level == "high" or action in HIGH_RISK_ACTIONS
@@ -133,6 +142,7 @@ class SafetyGovernor:
                 target_node=target_node,
                 risk_level=risk_level,
                 actor_role=actor_role,
+                actor_id=actor_id,
                 run_mode=run_mode,
             )
         if requires_confirmation and actor_role != "system_admin":
@@ -146,6 +156,7 @@ class SafetyGovernor:
                 target_node=target_node,
                 risk_level=risk_level,
                 actor_role=actor_role,
+                actor_id=actor_id,
                 run_mode=run_mode,
             )
         return SafetyDecision(
@@ -158,6 +169,7 @@ class SafetyGovernor:
             target_node=target_node,
             risk_level=risk_level,
             actor_role=actor_role,
+            actor_id=actor_id,
             run_mode=run_mode,
         )
 
@@ -177,6 +189,7 @@ class SafetyGovernor:
         target_node: str,
         risk_level: str,
         actor_role: str,
+        actor_id: str = "",
         run_mode: str = "normal",
     ) -> SafetyDecision:
         return SafetyDecision(
@@ -189,6 +202,7 @@ class SafetyGovernor:
             target_node=target_node,
             risk_level=risk_level,
             actor_role=actor_role,
+            actor_id=actor_id,
             run_mode=run_mode,
         )
 

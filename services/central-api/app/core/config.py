@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -99,6 +100,7 @@ class Settings(BaseModel):
     # Override API_ACCESS_TOKEN and NODE_INGEST_TOKEN in production.
     api_access_token: str = os.getenv("API_ACCESS_TOKEN", "")
     node_ingest_token: str = os.getenv("NODE_INGEST_TOKEN", os.getenv("API_ACCESS_TOKEN", ""))
+    node_credentials_json: str = os.getenv("NODE_CREDENTIALS_JSON", "").strip()
     auth_jwt_secret: str = os.getenv("JWT_SECRET", LOCAL_DEVELOPMENT_JWT_SECRET)
     auth_jwt_ttl_seconds: int = int(os.getenv("JWT_TTL_SECONDS", "28800"))
     auth_bootstrap_username: str = os.getenv("AUTH_BOOTSTRAP_USERNAME", "admin")
@@ -107,6 +109,9 @@ class Settings(BaseModel):
     # verified against the salted password hash stored in PostgreSQL/SQLite.
     auth_bootstrap_password: str = os.getenv("AUTH_BOOTSTRAP_PASSWORD", os.getenv("MINIOGAS_ADMIN_PASSWORD", ""))
     allow_legacy_api_token_auth: bool = os.getenv("ALLOW_LEGACY_API_TOKEN_AUTH", "false").lower() in {"1", "true", "yes", "on"}
+    allow_legacy_node_token_auth: bool = os.getenv(
+        "ALLOW_LEGACY_NODE_TOKEN_AUTH", "false"
+    ).lower() in {"1", "true", "yes", "on"}
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "1200"))
     microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     persist_enabled: bool = os.getenv("PERSIST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
@@ -217,10 +222,36 @@ class Settings(BaseModel):
                 problems.append("POSTGRES_DSN must be configured")
             if self.auth_jwt_secret == LOCAL_DEVELOPMENT_JWT_SECRET or len(self.auth_jwt_secret) < 32:
                 problems.append("JWT_SECRET must be a non-default secret of at least 32 characters")
-            if len(self.node_ingest_token) < 32:
-                problems.append("NODE_INGEST_TOKEN must be a non-default secret of at least 32 characters")
+            try:
+                node_credentials = json.loads(self.node_credentials_json)
+            except json.JSONDecodeError:
+                node_credentials = None
+            if not isinstance(node_credentials, dict):
+                problems.append("NODE_CREDENTIALS_JSON must be a JSON object")
+            else:
+                missing_nodes = sorted(set(self.expected_production_nodes) - set(node_credentials))
+                tokens = [str(node_credentials.get(node, "")) for node in self.expected_production_nodes]
+                if missing_nodes:
+                    problems.append(
+                        "NODE_CREDENTIALS_JSON is missing nodes: " + ", ".join(missing_nodes)
+                    )
+                if any(len(token) < 32 for token in tokens):
+                    problems.append("every production node credential must be at least 32 characters")
+                if len(set(tokens)) != len(tokens):
+                    problems.append("production node credentials must be unique per node")
+                placeholder_markers = ("replace", "changeme", "example", "your-token")
+                if any(
+                    marker in token.lower()
+                    for token in tokens
+                    for marker in placeholder_markers
+                ):
+                    problems.append(
+                        "production node credentials must not use placeholder values"
+                    )
             if self.allow_legacy_api_token_auth:
                 problems.append("legacy API token authentication must be disabled")
+            if self.allow_legacy_node_token_auth:
+                problems.append("legacy shared node token authentication must be disabled")
             if self.telemetry_bootstrap_catalog_enabled:
                 problems.append("digital-twin telemetry catalog bootstrap must be disabled")
             if self.tenant_id == "tenant-local" or self.site_id == "site-digital-twin":

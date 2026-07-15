@@ -318,6 +318,43 @@
         "title": "AiStatus",
         "type": "object"
       },
+      "AiSuggestionIn": {
+        "properties": {
+          "evidence": {
+            "title": "Evidence",
+            "type": "object"
+          },
+          "node_code": {
+            "maxLength": 64,
+            "minLength": 2,
+            "title": "Node Code",
+            "type": "string"
+          },
+          "recommendation": {
+            "maxLength": 2000,
+            "minLength": 8,
+            "title": "Recommendation",
+            "type": "string"
+          },
+          "risk_level": {
+            "enum": [
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Risk Level",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_code",
+          "risk_level",
+          "recommendation"
+        ],
+        "title": "AiSuggestionIn",
+        "type": "object"
+      },
       "AllocationOrderIn": {
         "properties": {
           "assigned_cloud_role": {
@@ -5002,6 +5039,45 @@
         ]
       }
     },
+    "/ai/suggestions": {
+      "post": {
+        "operationId": "submit_ai_suggestion_ai_suggestions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiSuggestionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Submit Ai Suggestion",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
     "/alerts": {
       "get": {
         "operationId": "list_alerts_alerts_get",
@@ -5125,414 +5201,6 @@
         "summary": "Create Allocation Order",
         "tags": [
           "production"
-        ]
-      }
-    },
-    "/api/agents/{node_code}/commands": {
-      "post": {
-        "operationId": "create_agent_command_api_agents__node_code__commands_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AgentCommandCreateIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Agent Command",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/agents/{node_code}/commands/pending": {
-      "get": {
-        "operationId": "claim_agent_pending_commands_api_agents__node_code__commands_pending_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Claim Agent Pending Commands",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/agents/{node_code}/parts/claim-next": {
-      "post": {
-        "operationId": "claim_next_part_api_agents__node_code__parts_claim_next_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "ttl_seconds",
-            "required": false,
-            "schema": {
-              "default": 30,
-              "title": "Ttl Seconds",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Claim Next Part",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/agents/{node_code}/parts/{part_id}/complete": {
-      "post": {
-        "operationId": "complete_part_api_agents__node_code__parts__part_id__complete_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "part_id",
-            "required": true,
-            "schema": {
-              "title": "Part Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PartCompleteIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Complete Part",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/commands/{command_id}/result": {
-      "post": {
-        "operationId": "agent_command_result_api_commands__command_id__result_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "command_id",
-            "required": true,
-            "schema": {
-              "title": "Command Id",
-              "type": "integer"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AgentCommandResultIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Agent Command Result",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/nodes/{node_code}/command-results": {
-      "post": {
-        "operationId": "command_results_api_nodes__node_code__command_results_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CommandResultIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Command Results",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/nodes/{node_code}/heartbeat": {
-      "put": {
-        "operationId": "node_heartbeat_api_nodes__node_code__heartbeat_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/NodeHeartbeatIn"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Node Heartbeat",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/nodes/{node_code}/pending-commands": {
-      "get": {
-        "operationId": "pending_commands_api_nodes__node_code__pending_commands_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "node_code",
-            "required": true,
-            "schema": {
-              "title": "Node Code",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Pending Commands",
-        "tags": [
-          "nodes"
-        ]
-      }
-    },
-    "/api/part-queue": {
-      "get": {
-        "operationId": "part_queue_api_part_queue_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Part Queue",
-        "tags": [
-          "nodes"
         ]
       }
     },
@@ -10885,6 +10553,16 @@
               "title": "Command Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "confirmation_code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Confirmation Code",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10975,6 +10653,16 @@
               "title": "Command Id",
               "type": "integer"
             }
+          },
+          {
+            "in": "query",
+            "name": "confirmation_code",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Confirmation Code",
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11045,7 +10733,7 @@
     },
     "/ops/dispatch-plan/approve-legacy": {
       "post": {
-        "description": "Approve a dispatch plan — creates audit event and returns success.",
+        "description": "Preserve the legacy path while enforcing the canonical approval chain.",
         "operationId": "approve_dispatch_plan_legacy_ops_dispatch_plan_approve_legacy_post",
         "requestBody": {
           "content": {
@@ -12254,6 +11942,265 @@
         "summary": "Get Rule Conclusions",
         "tags": [
           "demo"
+        ]
+      }
+    },
+    "/security/ai-agent-credentials/{agent_id}/revoke": {
+      "post": {
+        "operationId": "revoke_ai_agent_token_security_ai_agent_credentials__agent_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Ai Agent Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/ai-agent-credentials/{agent_id}/rotate": {
+      "post": {
+        "operationId": "rotate_ai_agent_token_security_ai_agent_credentials__agent_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Ai Agent Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/node-credentials/{node_code}/revoke": {
+      "post": {
+        "operationId": "revoke_node_token_security_node_credentials__node_code__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_code",
+            "required": true,
+            "schema": {
+              "title": "Node Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Node Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/node-credentials/{node_code}/rotate": {
+      "post": {
+        "operationId": "rotate_node_token_security_node_credentials__node_code__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "node_code",
+            "required": true,
+            "schema": {
+              "title": "Node Code",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Node Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/service-credentials/{service_id}/revoke": {
+      "post": {
+        "operationId": "revoke_service_token_security_service_credentials__service_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service_id",
+            "required": true,
+            "schema": {
+              "title": "Service Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Service Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/service-credentials/{service_id}/rotate": {
+      "post": {
+        "operationId": "rotate_service_token_security_service_credentials__service_id__rotate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "service_id",
+            "required": true,
+            "schema": {
+              "title": "Service Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rotate Service Token",
+        "tags": [
+          "security"
+        ]
+      }
+    },
+    "/security/whoami": {
+      "get": {
+        "operationId": "whoami_security_whoami_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Whoami",
+        "tags": [
+          "security"
         ]
       }
     },

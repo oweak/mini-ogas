@@ -1,8 +1,27 @@
 from fastapi.testclient import TestClient
 
+from app.core.auth import ALL_PERMISSIONS
 from app.core.config import settings
+from app.core.security import PUBLIC_PATHS, _is_node_ingest_path
 from app.main import app
 from app.store import store
+
+
+WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _route_required_permissions(route) -> set[str]:
+    required: set[str] = set()
+    for dependency in route.dependant.dependencies:
+        call = dependency.call
+        for cell in getattr(call, "__closure__", ()) or ():
+            try:
+                value = cell.cell_contents
+            except ValueError:
+                continue
+            if isinstance(value, str) and value in ALL_PERMISSIONS:
+                required.add(value)
+    return required
 
 
 def test_persisted_admin_login_issues_bearer_jwt_and_rejects_machine_token() -> None:
@@ -86,13 +105,73 @@ def test_operator_command_gateway_uses_jwt_and_keeps_agent_channel_machine_only(
             json={"command_type": "set_target_rate", "target_rate": 0.4},
             headers={"X-OGAS-Token": settings.node_ingest_token},
         )
+        issued_id = issued.json()["id"]
+        issue_audit = next(
+            item
+            for item in reversed(store.audit_logs)
+            if item.action == "command:issue" and item.resource_id == str(issued_id)
+        )
+        safety_audit = next(
+            item
+            for item in reversed(store.audit_logs)
+            if item.action == "safety:set_target_rate"
+            and item.resource_id == node_code
+        )
 
     assert heartbeat.status_code == 200
     assert wrong_channel.status_code == 401
     assert issued.status_code == 200
     assert issued.json()["node_code"] == node_code
     assert issued.json()["parameters"]["target_rate"] == 0.5
+    assert issued.json()["operator"] == "user:admin"
+    assert issue_audit.actor == "user:admin"
+    assert issue_audit.result == "pending"
+    assert safety_audit.actor == "user:admin"
+    assert safety_audit.result == "allowed"
     assert machine_denied.status_code == 401
+
+
+def test_node_machine_routes_do_not_register_nested_api_aliases(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    forbidden_prefixes = (
+        "/api/nodes/",
+        "/api/agents/",
+        "/api/commands/",
+        "/api/part-queue",
+    )
+    registered_aliases = sorted(
+        route.path
+        for route in app.routes
+        if any(route.path.startswith(prefix) for prefix in forbidden_prefixes)
+    )
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"operator": "admin", "password": "mini-ogas-dev-token"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        doubled = client.get(
+            "/api/api/agents/turning-workshop-01/commands/pending",
+            headers=auth,
+        )
+
+    assert registered_aliases == []
+    assert doubled.status_code == 404
+
+
+def test_all_human_write_routes_declare_a_specific_permission() -> None:
+    missing: list[str] = []
+    for route in app.routes:
+        path = getattr(route, "path", "")
+        methods = (getattr(route, "methods", set()) or set()) & WRITE_METHODS
+        if not methods or path in PUBLIC_PATHS or _is_node_ingest_path(path):
+            continue
+        if not _route_required_permissions(route):
+            for method in sorted(methods):
+                missing.append(f"{method} {path}")
+
+    assert missing == []
 
 
 def test_node_ingest_token_cannot_create_cross_node_command(monkeypatch) -> None:
@@ -203,7 +282,17 @@ def test_high_risk_alert_human_approval_closes_active_queues(monkeypatch) -> Non
             },
             headers={"X-OGAS-Token": settings.node_ingest_token},
         )
-        confirmed = client.post(f"/alerts/{issue_id}/confirm", json={"operator": "pytest"}, headers=auth)
+        confirmed = client.post(
+            f"/alerts/{issue_id}/confirm",
+            json={"operator": "pytest-forged"},
+            headers=auth,
+        )
+        confirm_audit_actor = next(
+            item.actor
+            for item in reversed(store.audit_logs)
+            if item.action == "alert:confirm"
+            and item.resource_id == str(confirmed.json()["alert_id"])
+        )
         diagnosed = client.post(f"/ai/diagnose/{issue_id}", headers=auth)
         queue = client.get("/ops/escalations", headers=auth).json()
         queue_item = next(item for item in queue if item.get("issue_id") == issue_id)
@@ -227,12 +316,84 @@ def test_high_risk_alert_human_approval_closes_active_queues(monkeypatch) -> Non
 
     assert heartbeat.status_code == 200
     assert confirmed.json()["lifecycle"]["status"] == "confirmed"
+    assert confirmed.json()["lifecycle"]["handled_by"] == "user:admin"
+    assert confirm_audit_actor == "user:admin"
     assert diagnosed.json()["decision"]["requires_human"] is True
     assert denied.json()["error"] == "confirmation_code_required"
     assert denied.json()["safety"]["reason_code"] == "confirmation_code_required"
     assert approved.json()["effect"]["verification"]["issue_closed"] is True
     assert not any(item.get("issue_id") == issue_id for item in active_alerts)
     assert not any(item.get("issue_id") == issue_id for item in active_queue)
+
+
+def test_legacy_dispatch_approval_cannot_bypass_safety_governor(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"operator": "admin", "password": "mini-ogas-dev-token"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        response = client.post(
+            "/ops/dispatch-plan/approve-legacy",
+            json={"actor": "pytest-forged", "confirmation_code": "WRONG"},
+            headers=auth,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is False
+    assert response.json()["status"] == "confirmation_required"
+    assert response.json()["safety"]["reason_code"] == "confirmation_code_required"
+
+
+def test_high_risk_command_approval_requires_safety_confirmation(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "allow_legacy_api_token_auth", False)
+    node_code = "workflow-check-node-pytest-command-approval"
+    with TestClient(app) as client:
+        heartbeat = client.post(
+            "/node-heartbeats",
+            json={"node_code": node_code, "status": "running"},
+            headers={"X-OGAS-Token": settings.node_ingest_token},
+        )
+        command = store.add_command(
+            node_code,
+            "emergency_stop",
+            "high",
+            "waiting_approval",
+            "ai:test-agent",
+        )
+        login = client.post(
+            "/auth/login",
+            json={"operator": "admin", "password": "mini-ogas-dev-token"},
+        )
+        auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+        denied = client.post(f"/ops/approve/{command.id}", headers=auth)
+        approved = client.post(
+            f"/ops/approve/{command.id}?confirmation_code=CONFIRM",
+            headers=auth,
+        )
+        retired = client.post(
+            f"/nodes/{node_code}/retire",
+            json={"confirmation_code": "CONFIRM"},
+            headers=auth,
+        )
+
+    assert heartbeat.status_code == 200
+    assert denied.status_code == 200
+    assert denied.json()["accepted"] is False
+    assert denied.json()["status"] == "blocked"
+    assert denied.json()["safety"]["reason_code"] == "confirmation_code_required"
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "pending"
+    assert approved.json()["actor"] == "user:admin"
+    assert retired.status_code == 200
+    assert any(
+        item.action == "command:approve"
+        and item.resource_id == str(command.id)
+        and item.actor == "user:admin"
+        and item.result == "pending"
+        for item in store.audit_logs
+    )
 
 
 def test_node_state_changes_cannot_bypass_safety_governor(monkeypatch) -> None:

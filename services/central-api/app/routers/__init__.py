@@ -23,6 +23,7 @@ from . import (
     quality,
     replay,
     reports,
+    security_admin,
     simulation,
     transfer,
 )
@@ -45,6 +46,7 @@ api_router.include_router(maintenance.router)
 api_router.include_router(production.router)
 api_router.include_router(replay.router)
 api_router.include_router(reports.router)
+api_router.include_router(security_admin.router)
 api_router.include_router(ai.router)
 api_router.include_router(audit.router)
 api_router.include_router(simulation.router)

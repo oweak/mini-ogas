@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.config import settings
+from ..core.security import PERM_SIMULATION_CONTROL, ActorInfo, require_permission
 from ..models import SimulationControl
 from ..store import store
 
@@ -26,7 +27,10 @@ def get_simulation_state():
 
 
 @router.post("/simulation/control")
-def control_simulation(payload: SimulationControl):
+def control_simulation(
+    payload: SimulationControl,
+    actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
+):
     _require_simulation_control()
     return store.configure_simulation(
         running=payload.running,
@@ -36,6 +40,8 @@ def control_simulation(payload: SimulationControl):
 
 
 @router.post("/simulation/step")
-def step_simulation():
+def step_simulation(
+    actor: ActorInfo = Depends(require_permission(PERM_SIMULATION_CONTROL)),
+):
     _require_simulation_control()
     return store.simulation_step()

@@ -3,7 +3,7 @@
   "files": {
     "contracts/asyncapi/mini-ogas-shadow-v3.json": "cbe488f2f05f1209c755ea30252ef7818025b027f1f8d66a5679a474d5341ab6",
     "contracts/events/transport-envelope-v3.schema.json": "0f2d93b685f6dfd21efff755c955bfbce70ab2aac399f563aa322ca62613fa8a",
-    "contracts/openapi/mini-ogas-openapi-v1.json": "9976535861ac9492f7a32750c31c888aef2fbba8b099bd2cb8ebb61c6c40027c"
+    "contracts/openapi/mini-ogas-openapi-v1.json": "8b376d42aa763bc1ff472583e24925f2969ef7e2a68baf43322fc6e438c89460"
   },
   "generator": "tools/export_contracts.py"
 }

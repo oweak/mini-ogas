@@ -16,6 +16,9 @@ function Invoke-Step {
 
 Push-Location $ProjectRoot
 try {
+  $env:GOMODCACHE = Join-Path $ProjectRoot ".runtime\go-mod-cache"
+  $env:GOCACHE = Join-Path $ProjectRoot ".runtime\go-build-cache"
+  New-Item -ItemType Directory -Force -Path $env:GOMODCACHE, $env:GOCACHE | Out-Null
   $centralPython = Get-ServicePython "central-api"
   $aiDispatcherPython = Get-ServicePython "ai-dispatcher"
   if (-not (Test-Path -LiteralPath $centralPython)) {

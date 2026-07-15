@@ -1,9 +1,20 @@
-from fastapi import APIRouter, Depends
+import json
+import secrets
+from typing import Any, Literal
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
 from ..core.ai.base import DiagnosisResult
 from ..core.ai.registry import registry
 from ..core.config import settings
-from ..core.security import PERM_AI_DIAGNOSE, ActorInfo, require_permission
+from ..core.database import get_db
+from ..core.security import (
+    PERM_AI_DIAGNOSE,
+    PERM_AI_SUGGEST,
+    ActorInfo,
+    require_permission,
+)
 from ..core.service_client import post_json
 from ..models import AiChatRequest, AiChatResponse, AiDiagnoseRequest, AiStatus, Severity
 from ..rule_explanation import RuleExplanationCache, explain_rule_conclusions, rule_explanation_cache_key
@@ -11,6 +22,13 @@ from ..store import store
 
 router = APIRouter(tags=["ai"])
 rule_explanation_cache = RuleExplanationCache(settings.ai_rule_explanation_cache_seconds)
+
+
+class AiSuggestionIn(BaseModel):
+    node_code: str = Field(min_length=2, max_length=64)
+    risk_level: Literal["low", "medium", "high", "critical"]
+    recommendation: str = Field(min_length=8, max_length=2_000)
+    evidence: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.get("/ai-diagnoses", operation_id="list_ai_diagnoses_legacy")
@@ -44,6 +62,56 @@ def ai_status() -> AiStatus:
 @router.get("/ai/shortcuts")
 def list_ai_shortcuts():
     return store.ai_shortcuts
+
+
+@router.post("/ai/suggestions", status_code=201)
+def submit_ai_suggestion(
+    payload: AiSuggestionIn,
+    actor: ActorInfo = Depends(require_permission(PERM_AI_SUGGEST)),
+):
+    if actor.principal_type != "ai_agent":
+        raise HTTPException(status_code=403, detail="only an AI Agent principal may submit suggestions")
+    if payload.node_code not in store.nodes:
+        raise HTTPException(status_code=404, detail="node not found")
+    suggestion_id = "ais_" + secrets.token_urlsafe(16)
+    suggestion_status = (
+        "pending_human_review"
+        if payload.risk_level in {"high", "critical"}
+        else "submitted"
+    )
+    with get_db() as db:
+        db.execute(
+            """INSERT INTO ai_suggestions (
+                   suggestion_id, tenant_id, site_id, principal_id, node_code,
+                   risk_level, recommendation, evidence_json, status
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                suggestion_id,
+                settings.tenant_id,
+                settings.site_id,
+                actor.principal_id,
+                payload.node_code,
+                payload.risk_level,
+                payload.recommendation,
+                json.dumps(payload.evidence, ensure_ascii=False, sort_keys=True),
+                suggestion_status,
+            ),
+        )
+    store.add_audit_log(
+        actor.principal_id,
+        "ai:suggestion:submit",
+        "node",
+        payload.node_code,
+        suggestion_status,
+        suggestion_id,
+    )
+    return {
+        "suggestion_id": suggestion_id,
+        "principal_id": actor.principal_id,
+        "node_code": payload.node_code,
+        "risk_level": payload.risk_level,
+        "status": suggestion_status,
+    }
 
 
 @router.get("/ai/rule-explanation")
@@ -81,7 +149,10 @@ def rule_explanation(
 
 
 @router.post("/ai/shortcuts/{shortcut_id}/run", response_model=AiChatResponse)
-def run_ai_shortcut(shortcut_id: str) -> AiChatResponse:
+def run_ai_shortcut(
+    shortcut_id: str,
+    actor: ActorInfo = Depends(require_permission(PERM_AI_DIAGNOSE)),
+) -> AiChatResponse:
     shortcut = next((item for item in store.ai_shortcuts if item.id == shortcut_id), None)
     if shortcut is None:
         from fastapi import HTTPException

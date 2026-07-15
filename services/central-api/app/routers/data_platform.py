@@ -13,6 +13,7 @@ from ..core.security import (
     PERM_TELEMETRY_READ,
     PERM_TELEMETRY_RETENTION,
     ActorInfo,
+    assert_node_resource_access,
     require_permission,
 )
 from ..domain.data_platform import (
@@ -72,6 +73,7 @@ def ingest_batch(
     response: Response,
     actor: ActorInfo = TelemetryIngester,
 ):
+    assert_node_resource_access(actor, payload.source_id)
     try:
         result, replayed = data_platform_repository.ingest_batch(payload, _actor_name(actor))
     except DataPlatformError as exc:

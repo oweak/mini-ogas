@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from ..core.ai.registry import registry
 from ..core.config import settings
-from ..core.security import PERM_COMMAND_ISSUE, ActorInfo, require_permission
+from ..core.security import PERM_COMMAND_ISSUE, ActorInfo, actor_identity, require_permission
 from ..models import ControlCommandPlan, ControlCommandRequest, ControlCommandResponse
 from ..safety_governor import HIGH_RISK_ACTIONS, SafetyDecision, safety_governor
 from ..store import store
@@ -61,6 +61,7 @@ def dispatch_command(
         target_node=plan.target_node,
         risk_level=plan.risk_level,
         actor_role=actor.role,
+        actor_id=actor_identity(actor),
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirm,
     )
@@ -79,7 +80,7 @@ def dispatch_command(
             safety=decision.model_dump(mode="json"),
         )
 
-    result = execute_plan(plan, actor.role, decision)
+    result = execute_plan(plan, actor_identity(actor), decision)
     return ControlCommandResponse(
         accepted=True,
         executed=True,

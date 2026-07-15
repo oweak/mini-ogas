@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from ..core.config import settings
-from ..core.security import PERM_SIMULATION_CONTROL, ActorInfo, require_permission
+from ..core.security import PERM_SIMULATION_CONTROL, ActorInfo, actor_identity, require_permission
 from ..models import DemoScenario, IncidentEvent, Alert, utc_now
 from ..rules import evaluate_snapshot_rules
 from ..safety_governor import safety_governor
@@ -27,6 +27,7 @@ def apply_demo_scenario(
         target_node=target,
         risk_level="high" if payload.scenario == "hostile_attack" else "low",
         actor_role=actor.role,
+        actor_id=actor_identity(actor),
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirmation_code,
     )

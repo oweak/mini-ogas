@@ -14,6 +14,7 @@ from app.core.nats_contracts import (
     subject_for_envelope,
 )
 from app.core.nats_publisher import NATSEventWorker, NATSPublisher
+from app.core.security import ActorInfo
 from nats.js.api import AckPolicy
 from app.models import AuditLog, IncidentEvent, NodeCommand, Severity
 from app.persistence_repository import CentralFactRepository
@@ -281,7 +282,22 @@ def test_rest_heartbeat_remains_authoritative_when_nats_is_degraded(monkeypatch)
     monkeypatch.setattr(nodes_router.nats_runtime, "publish_heartbeat", degraded)
 
     heartbeat = nodes_router.NodeHeartbeatV2In.model_validate(heartbeat_payload())
-    result = asyncio.run(nodes_router.ingest_agent_heartbeat(heartbeat.node_code, heartbeat))
+    result = asyncio.run(
+        nodes_router.ingest_agent_heartbeat(
+            heartbeat.node_code,
+            heartbeat,
+            ActorInfo(
+                principal_id=f"node:{heartbeat.node_code}",
+                principal_type="node",
+                username=f"node:{heartbeat.node_code}",
+                display_name=heartbeat.node_code,
+                role="node_agent",
+                roles=["node_agent"],
+                permissions={"node:heartbeat"},
+                node_code=heartbeat.node_code,
+            ),
+        )
+    )
 
     assert recorded and recorded[0]["node_code"] == "turning-workshop-01"
     assert result["ok"] is True

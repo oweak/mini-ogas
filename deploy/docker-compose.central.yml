@@ -25,6 +25,10 @@ services:
     build: ../services/central-api
     env_file:
       - ./env.central.example
+    environment:
+      ALLOW_LEGACY_NODE_TOKEN_AUTH: "false"
+      NODE_CREDENTIALS_JSON: >-
+        {"turning-workshop-01":"${TURNING_NODE_TOKEN:-replace_turning_node_token_000000000000}","milling-workshop-01":"${MILLING_NODE_TOKEN:-replace_milling_node_token_000000000000}","grinding-workshop-01":"${GRINDING_NODE_TOKEN:-replace_grinding_node_token_000000000000}"}
     ports:
       - "8080:8080"
     depends_on:

@@ -58,6 +58,8 @@ docker run --detach --name central-api --network "$NETWORK" \
   --env PERSIST_ENABLED=false \
   --env API_ACCESS_TOKEN="$NODE_TOKEN" \
   --env NODE_INGEST_TOKEN="$NODE_TOKEN" \
+  --env ALLOW_LEGACY_NODE_TOKEN_AUTH=false \
+  --env NODE_CREDENTIALS_JSON="{\"milling-workshop-01\":\"$NODE_TOKEN\"}" \
   --env JWT_SECRET="$JWT_SECRET" \
   --env AUTH_BOOTSTRAP_USERNAME=admin \
   --env AUTH_BOOTSTRAP_PASSWORD="$ADMIN_PASSWORD" \

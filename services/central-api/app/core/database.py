@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Any
 
 from .config import settings
-from .migrations import Migration, apply_migrations
+from .migrations import Migration, apply_migrations, ensure_migration_ledger
 from .phase2_schema import PHASE2_MIGRATIONS
 from .phase3_schema import PHASE3_MIGRATIONS
 from .phase4_schema import PHASE4_MIGRATIONS
 from .phase5_schema import PHASE5_MIGRATIONS
 from .phase6_schema import PHASE6_MIGRATIONS
 from .phase7_schema import PHASE7_MIGRATIONS
+from .principal_schema import STAGE_C_PRINCIPAL_MIGRATIONS
 
 SCHEMA_VERSION = "2026.07.13-v3.0.1-nats-shadow"
 PHASE1_SCOPE_MIGRATION_VERSION = "2026.07.13-phase1-scope-outbox"
@@ -903,6 +904,7 @@ def init_db() -> None:
             _ensure_postgres_command_verification_columns(connection)
             _ensure_postgres_part_identity_columns(connection)
             _ensure_run_id_indexes(connection)
+            ensure_migration_ledger(connection, "postgres")
             _record_schema_version(connection)
             apply_migrations(
                 connection,
@@ -913,7 +915,8 @@ def init_db() -> None:
                 + PHASE4_MIGRATIONS
                 + PHASE5_MIGRATIONS
                 + PHASE6_MIGRATIONS
-                + PHASE7_MIGRATIONS,
+                + PHASE7_MIGRATIONS
+                + STAGE_C_PRINCIPAL_MIGRATIONS,
             )
             connection.commit()
         return
@@ -926,6 +929,7 @@ def init_db() -> None:
         _ensure_sqlite_command_verification_columns(connection)
         _ensure_sqlite_part_identity_columns(connection)
         _ensure_run_id_indexes(connection)
+        ensure_migration_ledger(connection, "sqlite")
         _record_schema_version(connection)
         apply_migrations(
             connection,
@@ -936,7 +940,8 @@ def init_db() -> None:
             + PHASE4_MIGRATIONS
             + PHASE5_MIGRATIONS
             + PHASE6_MIGRATIONS
-            + PHASE7_MIGRATIONS,
+            + PHASE7_MIGRATIONS
+            + STAGE_C_PRINCIPAL_MIGRATIONS,
         )
         connection.commit()
 

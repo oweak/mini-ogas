@@ -37,6 +37,7 @@ $runtimeSecretPaths = @(
   (Join-Path $RuntimeRoot "postgres.env"),
   (Join-Path $RuntimeRoot "auth.env"),
   (Join-Path $RuntimeRoot "miniogas-session-token.txt"),
+  (Join-Path $RuntimeRoot "node-credentials.json"),
   (Join-Path $RuntimeRoot "nats\nats.env"),
   (Join-Path $RuntimeRoot "data-platform\redis\redis.env"),
   (Join-Path $RuntimeRoot "data-platform\redis\memurai.conf"),

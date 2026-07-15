@@ -19,7 +19,9 @@ from ..core.config import settings
 from ..core.security import (
     PERM_AI_DIAGNOSE,
     PERM_COMMAND_APPROVE,
+    PERM_COMMAND_ISSUE,
     ActorInfo,
+    actor_identity,
     require_permission,
 )
 from ..models import Severity
@@ -316,7 +318,9 @@ def audit_diagnoses():
 # ---------------------------------------------------------------------------
 
 @router.post("/ops/dispatch-plan/recalculate")
-def recalculate_dispatch_plan():
+def recalculate_dispatch_plan(
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
+):
     """Alias for /dispatch/rebuild."""
     store.generate_production_plan()
     tasks = store.rebuild_dispatch()
@@ -336,9 +340,11 @@ def recalculate_dispatch_plan():
 def approve_dispatch_plan(payload: _ActorPayload,
                           actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE))):
     """Approve a dispatch plan and return the updated dashboard contract."""
+    operator = actor_identity(actor)
     safety = safety_governor.review_manual_approval(
         action="dispatch_plan_approve",
         actor_role=actor.role,
+        actor_id=operator,
         confirmation_code=payload.confirmation_code,
     )
     store.record_safety_decision(safety)
@@ -366,15 +372,15 @@ def approve_dispatch_plan(payload: _ActorPayload,
             "message": "No blocked dispatch task is waiting for approval.",
             **current,
         }
-    approved = _approve_waiting_dispatch_tasks(payload.actor)
+    approved = _approve_waiting_dispatch_tasks(operator)
     store.persist_dispatch_task_shadow()
     store.add_event(
         node_code="central-api",
         stage="dispatch-approved",
         severity=Severity.info,
-        message=f"Dispatch plan approved by {payload.actor}; {approved} blocked task(s) rerouted.",
+        message=f"Dispatch plan approved by {operator}; {approved} blocked task(s) rerouted.",
     )
-    store.add_audit_log(payload.actor, "dispatch:approve", "dispatch_plan", "current", "success")
+    store.add_audit_log(operator, "dispatch:approve", "dispatch_plan", "current", "success")
     result = f"Approved and rerouted {approved} blocked dispatch task(s)."
     updated = _dispatch_payload(status_override="approved_executed", result=result)
     return {
@@ -388,7 +394,7 @@ def approve_dispatch_plan(payload: _ActorPayload,
         "audit_event": _make_audit_event(
             action="dispatch:approve",
             message=result,
-            actor=payload.actor,
+            actor=operator,
             resource_type="dispatch_plan",
             resource_id="current",
             result="success",
@@ -400,28 +406,8 @@ def approve_dispatch_plan(payload: _ActorPayload,
 @router.post("/ops/dispatch-plan/approve-legacy")
 def approve_dispatch_plan_legacy(payload: _ActorPayload,
                                  actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE))):
-    """Approve a dispatch plan — creates audit event and returns success."""
-    store.add_event(
-        node_code="central-api",
-        stage="dispatch-approved",
-        severity=Severity.info,
-        message=f"排产计划已由 {payload.actor} 审批通过。确认码: {payload.confirmation_code}",
-    )
-    return {
-        "ok": True,
-        "accepted": True,
-        "executed": False,
-        "status": "approved",
-        "plan": None,
-        "message": "排产计划已审批通过。",
-        "audit_event": _make_audit_event(
-            action="dispatch:approve",
-            message="排产计划审批通过",
-            actor=payload.actor,
-            resource_type="dispatch_plan",
-            resource_id="current",
-        ),
-    }
+    """Preserve the legacy path while enforcing the canonical approval chain."""
+    return approve_dispatch_plan(payload, actor)
 
 
 # ---------------------------------------------------------------------------
@@ -429,8 +415,14 @@ def approve_dispatch_plan_legacy(payload: _ActorPayload,
 # ---------------------------------------------------------------------------
 
 @router.post("/alerts/{issue_id:path}/confirm")
-def confirm_alert(issue_id: str, payload: _ConfirmAlertBody):
+def confirm_alert(
+    issue_id: str,
+    payload: _ConfirmAlertBody,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE)),
+):
     """Confirm an alert as real.  issue_id = '{node_code}-{alert_type}'."""
+    operator = actor_identity(actor)
+    payload.operator = operator
     alert = _find_alert(issue_id)
     if alert is None:
         node_code, alert_type = _parse_issue_id(issue_id)
@@ -442,6 +434,7 @@ def confirm_alert(issue_id: str, payload: _ConfirmAlertBody):
             handled_by=payload.operator,
         )
     alert.status = "confirmed"
+    alert.handled_by = operator
     store.add_event(
         node_code=alert.node_code,
         stage="alert-confirmed",
@@ -576,11 +569,15 @@ def diagnose_by_issue_id(issue_id: str,
 # ---------------------------------------------------------------------------
 
 @router.post("/issues/{issue_id:path}/actions")
-def issue_actions(issue_id: str, payload: _IssueActionBody):
+def issue_actions(
+    issue_id: str,
+    payload: _IssueActionBody,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE)),
+):
     """Close / act on an issue.  Returns an audit event."""
     alert = _find_alert(issue_id)
     action_text = payload.action
-    operator = payload.operator
+    operator = actor_identity(actor)
     if alert is not None:
         alert.status = "closed"
         alert.handled_by = operator
@@ -625,11 +622,15 @@ def issue_actions(issue_id: str, payload: _IssueActionBody):
 
 
 @router.post("/issues/{issue_id:path}/decision")
-def issue_decision(issue_id: str, payload: _IssueDecisionBody):
+def issue_decision(
+    issue_id: str,
+    payload: _IssueDecisionBody,
+    actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE)),
+):
     """Decide to observe or ignore an issue.  Returns an audit event."""
     decision = payload.decision  # 'observe' | 'ignore'
     note = payload.note
-    operator = payload.operator
+    operator = actor_identity(actor)
     alert = _find_alert(issue_id)
     if alert is not None:
         new_status = "observing" if decision == "observe" else "closed"
@@ -680,7 +681,7 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
     """Approve or reject an escalation."""
     decision = payload.decision  # 'approve' | 'reject'
     confirmation_code = payload.confirmation_code
-    operator = payload.actor
+    operator = actor_identity(actor)
 
     escalation = None
     for e in store.incident_events:
@@ -693,6 +694,7 @@ def escalation_decision(escalation_id: int, payload: _EscalationDecisionBody,
         safety = safety_governor.review_manual_approval(
             action="escalation_approve",
             actor_role=actor.role,
+            actor_id=operator,
             confirmation_code=confirmation_code,
         )
         store.record_safety_decision(safety)

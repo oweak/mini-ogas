@@ -92,6 +92,68 @@ def test_phase1_migration_is_repeatable_and_scopes_every_fact_table(scoped_sqlit
             assert {"tenant_id", "site_id"}.issubset(columns), table_name
 
 
+def test_init_db_upgrades_legacy_migration_ledger_before_recording_version(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "legacy-ledger.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """CREATE TABLE schema_migrations (
+                   version TEXT PRIMARY KEY,
+                   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    init_db()
+
+    with sqlite3.connect(db_path) as db:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(schema_migrations)")}
+        version = db.execute(
+            "SELECT description FROM schema_migrations WHERE version = ?",
+            ("2026.07.13-v3.0.1-nats-shadow",),
+        ).fetchone()
+
+    assert {"description", "checksum", "applied_by", "execution_ms"}.issubset(columns)
+    assert version == ("v3.0.1 NATS JetStream shadow transport receipts",)
+
+
+def test_init_db_migrates_integer_legacy_ledger_without_losing_history(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "integer-ledger.db"
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """CREATE TABLE schema_migrations (
+                   version INTEGER NOT NULL PRIMARY KEY,
+                   name TEXT NOT NULL DEFAULT '',
+                   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+               )"""
+        )
+        db.execute(
+            "INSERT INTO schema_migrations (version, name) VALUES (?, ?)",
+            (1, "migration-v1"),
+        )
+
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    init_db()
+
+    with sqlite3.connect(db_path) as db:
+        column = next(
+            row for row in db.execute("PRAGMA table_info(schema_migrations)") if row[1] == "version"
+        )
+        legacy = db.execute(
+            "SELECT version, description FROM schema_migrations WHERE version LIKE 'legacy-%'"
+        ).fetchall()
+
+    assert column[2].upper() == "TEXT"
+    assert legacy == [("legacy-1:migration-v1", "migration-v1")]
+
+
 def test_migration_checksum_drift_fails_closed(scoped_sqlite) -> None:
     noop = lambda _connection: None
     changed = Migration(

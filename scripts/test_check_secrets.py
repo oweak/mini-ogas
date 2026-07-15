@@ -68,6 +68,12 @@ class SecretScanTests(unittest.TestCase):
         )
         self.assertEqual(exit_code, 0)
 
+    def test_ignores_regenerable_output_artifacts(self) -> None:
+        exit_code = self.run_scan(
+            {"output/old-package/copied.env": "DEEPSEEK_API_KEY=archived-secret-value\n"}
+        )
+        self.assertEqual(exit_code, 0)
+
     def test_rejects_generated_token_file(self) -> None:
         exit_code = self.run_scan({"miniogas-token.txt": "real-runtime-token-123\n"})
         self.assertEqual(exit_code, 1)

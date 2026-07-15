@@ -208,7 +208,16 @@ try {
   }
   $headers = if ($token) { @{ "X-OGAS-Token" = $token } } else { @{} }
   $dashboardHeaders = @{}
+  $dashboardBearer = ""
   $authConfig = Initialize-AuthConfig
+  . (Join-Path $PSScriptRoot "node-credentials.ps1")
+  $nodeCredentialState = Get-MiniOgasNodeCredentialState `
+    -RuntimeRoot $RuntimeRoot `
+    -CreateIfMissing:$(-not $CheckOnly)
+  $checks.Add((New-CheckResult "node-credentials" $true "Three distinct node credentials loaded; values are not printed." @{
+    path = $nodeCredentialState.Path
+    nodes = @($nodeCredentialState.Credentials.Keys)
+  }))
 
   if ($CheckOnly) {
     if (-not (Test-Path -LiteralPath $RedisCliPath)) {
@@ -304,6 +313,8 @@ $apiCommand = @"
 `$env:OGAS_API_TOKEN = '$token'
 `$env:API_ACCESS_TOKEN = '$token'
 `$env:NODE_INGEST_TOKEN = '$token'
+`$env:NODE_CREDENTIALS_JSON = '$($nodeCredentialState.Json)'
+`$env:ALLOW_LEGACY_NODE_TOKEN_AUTH = 'false'
 `$env:OGAS_SESSION_TOKEN = '$LaunchSessionToken'
 `$env:APP_ENV = '$AppEnv'
 `$env:DATA_SOURCE = '$DataSource'
@@ -343,6 +354,7 @@ Set-Location -LiteralPath '$ProjectRoot\services\central-api'
       $loginBody = @{ operator = "admin"; password = $dashboardPassword } | ConvertTo-Json
       $dashboardLogin = Invoke-RestMethod -Uri "$ApiUrl/api/auth/login" -Method Post -ContentType "application/json" -Body $loginBody -TimeoutSec 70
       $dashboardHeaders = @{ "Authorization" = "Bearer $($dashboardLogin.access_token)" }
+      $dashboardBearer = [string]$dashboardLogin.access_token
       $checks.Add((New-CheckResult "dashboard-auth" ([bool]$dashboardLogin.access_token) "Administrator bearer token issued for runtime verification."))
       try {
         $projection = Invoke-RestMethod -Uri "$ApiUrl/api/telemetry/projection/status" -Headers $dashboardHeaders -Method Get -TimeoutSec 10
@@ -361,7 +373,9 @@ Set-Location -LiteralPath '$ProjectRoot\services\central-api'
   }
 
   if (-not $CheckOnly) {
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot "scripts\restart-local-nodes.ps1")
+    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ProjectRoot "scripts\restart-local-nodes.ps1") `
+      -RuntimeRoot $RuntimeRoot `
+      -BearerToken $dashboardBearer
   }
 
   if (-not (Test-PortListening $DashboardPort)) {

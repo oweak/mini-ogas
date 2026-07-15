@@ -6,11 +6,20 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..command_control_service import command_control_service
 from ..core.security import (
+    PERM_COMMAND_RECEIVE,
+    PERM_COMMAND_REPORT,
     PERM_COMMAND_ISSUE,
+    PERM_METRIC_INGEST,
+    PERM_NODE_HEARTBEAT,
     PERM_NODE_ISOLATE,
     PERM_NODE_RESTORE,
+    PERM_PRODUCTION_EXECUTE,
+    PERM_TELEMETRY_INGEST,
     ActorInfo,
+    actor_identity,
+    assert_node_resource_access,
     require_permission,
 )
 from ..core.nats_publisher import nats_runtime
@@ -22,6 +31,12 @@ from ..store import store
 
 router = APIRouter(tags=["nodes"])
 logger = logging.getLogger(__name__)
+MetricIngester = Depends(require_permission(PERM_METRIC_INGEST))
+NodeHeartbeater = Depends(require_permission(PERM_NODE_HEARTBEAT))
+NodeRecordIngester = Depends(require_permission(PERM_TELEMETRY_INGEST))
+CommandReceiver = Depends(require_permission(PERM_COMMAND_RECEIVE))
+CommandReporter = Depends(require_permission(PERM_COMMAND_REPORT))
+ProductionExecutor = Depends(require_permission(PERM_PRODUCTION_EXECUTE))
 
 
 def _require_operator_control() -> None:
@@ -111,12 +126,18 @@ def latest_metrics():
 
 
 @router.post("/metrics")
-def ingest_metric(metric: MetricIn):
+def ingest_metric(metric: MetricIn, actor: ActorInfo = MetricIngester):
+    assert_node_resource_access(actor, metric.node_code)
     alerts = store.record_metric(metric)
     return {"accepted": True, "generated_alerts": alerts}
 
 
-async def ingest_agent_heartbeat(node_code: str, heartbeat: NodeHeartbeatV2In):
+async def ingest_agent_heartbeat(
+    node_code: str,
+    heartbeat: NodeHeartbeatV2In,
+    actor: ActorInfo,
+):
+    assert_node_resource_access(actor, node_code)
     if heartbeat.node_code != node_code:
         raise HTTPException(status_code=400, detail="node_code mismatch")
     payload = heartbeat.model_dump(exclude_none=True)
@@ -156,25 +177,35 @@ async def ingest_agent_heartbeat(node_code: str, heartbeat: NodeHeartbeatV2In):
 
 
 @router.post("/agents/{node_code}/heartbeat")
-async def agent_heartbeat_v2(node_code: str, heartbeat: NodeHeartbeatV2In):
-    return await ingest_agent_heartbeat(node_code, heartbeat)
+async def agent_heartbeat_v2(
+    node_code: str,
+    heartbeat: NodeHeartbeatV2In,
+    actor: ActorInfo = NodeHeartbeater,
+):
+    return await ingest_agent_heartbeat(node_code, heartbeat, actor)
 
 
 @router.post("/node-heartbeats")
-async def node_heartbeat_v2(heartbeat: NodeHeartbeatV2In, response: Response):
+async def node_heartbeat_v2(
+    heartbeat: NodeHeartbeatV2In,
+    response: Response,
+    actor: ActorInfo = NodeHeartbeater,
+):
     logger.warning("deprecated_api path=/node-heartbeats replacement=/agents/{node_code}/heartbeat node=%s", heartbeat.node_code)
     response.headers["Deprecation"] = "true"
     response.headers["Link"] = f'</agents/{heartbeat.node_code}/heartbeat>; rel="successor-version"'
-    return await ingest_agent_heartbeat(heartbeat.node_code, heartbeat)
+    return await ingest_agent_heartbeat(heartbeat.node_code, heartbeat, actor)
 
 
 @router.get("/node-dispatches/{node_code}")
-def node_dispatch(node_code: str):
+def node_dispatch(node_code: str, actor: ActorInfo = CommandReceiver):
+    assert_node_resource_access(actor, node_code)
     return store.node_dispatch_for_node(node_code)
 
 
 @router.post("/node-records/sync")
-def sync_node_records(payload: NodeRecordSyncIn):
+def sync_node_records(payload: NodeRecordSyncIn, actor: ActorInfo = NodeRecordIngester):
+    assert_node_resource_access(actor, payload.node_code)
     try:
         return store.record_node_records(payload.node_code, [record.model_dump() for record in payload.records])
     except ValueError as exc:
@@ -183,9 +214,13 @@ def sync_node_records(payload: NodeRecordSyncIn):
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
-@router.put("/api/nodes/{node_code}/heartbeat")
 @router.put("/nodes/{node_code}/heartbeat")
-def node_heartbeat(node_code: str, heartbeat: NodeHeartbeatIn):
+def node_heartbeat(
+    node_code: str,
+    heartbeat: NodeHeartbeatIn,
+    actor: ActorInfo = NodeHeartbeater,
+):
+    assert_node_resource_access(actor, node_code)
     if heartbeat.node_code != node_code:
         raise HTTPException(status_code=400, detail="node_code mismatch")
     return store.record_heartbeat(
@@ -199,89 +234,87 @@ def node_heartbeat(node_code: str, heartbeat: NodeHeartbeatIn):
     )
 
 
-@router.get("/api/nodes/{node_code}/pending-commands")
 @router.get("/nodes/{node_code}/pending-commands")
-def pending_commands(node_code: str):
+def pending_commands(node_code: str, actor: ActorInfo = CommandReceiver):
+    assert_node_resource_access(actor, node_code)
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     return store.pending_commands_for_node(node_code)
 
 
-@router.get("/api/agents/{node_code}/commands/pending")
 @router.get("/agents/{node_code}/commands/pending")
-def claim_agent_pending_commands(node_code: str):
+def claim_agent_pending_commands(node_code: str, actor: ActorInfo = CommandReceiver):
+    assert_node_resource_access(actor, node_code)
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     return store.claim_pending_commands_for_node(node_code, agent_id=node_code)
 
 
-@router.post("/api/agents/{node_code}/commands")
 @router.post("/agents/{node_code}/commands")
 def create_agent_command(
     node_code: str,
     payload: AgentCommandCreateIn,
     actor: ActorInfo = Depends(require_permission(PERM_COMMAND_ISSUE)),
 ):
-    _require_operator_control()
-    if node_code not in store.nodes:
-        raise HTTPException(status_code=404, detail="node not found")
     if payload.command_type != "set_target_rate":
         raise HTTPException(status_code=400, detail="only set_target_rate is supported in v2.2.8")
-    physical_limit = store.reported_physical_rate_limit_per_minute(node_code)
-    if physical_limit is not None and payload.target_rate > physical_limit + 1e-9:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "target_exceeds_physical_capacity",
-                "message": "target_rate exceeds the latest node-reported physical capacity",
-                "requested_rate": payload.target_rate,
-                "maximum_rate": round(physical_limit, 3),
-                "rate_unit": "parts_per_minute",
-                "node_code": node_code,
-            },
-        )
-    command = store.add_command(
-        node_code,
-        "set_target_rate",
-        "low",
-        "pending",
-        actor.username or actor.role or payload.operator,
-        parameters={"target_rate": payload.target_rate},
+    return command_control_service.issue_target_rate(
+        node_code=node_code,
+        target_rate=payload.target_rate,
+        actor=actor,
     )
-    return command
 
 
-@router.post("/api/nodes/{node_code}/command-results")
 @router.post("/nodes/{node_code}/command-results")
-def command_results(node_code: str, result: CommandResultIn):
+def command_results(
+    node_code: str,
+    result: CommandResultIn,
+    actor: ActorInfo = CommandReporter,
+):
+    assert_node_resource_access(actor, node_code)
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     return store.record_command_result(node_code, result.command_id, result.status, result.message)
 
 
-@router.post("/api/commands/{command_id}/result")
 @router.post("/commands/{command_id}/result")
-def agent_command_result(command_id: int, result: AgentCommandResultIn):
+def agent_command_result(
+    command_id: int,
+    result: AgentCommandResultIn,
+    actor: ActorInfo = CommandReporter,
+):
+    command = next((item for item in store.commands if item.id == command_id), None)
+    if command is None:
+        raise HTTPException(status_code=404, detail=f"command {command_id} not found")
+    assert_node_resource_access(actor, command.node_code)
     return store.record_agent_command_result(command_id, result.status, result.message)
 
 
-@router.get("/api/part-queue")
 @router.get("/part-queue")
 def part_queue():
     return store.part_queue_snapshot()
 
 
-@router.post("/api/agents/{node_code}/parts/claim-next")
 @router.post("/agents/{node_code}/parts/claim-next")
-def claim_next_part(node_code: str, ttl_seconds: int = 30):
+def claim_next_part(
+    node_code: str,
+    ttl_seconds: int = 30,
+    actor: ActorInfo = ProductionExecutor,
+):
+    assert_node_resource_access(actor, node_code)
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     return store.claim_next_part_for_node(node_code, ttl_seconds=ttl_seconds)
 
 
-@router.post("/api/agents/{node_code}/parts/{part_id}/complete")
 @router.post("/agents/{node_code}/parts/{part_id}/complete")
-def complete_part(node_code: str, part_id: str, payload: PartCompleteIn):
+def complete_part(
+    node_code: str,
+    part_id: str,
+    payload: PartCompleteIn,
+    actor: ActorInfo = ProductionExecutor,
+):
+    assert_node_resource_access(actor, node_code)
     if node_code not in store.nodes:
         raise HTTPException(status_code=404, detail="node not found")
     return store.complete_claimed_part(node_code, part_id, payload.claim_token)
@@ -306,6 +339,7 @@ def isolate_node(
         target_node=node_code,
         risk_level="high",
         actor_role=actor.role,
+        actor_id=actor_identity(actor),
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirmation_code,
         run_mode=payload.run_mode,
@@ -313,7 +347,7 @@ def isolate_node(
     store.record_safety_decision(decision)
     if not decision.allow:
         raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
-    return store.isolate_node(node_code, actor.role, decision)
+    return store.isolate_node(node_code, actor_identity(actor), decision)
 
 
 @router.post("/nodes/{node_code}/restore")
@@ -330,6 +364,7 @@ def restore_node(
         target_node=node_code,
         risk_level="high",
         actor_role=actor.role,
+        actor_id=actor_identity(actor),
         known_nodes=set(store.nodes),
         confirmation_code=payload.confirmation_code,
         run_mode=payload.run_mode,
@@ -337,7 +372,7 @@ def restore_node(
     store.record_safety_decision(decision)
     if not decision.allow:
         raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
-    return store.restore_node(node_code, actor.role, decision)
+    return store.restore_node(node_code, actor_identity(actor), decision)
 
 
 @router.post("/nodes/{node_code}/retire")
@@ -355,6 +390,7 @@ def retire_node(
             target_node=node_code,
             risk_level="high",
             actor_role=actor.role,
+            actor_id=actor_identity(actor),
             known_nodes=set(store.nodes),
             confirmation_code=payload.confirmation_code,
             run_mode=payload.run_mode,
@@ -362,6 +398,6 @@ def retire_node(
         store.record_safety_decision(decision)
         if not decision.allow:
             raise HTTPException(status_code=409, detail={"error": decision.reason_code, "safety": decision.model_dump(mode="json")})
-        return store.retire_node(node_code, actor.role, decision)
+        return store.retire_node(node_code, actor_identity(actor), decision)
     except KeyError:
         raise HTTPException(status_code=404, detail="node not found") from None

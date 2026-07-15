@@ -31,6 +31,55 @@ def _sqlite_columns(connection: Any, table_name: str) -> set[str]:
     return {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()}
 
 
+def _upgrade_integer_sqlite_ledger(connection: Any) -> None:
+    table_info = connection.execute("PRAGMA table_info(schema_migrations)").fetchall()
+    version_column = next((row for row in table_info if str(row[1]) == "version"), None)
+    if version_column is None or "INT" not in str(version_column[2]).upper():
+        return
+
+    legacy_table = "schema_migrations_legacy_integer"
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (legacy_table,),
+    ).fetchone():
+        raise RuntimeError(
+            "cannot upgrade integer migration ledger: interrupted legacy table already exists"
+        )
+
+    cursor = connection.execute("SELECT * FROM schema_migrations ORDER BY version")
+    column_names = [str(item[0]) for item in cursor.description]
+    legacy_rows = [dict(zip(column_names, row)) for row in cursor.fetchall()]
+    connection.execute(f"ALTER TABLE schema_migrations RENAME TO {legacy_table}")
+    connection.execute(
+        """CREATE TABLE schema_migrations (
+               version TEXT PRIMARY KEY,
+               description TEXT NOT NULL,
+               checksum TEXT NOT NULL DEFAULT '',
+               applied_by TEXT NOT NULL DEFAULT 'mini-ogas',
+               execution_ms INTEGER NOT NULL DEFAULT 0,
+               applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    for row in legacy_rows:
+        legacy_version = str(row.get("version", ""))
+        legacy_name = str(row.get("name") or row.get("description") or "legacy migration")
+        version = f"legacy-{legacy_version}:{legacy_name}"
+        connection.execute(
+            """INSERT INTO schema_migrations (
+                   version, description, checksum, applied_by, execution_ms, applied_at
+               ) VALUES (?, ?, ?, ?, ?, ?)""",
+            (
+                version,
+                legacy_name,
+                str(row.get("checksum") or ""),
+                str(row.get("applied_by") or "legacy-mini-ogas"),
+                int(row.get("execution_ms") or 0),
+                str(row.get("applied_at") or ""),
+            ),
+        )
+    connection.execute(f"DROP TABLE {legacy_table}")
+
+
 def ensure_migration_ledger(connection: Any, backend: Backend) -> None:
     if backend == "postgres":
         connection.execute(
@@ -42,6 +91,9 @@ def ensure_migration_ledger(connection: Any, backend: Backend) -> None:
                    execution_ms BIGINT NOT NULL DEFAULT 0,
                    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
                )"""
+        )
+        connection.execute(
+            "ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT ''"
         )
         connection.execute("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS checksum TEXT NOT NULL DEFAULT ''")
         connection.execute("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS applied_by TEXT NOT NULL DEFAULT 'mini-ogas'")
@@ -58,8 +110,10 @@ def ensure_migration_ledger(connection: Any, backend: Backend) -> None:
                applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
            )"""
     )
+    _upgrade_integer_sqlite_ledger(connection)
     columns = _sqlite_columns(connection, "schema_migrations")
     additions = {
+        "description": "TEXT NOT NULL DEFAULT ''",
         "checksum": "TEXT NOT NULL DEFAULT ''",
         "applied_by": "TEXT NOT NULL DEFAULT 'mini-ogas'",
         "execution_ms": "INTEGER NOT NULL DEFAULT 0",
