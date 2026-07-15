@@ -31,8 +31,8 @@ if ($LASTEXITCODE -ne 0) {
     throw "GitHub CLI is not logged in. Run 'gh auth login' first, then rerun this script."
 }
 
-$remoteUrl = git remote get-url $RemoteName 2>$null
-if ($LASTEXITCODE -ne 0 -or -not $remoteUrl) {
+$remoteExists = (git remote) -contains $RemoteName
+if (-not $remoteExists) {
     $visibilityFlag = "--$Visibility"
     Invoke-Checked "gh" @(
         "repo",
@@ -45,6 +45,7 @@ if ($LASTEXITCODE -ne 0 -or -not $remoteUrl) {
         $RemoteName
     )
 } else {
+    $remoteUrl = git remote get-url $RemoteName
     Write-Host "Using existing remote $RemoteName -> $remoteUrl"
 }
 
