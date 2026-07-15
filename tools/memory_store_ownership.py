@@ -57,7 +57,7 @@ FIELD_OWNERSHIP: dict[str, FieldOwnership] = {
         "part_queue_shadow, material_*",
     ),
     **_fields(
-        "commands command_manager command_verifier",
+        "command_repository command_manager command_verifier",
         "command and control",
         "CommandRepository / CommandService",
         "commands, command_shadow, event_store, audit_logs",

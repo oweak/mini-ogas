@@ -19,6 +19,7 @@ from .core.service_client import get_json, post_json
 from .command_manager import CommandManager, CommandTransition
 from .command_verifier import CommandVerifier
 from .persistence_repository import central_fact_repository
+from .repositories.commands import CommandRepository
 from .safety_governor import SafetyDecision, safety_governor
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ class MemoryStore:
         # Alerts / audit / commands / events / diagnoses
         self.alerts: list[Alert] = []
         self.audit_logs: list[AuditLog] = []
-        self.commands: list[NodeCommand] = []
+        self.command_repository = CommandRepository()
         self.command_manager = CommandManager()
         self.command_verifier = CommandVerifier()
         self.incident_events: list[IncidentEvent] = []
@@ -231,6 +232,15 @@ class MemoryStore:
 
     def _persisting(self) -> bool:
         return settings.persist_enabled and not self._suspend_persist
+
+    @property
+    def commands(self) -> list[NodeCommand]:
+        """Compatibility projection; durable ownership belongs to CommandRepository."""
+        return self.command_repository.commands
+
+    @commands.setter
+    def commands(self, commands: list[NodeCommand]) -> None:
+        self.command_repository.replace_projection(commands)
 
     def _record_persistence_write_failure(self, operation: str, exc: Exception) -> None:
         previous = self._persistence_write_failures.get(operation, {})
@@ -684,7 +694,7 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            central_fact_repository.persist_command(
+            self.command_repository.persist(
                 command,
                 self.current_run_id_for_node(command.node_code),
                 include_base=True,
@@ -696,7 +706,7 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            central_fact_repository.persist_command(
+            self.command_repository.persist(
                 command,
                 self.current_run_id_for_node(command.node_code),
                 include_base=False,
@@ -707,62 +717,12 @@ class MemoryStore:
     def load_command_shadow(self, replace_empty: bool = False) -> int:
         if not settings.persist_enabled:
             return 0
-        loaded: list[NodeCommand] = []
         try:
-            with get_db() as db:
-                rows = db.execute(
-                    """
-                    SELECT command_id, node_code, command_type, risk_level, status, operator,
-                           parameters_json, claimed_by, result_message, version, expires_at,
-                           dispatched_at, received_at, applied_at, verified_at, attempt_count,
-                           verification_status, verification_baseline_json,
-                           verification_evidence_json, created_at, updated_at
-                    FROM command_shadow
-                    ORDER BY command_id ASC
-                    """
-                ).fetchall()
+            with self._lock:
+                return self.command_repository.load_projection()
         except Exception as exc:  # pragma: no cover
             self._handle_projection_load_error("commands", exc)
             return 0
-
-        for row in rows:
-            data = dict(row)
-            try:
-                parameters = json.loads(data.get("parameters_json") or "{}")
-            except json.JSONDecodeError:
-                parameters = {}
-            try:
-                verification_baseline = json.loads(data.get("verification_baseline_json") or "{}")
-                verification_evidence = json.loads(data.get("verification_evidence_json") or "{}")
-            except json.JSONDecodeError:
-                verification_baseline = {}
-                verification_evidence = {}
-            loaded.append(NodeCommand(
-                id=int(data["command_id"]),
-                node_code=data["node_code"],
-                command_type=data["command_type"],
-                risk_level=data["risk_level"],
-                status=data["status"],
-                operator=data["operator"],
-                parameters=parameters if isinstance(parameters, dict) else {},
-                claimed_by=data.get("claimed_by") or "",
-                result_message=data.get("result_message") or "",
-                version=int(data.get("version") or 1),
-                expires_at=_database_datetime(data["expires_at"]) if data.get("expires_at") else None,
-                dispatched_at=_database_datetime(data["dispatched_at"]) if data.get("dispatched_at") else None,
-                received_at=_database_datetime(data["received_at"]) if data.get("received_at") else None,
-                applied_at=_database_datetime(data["applied_at"]) if data.get("applied_at") else None,
-                verified_at=_database_datetime(data["verified_at"]) if data.get("verified_at") else None,
-                attempt_count=int(data.get("attempt_count") or 0),
-                verification_status=str(data.get("verification_status") or "not_started"),
-                verification_baseline=(verification_baseline if isinstance(verification_baseline, dict) else {}),
-                verification_evidence=(verification_evidence if isinstance(verification_evidence, dict) else {}),
-                created_at=_database_datetime(data["created_at"]),
-                updated_at=_database_datetime(data.get("updated_at") or data["created_at"]),
-            ))
-        with self._lock:
-            self.commands = loaded[-100:]
-        return len(loaded)
 
     def persist_event(self, event: IncidentEvent) -> None:
         if not self._persisting():
@@ -1514,7 +1474,7 @@ class MemoryStore:
         if not self._persisting():
             return
         try:
-            inserted = central_fact_repository.persist_command_events(
+            inserted = self.command_repository.persist_with_event(
                 commands,
                 event,
                 self.current_run_id_for_node(event.node_code),

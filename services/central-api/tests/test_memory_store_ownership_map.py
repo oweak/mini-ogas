@@ -22,7 +22,7 @@ def test_memory_store_inventory_is_complete_and_classified() -> None:
     module = _load_generator()
     document = module.build_document()
 
-    assert "Inventory: 48 instance fields and 115 methods." in document
+    assert "Inventory: 48 instance fields and 116 methods." in document
     assert "unclassified" not in document
     assert "CommandRepository / CommandService" in document
     assert "NodeRepository / NodeService" in document
