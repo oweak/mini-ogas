@@ -59,7 +59,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
 | B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
 | B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; full suite 273 passed | Closed |
-| B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in Container Gate `29400758287` | Closed |
+| B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in Container Gate `29406148599` | Closed |
 | B5 | Complete Node Agent image inputs | Clean Linux image sent an observable authenticated SimPy heartbeat in the same gate | Closed |
 | B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
 | B7 | Use one controlled Phase 5 clock | Phase 5 suite: 9 passed | Closed |
@@ -104,5 +104,5 @@ startup is still a Stage F gap.
 Latest local verifier gates passed. Canonical counts are Central API 273, node
 simulator 39, Dashboard 73 across 16 files plus production build, AI dispatcher 4,
 CLI/workflow 32 plus 9 subtests, and both Go modules. Ruff correctness passes. GitHub
-Container Gate `29400758287` also passed. Full Compose parity and Stages D-H remain
+Container Gate `29406148599` also passed. Full Compose parity and Stages D-H remain
 open, so the current A-H objective is not complete.

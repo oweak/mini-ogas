@@ -238,7 +238,7 @@ Resolution evidence:
 
 - `services/central-api/Dockerfile` now copies `ai_runtime.py`,
   `create_ai_vault.py`, and `run_portable.py`.
-- GitHub Container Gate `29400758287` built the clean image and started Central API;
+- GitHub Container Gate `29406148599` built the clean image and started Central API;
   `/health` passed on an Ubuntu runner.
 
 ### P0-B5 Node Agent Dockerfile direct-import module coverage
@@ -262,7 +262,7 @@ Resolution evidence:
   `runtime_adapters.py`, and `agent.py`.
 - The image now installs `simpy==4.1.1` and `psutil==7.1.3`.
 - Static import audit confirmed `simulator.py` local imports are covered.
-- GitHub Container Gate `29400758287` built the clean image, started Node Agent and
+- GitHub Container Gate `29406148599` built the clean image, started Node Agent and
   observed its authenticated SimPy heartbeat through Central API.
 
 ### P0-B6 illegal environment enum handling
@@ -355,7 +355,7 @@ sole model provider-chain owner.
 Evidence:
 
 - `docker --version` still fails locally because Docker CLI is not installed or on PATH.
-- GitHub Actions run `29400758287` on commit `9a58ecc` built Central API, Node Agent
+- GitHub Actions run `29406148599` on commit `6bf01f1` built Central API, Node Agent
   and Dashboard from clean contexts, started all three, verified Central API health,
   observed a real Node Agent heartbeat and served the Nginx production Dashboard.
 - `docker compose ... config --quiet` passed in that run; full Compose services were
@@ -398,7 +398,7 @@ Next action:
 
 Stage A has a real baseline with code tests and local Supervisor runtime passing.
 Stage B P0 items 1 through 8 have been reproduced, corrected and verified. B4/B5 are
-proven by clean GitHub Container Gate run `29400758287`; the Stage B gate is closed.
+proven by clean GitHub Container Gate run `29406148599`; the Stage B gate is closed.
 
 Stage C is accepted with persisted Principal identities, independent node credentials,
 canonical command governance, AI suggestion isolation and live rotation/revocation
