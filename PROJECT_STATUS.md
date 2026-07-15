@@ -66,7 +66,7 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 | Ruff correctness | passed |
 | Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
-| Clean key-image build/start | passed: GitHub Container Gate `29406148599` on the Stage C branch head |
+| Clean key-image build/start | passed: GitHub Container Gate `29410060670` on Stage D commit `3125430` |
 | Full Compose-stack startup | not yet proved |
 
 ## Hard Boundaries

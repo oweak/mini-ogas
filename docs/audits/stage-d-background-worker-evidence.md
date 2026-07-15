@@ -65,7 +65,9 @@ preflight passed and all three production nodes were fresh.
 
 Compose YAML parses with one `background-worker` service using
 `uvicorn app.worker:app`; NATS is explicitly started with JetStream. Local Docker CLI
-is absent, so clean Compose startup is not claimed by this checkpoint.
+is absent, so clean Compose startup is not claimed by this checkpoint. GitHub
+Container Gate `29410060670` passed its clean key-image build-and-smoke job on commit
+`3125430`.
 
 ## Automated Verification
 

@@ -184,6 +184,7 @@ fallback and must not be described as having live DeepSeek participation.
 
 The current Windows host does not have Docker/Compose installed. Clean Linux image
 build and startup are nevertheless verified by GitHub Container Gate run
-`29406148599`: Central API health, a real Node Agent heartbeat, and the production
+`29410060670` on commit `3125430`: Central API health, a real Node Agent heartbeat,
+and the production
 Nginx Dashboard all passed. Full Compose-stack startup is still a later deployment
 gate and must not be inferred from this image-level proof.
