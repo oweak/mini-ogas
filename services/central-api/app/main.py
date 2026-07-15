@@ -100,7 +100,12 @@ def _mount_dashboard(app: FastAPI) -> None:
         dist = Path(sys._MEIPASS) / "dashboard-dist"
     else:
         # Development: .../services/central-api/app/main.py → parents[3] = project root
-        dist = Path(__file__).resolve().parents[3] / "services" / "dashboard" / "dist"
+        module_path = Path(__file__).resolve()
+        if len(module_path.parents) > 3:
+            dist = module_path.parents[3] / "services" / "dashboard" / "dist"
+        else:
+            # Container layout: /app/app/main.py with an optional bundled dashboard.
+            dist = module_path.parents[1] / "dashboard-dist"
     if dist.is_dir():
         app.mount("/", StaticFiles(directory=str(dist), html=True), name="dashboard")
 
