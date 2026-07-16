@@ -62,10 +62,27 @@ class OutboxRepository:
                 (settings.tenant_id, settings.site_id, stale_before),
             )
             rows = db.execute(
-                """SELECT message_id, payload_json, attempts
-                   FROM outbox_messages
-                   WHERE tenant_id=? AND site_id=? AND status='pending' AND available_at <= ?
-                   ORDER BY created_at ASC
+                """SELECT candidate.message_id, candidate.payload_json, candidate.attempts
+                   FROM outbox_messages candidate
+                   WHERE candidate.tenant_id=? AND candidate.site_id=?
+                     AND candidate.status='pending' AND candidate.available_at <= ?
+                     AND NOT EXISTS (
+                         SELECT 1
+                         FROM outbox_messages predecessor
+                         WHERE predecessor.tenant_id = candidate.tenant_id
+                           AND predecessor.site_id = candidate.site_id
+                           AND predecessor.aggregate_type = candidate.aggregate_type
+                           AND predecessor.aggregate_id = candidate.aggregate_id
+                           AND predecessor.status IN ('pending', 'publishing')
+                           AND (
+                               predecessor.created_at < candidate.created_at
+                               OR (
+                                   predecessor.created_at = candidate.created_at
+                                   AND predecessor.message_id < candidate.message_id
+                               )
+                           )
+                     )
+                   ORDER BY candidate.created_at ASC, candidate.message_id ASC
                    LIMIT ?""",
                 (settings.tenant_id, settings.site_id, now.isoformat(), max(1, limit)),
             ).fetchall()
@@ -85,12 +102,14 @@ class OutboxRepository:
                 )
                 if int(getattr(cursor, "rowcount", 0) or 0) != 1:
                     continue
-                claimed.append({
-                    "message_id": str(data["message_id"]),
-                    "payload": json.loads(str(data["payload_json"])),
-                    "attempts": int(data.get("attempts") or 0) + 1,
-                    "claim_token": claim_token,
-                })
+                claimed.append(
+                    {
+                        "message_id": str(data["message_id"]),
+                        "payload": json.loads(str(data["payload_json"])),
+                        "attempts": int(data.get("attempts") or 0) + 1,
+                        "claim_token": claim_token,
+                    }
+                )
         return claimed
 
     def mark_published(self, message_id: str) -> bool:

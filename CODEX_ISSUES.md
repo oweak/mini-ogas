@@ -1,6 +1,6 @@
 # Mini-OGAS Issues Status
 
-Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
+Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 
 ## Acceptance Summary
 
@@ -8,7 +8,7 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stage A local runtime and key-image container gates pass. Stages B, C and D are accepted; Stage E has one Outbox publisher but reconciliation/degrade/rollback remains open. |
+| Current A-H hardening objective | In progress | Stages A-E are accepted. Stage F deployment convergence, Stage G AI-plane convergence and Stage H final closed loop remain open. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -45,6 +45,10 @@ Last verified: 2026-07-15 on branch `codex/current-stage-hardening`
 | FIX-20260715-10 | Stage D still listed Production Execution and Quality as unowned despite direct durable repositories already serving both route groups. | Added repository-recreation and architecture gates, confirmed transactional audit/Outbox behavior and accepted existing PostgreSQL Phase 3/5 owners without adding duplicate state. |
 | FIX-20260715-11 | Heartbeat requests both enqueued a transactional Outbox row and published NATS directly; every API process opened a publisher connection. | Removed request-side NATS ownership. API workers commit fact plus Outbox only; the dedicated worker is the sole runtime publisher and owns retry/status transitions. |
 | FIX-20260715-12 | Incident/Event state and mutation/restore SQL remained split across seven `MemoryStore` fields. | Added `IncidentRepository`, moved sequence/projection and Alert/AI/Event/Audit persistence boundaries, proved restart/cross-process PostgreSQL recovery and isolated transport/object adapters from the facade. |
+| FIX-20260716-01 | NATS health exposed connection state but not received rate, duplicates, latency, order or PostgreSQL reconciliation. | Added ledgered receipt counters and a 100-message Shadow reconciliation report with explicit thresholds and no automatic cutover. |
+| FIX-20260716-02 | Outbox retry backoff allowed newer per-node messages to bypass an older unavailable message, producing eight live order divergences. | Added a per-aggregate predecessor fence and index; the final outage gate recorded zero divergences. |
+| FIX-20260716-03 | A long NATS outage could leave the consumer task bound to a closed connection after the publisher opened a replacement. | Rebuild the consumer task whenever a new publisher connection is established; regression and live recovery gates pass. |
+| FIX-20260716-04 | Supervisor had no controlled one-component outage path, and an asynchronous stop could race a subsequent start. | Added loopback start/stop endpoints, dependency checks, `stopping` state and process-exit confirmation. |
 
 ## Current Supported Runtime Truth
 
@@ -95,7 +99,6 @@ startup is still a Stage F gap.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Complete NATS Shadow reconciliation/degrade/rollback gates; one Outbox publisher and the current idempotent Shadow consumer are proved. | Stage E |
 | P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
 | P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |
@@ -108,11 +111,11 @@ startup is still a Stage F gap.
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local verifier gates passed. Canonical counts are Central API 288, node
+Latest local verifier gates passed. Canonical counts are Central API 312, node
 simulator 39, Dashboard 73 across 16 files plus production build, AI dispatcher 4,
 CLI/workflow 36 plus 9 subtests, and both Go modules. Ruff correctness passes. The
 strict runtime reports 12/12 healthy processes, a ready dedicated worker, live NATS
-Shadow and 3/3 fresh SimPy nodes. GitHub
-Container Gate `29410060670` on Stage D commit `3125430` also passed. Full Compose
-parity and Stages D-H remain
-open, so the current A-H objective is not complete.
+Shadow and 3/3 fresh SimPy nodes. The Stage E controlled outage gate also passed with
+100/100 matched receipts, zero duplicates, zero order divergence and P95 4007.568 ms.
+GitHub Container Gate `29414112173` on Stage D commit `93a1807` passed. Full Compose
+parity and Stages F-H remain open, so the current A-H objective is not complete.

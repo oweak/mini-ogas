@@ -70,6 +70,11 @@ def test_worker_health_exposes_task_and_transport_ownership(monkeypatch) -> None
         "health",
         lambda: {"enabled": True, "status": "live", "mode": "shadow"},
     )
+    monkeypatch.setattr(
+        worker.nats_shadow_reconciler,
+        "report",
+        lambda **_kwargs: {"status": "ready", "thresholds_met": True},
+    )
 
     payload = worker.health()
 
@@ -77,6 +82,39 @@ def test_worker_health_exposes_task_and_transport_ownership(monkeypatch) -> None
     assert payload["task_owner"] == "dedicated-process"
     assert payload["tasks"] == {"simulation": "running", "outbox": "running"}
     assert payload["nats"]["status"] == "live"
+    assert payload["nats"]["reconciliation"]["status"] == "ready"
+
+
+def test_worker_health_degrades_for_reconciliation_violation(monkeypatch) -> None:
+    from app import worker
+
+    class RunningTask:
+        @staticmethod
+        def done() -> bool:
+            return False
+
+    monkeypatch.setattr(worker, "_tasks", {"simulation": RunningTask(), "outbox": RunningTask()})
+    monkeypatch.setattr(
+        worker.nats_runtime,
+        "health",
+        lambda: {"enabled": True, "status": "live", "mode": "shadow"},
+    )
+    monkeypatch.setattr(
+        worker.nats_shadow_reconciler,
+        "report",
+        lambda **_kwargs: {
+            "status": "degraded",
+            "thresholds_met": False,
+            "violations": ["published_without_receipt"],
+        },
+    )
+
+    payload = worker.health()
+
+    assert payload["status"] == "ok"
+    assert payload["overall_status"] == "degraded"
+    assert payload["nats"]["status"] == "live"
+    assert payload["nats"]["reconciliation"]["violations"] == ["published_without_receipt"]
 
 
 def test_simulation_api_proxies_state_and_control_to_worker(monkeypatch) -> None:

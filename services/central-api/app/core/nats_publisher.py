@@ -443,10 +443,21 @@ class NATSShadowRuntime:
             if not self.publisher.connected:
                 connected = await self.publisher.start()
                 if connected:
-                    self._ensure_worker()
+                    await self._replace_worker()
             elif self._worker_task is None or self._worker_task.done():
                 self._ensure_worker()
             await asyncio.sleep(settings.nats_retry_seconds)
+
+    async def _replace_worker(self) -> None:
+        worker_task = self._worker_task
+        self._worker_task = None
+        if worker_task is not None and not worker_task.done():
+            worker_task.cancel()
+            try:
+                await worker_task
+            except asyncio.CancelledError:
+                pass
+        self._ensure_worker()
 
     def _ensure_worker(self) -> None:
         if self.publisher.jetstream is None:

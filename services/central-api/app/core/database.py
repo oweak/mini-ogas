@@ -15,6 +15,7 @@ from .phase5_schema import PHASE5_MIGRATIONS
 from .phase6_schema import PHASE6_MIGRATIONS
 from .phase7_schema import PHASE7_MIGRATIONS
 from .principal_schema import STAGE_C_PRINCIPAL_MIGRATIONS
+from .stage_e_schema import STAGE_E_MIGRATIONS
 
 SCHEMA_VERSION = "2026.07.13-v3.0.1-nats-shadow"
 PHASE1_SCOPE_MIGRATION_VERSION = "2026.07.13-phase1-scope-outbox"
@@ -253,7 +254,10 @@ CREATE TABLE IF NOT EXISTS nats_shadow_receipts (
     correlation_id TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
     ingested_at TEXT NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    delivery_count INTEGER NOT NULL DEFAULT 1,
+    duplicate_count INTEGER NOT NULL DEFAULT 0,
+    last_ingested_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_nats_shadow_source_run_sequence
     ON nats_shadow_receipts(source_node, run_id, local_sequence);
@@ -525,7 +529,10 @@ CREATE TABLE IF NOT EXISTS nats_shadow_receipts (
     correlation_id TEXT NOT NULL,
     occurred_at TIMESTAMPTZ NOT NULL,
     ingested_at TIMESTAMPTZ NOT NULL,
-    payload_json TEXT NOT NULL
+    payload_json TEXT NOT NULL,
+    delivery_count BIGINT NOT NULL DEFAULT 1,
+    duplicate_count BIGINT NOT NULL DEFAULT 0,
+    last_ingested_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS idx_nats_shadow_source_run_sequence
     ON nats_shadow_receipts(source_node, run_id, local_sequence);
@@ -916,7 +923,8 @@ def init_db() -> None:
                 + PHASE5_MIGRATIONS
                 + PHASE6_MIGRATIONS
                 + PHASE7_MIGRATIONS
-                + STAGE_C_PRINCIPAL_MIGRATIONS,
+                + STAGE_C_PRINCIPAL_MIGRATIONS
+                + STAGE_E_MIGRATIONS,
             )
             connection.commit()
         return
@@ -941,7 +949,8 @@ def init_db() -> None:
             + PHASE5_MIGRATIONS
             + PHASE6_MIGRATIONS
             + PHASE7_MIGRATIONS
-            + STAGE_C_PRINCIPAL_MIGRATIONS,
+            + STAGE_C_PRINCIPAL_MIGRATIONS
+            + STAGE_E_MIGRATIONS,
         )
         connection.commit()
 

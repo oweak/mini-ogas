@@ -72,14 +72,29 @@ func TestProjectSupervisorConfigParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load(project config) error = %v", err)
 	}
-	if len(cfg.Processes) != 11 {
-		t.Fatalf("process count = %d, want 11", len(cfg.Processes))
+	expectedProcesses := map[string]bool{
+		"nats-server":         false,
+		"redis-projection":    false,
+		"minio-object-store":  false,
+		"central-api":         false,
+		"background-worker":   false,
+		"ai-dispatcher":       false,
+		"market-simulator":    false,
+		"production-planner":  false,
+		"dashboard":           false,
+		"turning-simpy-node":  false,
+		"milling-simpy-node":  false,
+		"grinding-simpy-node": false,
 	}
 	foundSessionAgnostic := false
 	foundNATSEnabled := false
 	foundDataPlatform := false
 	foundMinIOProbe := false
 	for _, process := range cfg.Processes {
+		if _, expected := expectedProcesses[process.Name]; !expected {
+			t.Fatalf("unexpected process %q", process.Name)
+		}
+		expectedProcesses[process.Name] = true
 		if (process.Health.Type == "http" || process.Health.Type == "http-status") && process.Health.Endpoint == "" {
 			t.Fatalf("HTTP process %q has no endpoint", process.Name)
 		}
@@ -93,6 +108,11 @@ func TestProjectSupervisorConfigParses(t *testing.T) {
 		}
 		if process.Name == "minio-object-store" {
 			foundMinIOProbe = process.Health.Type == "http-status"
+		}
+	}
+	for name, found := range expectedProcesses {
+		if !found {
+			t.Fatalf("required process %q is missing", name)
 		}
 	}
 	if !foundSessionAgnostic {

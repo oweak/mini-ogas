@@ -10,7 +10,7 @@ from app.core.nats_contracts import (
     build_heartbeat_envelope,
     subject_for_envelope,
 )
-from app.core.nats_publisher import NATSEventWorker, NATSPublisher
+from app.core.nats_publisher import NATSEventWorker, NATSPublisher, NATSShadowRuntime
 from app.core.security import ActorInfo
 from app.models import AuditLog, IncidentEvent, NodeCommand, Severity
 from app.persistence_repository import CentralFactRepository
@@ -264,6 +264,52 @@ def test_publisher_reports_degraded_when_nats_is_unavailable() -> None:
     assert state["status"] == "degraded"
     assert state["last_error_category"] == "connection"
     assert options["max_reconnect_attempts"] == 1
+
+
+def test_shadow_runtime_replaces_consumer_after_new_connection() -> None:
+    class ReconnectedPublisher:
+        enabled = True
+        connected = True
+        jetstream = object()
+
+    class RecordingWorker:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+
+        async def run(self, jetstream, stop_event) -> None:
+            assert jetstream is publisher.jetstream
+            self.started.set()
+            await stop_event.wait()
+
+    publisher = ReconnectedPublisher()
+    worker = RecordingWorker()
+    runtime = NATSShadowRuntime(publisher=publisher, worker=worker)
+
+    async def exercise() -> None:
+        old_cancelled = asyncio.Event()
+
+        async def stale_consumer() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                old_cancelled.set()
+                raise
+
+        runtime._worker_task = asyncio.create_task(stale_consumer())
+        stale_task = runtime._worker_task
+        await asyncio.sleep(0)
+        await runtime._replace_worker()
+        await asyncio.wait_for(worker.started.wait(), timeout=1)
+
+        assert stale_task.done()
+        assert old_cancelled.is_set()
+        assert runtime._worker_task is not stale_task
+
+        runtime._stop_event.set()
+        assert runtime._worker_task is not None
+        await runtime._worker_task
+
+    asyncio.run(exercise())
 
 
 def test_rest_heartbeat_queues_outbox_without_request_side_publish(monkeypatch) -> None:

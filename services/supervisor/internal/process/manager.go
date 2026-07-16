@@ -18,6 +18,7 @@ type State int
 
 const (
 	StateStopped State = iota
+	StateStopping
 	StateStarting
 	StateRunning
 	StateHealthy
@@ -28,6 +29,8 @@ func (s State) String() string {
 	switch s {
 	case StateStopped:
 		return "stopped"
+	case StateStopping:
+		return "stopping"
 	case StateStarting:
 		return "starting"
 	case StateRunning:
@@ -58,6 +61,7 @@ type ManagedProcess struct {
 	Generation uint64
 	mu         sync.Mutex
 	cancel     context.CancelFunc
+	exited     chan struct{}
 }
 
 type StatusSnapshot struct {
@@ -188,14 +192,24 @@ func (m *Manager) startOne(name string) error {
 		proc.StartedAt = time.Now()
 		proc.State = StateRunning
 		proc.cancel = cancel
+		proc.exited = make(chan struct{})
 	}
+	exited := proc.exited
 	proc.mu.Unlock()
 
-	go m.monitor(name, proc, cmd, ctx, generation)
+	go m.monitor(name, proc, cmd, ctx, generation, exited)
 	return nil
 }
 
-func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx context.Context, generation uint64) {
+func (m *Manager) monitor(
+	name string,
+	proc *ManagedProcess,
+	cmd *exec.Cmd,
+	ctx context.Context,
+	generation uint64,
+	exited chan struct{},
+) {
+	defer close(exited)
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
@@ -206,6 +220,7 @@ func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx 
 			log.Printf("supervisor: %s process exited: %v", name, err)
 			m.restartProcess(name, generation)
 		case <-ctx.Done():
+			m.waitForExit(name, done)
 		}
 		return
 	}
@@ -225,6 +240,7 @@ func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx 
 			m.restartProcess(name, generation)
 			return
 		case <-ctx.Done():
+			m.waitForExit(name, done)
 			return
 		case <-ticker.C:
 			expectedSession := m.sessionID
@@ -258,6 +274,14 @@ func (m *Manager) monitor(name string, proc *ManagedProcess, cmd *exec.Cmd, ctx 
 			m.restartProcess(name, generation)
 			return
 		}
+	}
+}
+
+func (m *Manager) waitForExit(name string, done <-chan error) {
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		log.Printf("supervisor: timed out waiting for %s to exit", name)
 	}
 }
 
@@ -312,6 +336,14 @@ func (m *Manager) restartProcess(name string, generation uint64) {
 // Restart replaces one managed child. Incrementing Generation first makes a
 // retiring monitor harmless even if its process exits after the replacement.
 func (m *Manager) Restart(name string) error {
+	if err := m.Stop(name); err != nil {
+		return err
+	}
+	return m.Start(name)
+}
+
+// Stop retires one child without triggering its automatic crash restart.
+func (m *Manager) Stop(name string) error {
 	m.mu.RLock()
 	proc, ok := m.processes[name]
 	m.mu.RUnlock()
@@ -322,11 +354,60 @@ func (m *Manager) Restart(name string) error {
 	proc.mu.Lock()
 	proc.Generation++
 	cancel := proc.cancel
+	exited := proc.exited
 	proc.cancel = nil
-	proc.State = StateStopped
+	proc.State = StateStopping
 	proc.mu.Unlock()
 	if cancel != nil {
 		cancel()
+	}
+	if exited != nil {
+		select {
+		case <-exited:
+		case <-time.After(6 * time.Second):
+			return fmt.Errorf("timed out waiting for process %q to stop", name)
+		}
+	}
+	proc.mu.Lock()
+	proc.PID = 0
+	proc.State = StateStopped
+	proc.StartedAt = time.Time{}
+	proc.exited = nil
+	proc.mu.Unlock()
+	log.Printf("supervisor: stopped %s by management request", name)
+	return nil
+}
+
+// Start launches one stopped child after confirming that its dependencies are healthy.
+func (m *Manager) Start(name string) error {
+	m.mu.RLock()
+	proc, ok := m.processes[name]
+	if !ok {
+		m.mu.RUnlock()
+		return fmt.Errorf("unknown process %q", name)
+	}
+	dependencies := append([]string(nil), proc.Spec.DependsOn...)
+	m.mu.RUnlock()
+
+	proc.mu.Lock()
+	state := proc.State
+	proc.mu.Unlock()
+	if state != StateStopped {
+		return fmt.Errorf("process %q is %s, not stopped", name, state)
+	}
+	for _, dependency := range dependencies {
+		m.mu.RLock()
+		dependencyProcess, exists := m.processes[dependency]
+		m.mu.RUnlock()
+		if !exists {
+			return fmt.Errorf("process %q has unknown dependency %q", name, dependency)
+		}
+		dependencyProcess.mu.Lock()
+		dependencyState := dependencyProcess.State
+		dependencyProcess.mu.Unlock()
+		if dependencyState != StateHealthy {
+			return fmt.Errorf("dependency %q is %s, not healthy", dependency, dependencyState)
+		}
 	}
 	return m.startOne(name)
 }

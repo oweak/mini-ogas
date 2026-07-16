@@ -1,6 +1,6 @@
 # Source Of Truth Matrix
 
-Last verified: 2026-07-14.
+Last verified: 2026-07-16.
 
 ## Definitions
 
@@ -63,7 +63,7 @@ Last verified: 2026-07-14.
 | Maintenance spare use | Phase 4 movement/balance owns quantity; Phase 6 spare relation owns purpose | Maintenance-authorized Consume -> immutable Order relation | Order/spare response and inventory query | Inventory and maintenance owners | Consume has exactly one Operation Task or Maintenance Order authority; same Order must own spare link |
 | Audit log | PostgreSQL `audit_logs` plus event records | Every protected action/result -> append; Phase 2/3/4/5/6 mutation also enqueues a NATS audit envelope in the same transaction | Log management and incident timeline | Compliance owner | Actor/scope/action/result/detail are durable; Outbox failure rolls the business mutation back |
 | Event store | PostgreSQL `event_store` for recorded events | Central event recording/NATS shadow worker | Timeline/replay | Domain owner per event type | Unique ID and `(source, run, local sequence)`; PostgreSQL transaction serializes/rebases overlapping writers; deterministic projection rebuild still required |
-| NATS receipt | PostgreSQL `nats_shadow_receipts` | Shadow consumer acknowledgement | Integration health | Platform owner | Match message ID/subject/sequence; current receipt proves transport only |
+| NATS receipt | PostgreSQL `nats_shadow_receipts` | Dedicated Shadow consumer acknowledgement | Worker/Central reconciliation health | Platform owner | Message ID primary key prevents duplicate fact rows; delivery/duplicate counters, latency, per-stream order and Outbox matching are measured over the latest 100 messages; receipt proves transport only |
 | User/password/role | PostgreSQL `users`, `roles`, `user_roles`, `role_permissions` | Bootstrap once, then authenticated admin path | JWT claims/session | Identity/security owner | Database active state and role links win; role does not prove personnel qualification; token revocation design remains limited |
 | Tenant/site scope | PostgreSQL columns plus forced RLS on 18 Phase 1, 18 Phase 2, 11 Phase 3, 10 Phase 4, 10 Phase 5, and 14 Phase 6 tables | Scoped application role and session settings | Scoped API/database reads | Security/data owner | Non-superuser/no-BYPASSRLS role and live alternate-site probes pass; all 81 accepted tables are forced-RLS scoped |
 | Secret | Environment/vault file during current local runtime | Provisioning/unlock workflow | Redacted status only | Security owner/provider | Never return secret; ACL/rotation check; revoke on suspected exposure |
@@ -93,8 +93,10 @@ flowchart LR
     S["SimPy edge runtime"] -->|"simulated heartbeat"| API["Central API"]
     API --> MEM["MemoryStore transition/cache"]
     API --> PG["PostgreSQL shadow/history"]
-    API --> NATS["NATS shadow publish"]
-    NATS --> R["PostgreSQL receipt"]
+    API --> OUT["PostgreSQL transactional Outbox"]
+    OUT --> WRK["Dedicated Outbox publisher"]
+    WRK --> NATS["NATS Shadow publish"]
+    NATS --> R["PostgreSQL idempotent receipt"]
     API --> MD["PostgreSQL Phase 2 master/work-order authority"]
     MD --> EXE["PostgreSQL Phase 3 execution authority"]
     EXE --> MAT["PostgreSQL Phase 4 material-flow authority"]

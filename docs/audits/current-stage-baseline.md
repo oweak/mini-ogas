@@ -376,7 +376,7 @@ Next action:
 
 Evidence:
 
-- `start-supervisor.ps1 -ReplaceRunning` successfully starts the full 11-process
+- `start-supervisor.ps1 -ReplaceRunning` successfully starts the full 12-process
   runtime including NATS, Redis, MinIO, central-api, AI, dashboard, and nodes.
 - `start-system.ps1` can start API/microservices with service venvs, but it does
   not itself own Redis/MinIO/NATS startup.
@@ -449,4 +449,10 @@ PostgreSQL by Central.
 Stage E now has one formal Outbox publisher: API workers do not connect or publish, while the
 dedicated worker alone publishes and updates delivery status. The accepted runtime
 reported 9 published and 9 persisted Shadow messages with zero failures. Stage E
-remains open for reconciliation thresholds and controlled degrade/rollback proof.
+subsequently passed reconciliation and controlled degrade/recovery. Two explicit
+migrations persist delivery/duplicate counters and enforce per-aggregate Outbox
+ordering. The final 18-second NATS outage gate retained REST/PostgreSQL liveness,
+observed two stale queued messages, recovered 100/100 receipts with zero duplicates
+and zero order divergence, met P95 4007.568 ms, and returned Central readiness to
+`ready`. The complete Central suite now passes 312 tests. Stage E is accepted; Stage F
+deployment convergence is next.

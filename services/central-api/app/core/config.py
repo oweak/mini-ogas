@@ -155,6 +155,18 @@ class Settings(BaseModel):
     nats_publish_timeout_seconds: float = float(os.getenv("NATS_PUBLISH_TIMEOUT_SECONDS", "2"))
     nats_retry_seconds: float = float(os.getenv("NATS_RETRY_SECONDS", "5"))
     nats_stream_max_bytes: int = int(os.getenv("NATS_STREAM_MAX_BYTES", str(4 * 1024 * 1024 * 1024)))
+    nats_reconciliation_grace_seconds: int = int(
+        os.getenv("NATS_RECONCILIATION_GRACE_SECONDS", "15")
+    )
+    nats_reconciliation_window_messages: int = int(
+        os.getenv("NATS_RECONCILIATION_WINDOW_MESSAGES", "100")
+    )
+    nats_reconciliation_min_samples: int = int(
+        os.getenv("NATS_RECONCILIATION_MIN_SAMPLES", "100")
+    )
+    nats_min_receive_rate: float = float(os.getenv("NATS_MIN_RECEIVE_RATE", "0.999"))
+    nats_max_duplicate_rate: float = float(os.getenv("NATS_MAX_DUPLICATE_RATE", "0.01"))
+    nats_max_p95_latency_ms: float = float(os.getenv("NATS_MAX_P95_LATENCY_MS", "5000"))
     ai_dispatcher_url: str = os.getenv("AI_DISPATCHER_URL", "http://127.0.0.1:8081")
     market_simulator_url: str = os.getenv("MARKET_SIMULATOR_URL", "http://127.0.0.1:8082")
     production_planner_url: str = os.getenv("PRODUCTION_PLANNER_URL", "http://127.0.0.1:8083")
@@ -200,6 +212,18 @@ class Settings(BaseModel):
             )
         if self.object_storage_max_bytes < 1:
             raise ValueError("OBJECT_STORAGE_MAX_BYTES must be positive")
+        if self.nats_reconciliation_grace_seconds < 1:
+            raise ValueError("NATS_RECONCILIATION_GRACE_SECONDS must be positive")
+        if self.nats_reconciliation_window_messages < 1:
+            raise ValueError("NATS_RECONCILIATION_WINDOW_MESSAGES must be positive")
+        if self.nats_reconciliation_min_samples < 1:
+            raise ValueError("NATS_RECONCILIATION_MIN_SAMPLES must be positive")
+        if not 0 <= self.nats_min_receive_rate <= 1:
+            raise ValueError("NATS_MIN_RECEIVE_RATE must be between 0 and 1")
+        if not 0 <= self.nats_max_duplicate_rate <= 1:
+            raise ValueError("NATS_MAX_DUPLICATE_RATE must be between 0 and 1")
+        if self.nats_max_p95_latency_ms <= 0:
+            raise ValueError("NATS_MAX_P95_LATENCY_MS must be positive")
         if self.demo_seed_enabled and self.data_source != "simulated":
             raise ValueError("DEMO_SEED_ENABLED=true requires DATA_SOURCE=simulated")
 

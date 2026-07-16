@@ -226,9 +226,14 @@ class CentralFactRepository:
             cursor = db.execute(
                 """INSERT INTO nats_shadow_receipts (
                        message_id, subject, message_type, source_node, run_id, local_sequence,
-                       correlation_id, occurred_at, ingested_at, payload_json
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(message_id) DO NOTHING""",
+                       correlation_id, occurred_at, ingested_at, payload_json,
+                       delivery_count, duplicate_count, last_ingested_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+                   ON CONFLICT(message_id) DO UPDATE SET
+                       delivery_count = nats_shadow_receipts.delivery_count + 1,
+                       duplicate_count = nats_shadow_receipts.duplicate_count + 1,
+                       last_ingested_at = excluded.last_ingested_at
+                   RETURNING delivery_count""",
                 (
                     str(envelope.get("message_id") or ""),
                     subject,
@@ -240,9 +245,12 @@ class CentralFactRepository:
                     str(envelope.get("occurred_at") or ""),
                     ingested_at,
                     json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+                    ingested_at,
                 ),
             )
-            return int(cursor.rowcount or 0) == 1
+            row = cursor.fetchone()
+            delivery_count = int(dict(row)["delivery_count"] if hasattr(row, "keys") else row[0])
+            return delivery_count == 1
 
     def persist_event(self, event: IncidentEvent, run_id: str) -> bool:
         with get_db() as db:

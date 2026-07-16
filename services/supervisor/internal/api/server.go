@@ -20,16 +20,22 @@ func NewServer(manager *process.Manager) *Server {
 }
 
 func (s *Server) ListenAndServe(port int) error {
+	addr := fmt.Sprintf("127.0.0.1:%d", port)
+	log.Printf("supervisor: management API listening on %s", addr)
+	return http.ListenAndServe(addr, s.Handler())
+}
+
+func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/supervisor/status", s.handleStatus)
+	mux.HandleFunc("/supervisor/start/", s.handleStart)
+	mux.HandleFunc("/supervisor/stop/", s.handleStop)
 	mux.HandleFunc("/supervisor/restart/", s.handleRestart)
 	mux.HandleFunc("/supervisor/stopall", s.handleStopAll)
 	mux.HandleFunc("/supervisor/session", s.handleSession)
 	mux.HandleFunc("/health", s.handleHealth)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", port)
-	log.Printf("supervisor: management API listening on %s", addr)
-	return http.ListenAndServe(addr, mux)
+	return mux
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +60,40 @@ func (s *Server) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]any{"restarted": name, "status": "restarted"})
+}
+
+func (s *Server) handleStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Path[len("/supervisor/start/"):]
+	if name == "" {
+		http.Error(w, "missing process name", http.StatusBadRequest)
+		return
+	}
+	if err := s.manager.Start(name); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	writeJSON(w, map[string]any{"process": name, "status": "starting"})
+}
+
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	name := r.URL.Path[len("/supervisor/stop/"):]
+	if name == "" {
+		http.Error(w, "missing process name", http.StatusBadRequest)
+		return
+	}
+	if err := s.manager.Stop(name); err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, map[string]any{"process": name, "status": "stopped"})
 }
 
 func (s *Server) handleStopAll(w http.ResponseWriter, r *http.Request) {

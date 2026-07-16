@@ -1,6 +1,6 @@
 # Mini-OGAS Project Status
 
-Verified: 2026-07-15 on branch `codex/current-stage-hardening`
+Verified: 2026-07-16 on branch `codex/current-stage-hardening`
 
 ## Current Position
 
@@ -16,7 +16,7 @@ proof.
 | B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
 | C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
 | D - `MemoryStore` decomposition | Accepted | Command, Node, Production Execution, Quality, Simulation and Incident/Event ownership have repository/restart/transaction evidence; Outbox and Redis/NATS/MinIO adapters are isolated, and periodic work has one owner. |
-| E - data/event convergence | In progress | PostgreSQL authority, Redis projection and NATS Shadow exist; one dedicated Outbox publisher and idempotent Shadow receipts are proved. Reconciliation/degrade/rollback gates remain open. |
+| E - data/event convergence | Accepted | One Outbox publisher, durable idempotent receipts, per-stream retry order, 100-message reconciliation thresholds and controlled NATS degrade/recovery are proved. NATS remains Shadow. |
 | F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
 | G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
 | H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
@@ -53,7 +53,7 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 288 passed |
+| Central API | 312 passed |
 | Python node simulator | 39 passed |
 | Dashboard | 16 files / 73 tests passed |
 | Dashboard production build | passed |
@@ -66,7 +66,7 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 | Ruff correctness | passed |
 | Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
-| Clean key-image build/start | passed: GitHub Container Gate `29410060670` on Stage D commit `3125430` |
+| Clean key-image build/start | passed: GitHub Container Gate `29414112173` on Stage D commit `93a1807` |
 | Full Compose-stack startup | not yet proved |
 
 ## Hard Boundaries
@@ -81,6 +81,5 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Next Required Gate
 
-Continue Stage E from the accepted Stage D boundaries. The unique Outbox publisher is
-proved; reconciliation/degrade/rollback gates remain. Full Compose parity remains
-tracked for Stage F.
+Continue Stage F from the accepted Stage E boundaries. Full Compose parity, explicit
+one-shot migration and Dashboard production serving remain open.

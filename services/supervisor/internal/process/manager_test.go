@@ -43,6 +43,47 @@ func TestRestartUnknownProcessFails(t *testing.T) {
 	}
 }
 
+func TestManualStopAndStartDoNotTriggerCrashRestart(t *testing.T) {
+	manager := NewManager("test-session")
+	manager.Register(config.Config{Processes: []config.ProcessSpec{{
+		Name:    "helper",
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestSupervisorHelperProcess"},
+		Env:     map[string]string{"GO_WANT_SUPERVISOR_HELPER": "1"},
+		Health:  config.HealthCheckConfig{Type: "process", Interval: 1, Timeout: 1, Retries: 1},
+	}}})
+	if err := manager.StartAll(); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer manager.StopAll()
+
+	first := waitForHealthy(t, manager, 0)
+	if err := manager.Stop("helper"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	stopped := manager.Status()[0]
+	if stopped.State != StateStopped.String() || stopped.PID != 0 {
+		t.Fatalf("manual stop state = %#v", stopped)
+	}
+	if err := manager.Start("helper"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	second := waitForHealthy(t, manager, first.PID)
+	if second.PID == first.PID {
+		t.Fatalf("manual start kept PID %d", first.PID)
+	}
+}
+
+func TestManualStartRejectsRunningAndUnknownProcesses(t *testing.T) {
+	manager := NewManager("test-session")
+	if err := manager.Start("missing"); err == nil {
+		t.Fatal("Start() succeeded for unknown process")
+	}
+	if err := manager.Stop("missing"); err == nil {
+		t.Fatal("Stop() succeeded for unknown process")
+	}
+}
+
 func TestStartAllWaitsForHealthyDependencies(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

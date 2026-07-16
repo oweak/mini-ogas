@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from .core.config import settings
 from .core.nats_contracts import TransportEnvelope
 from .core.nats_publisher import nats_runtime
+from .core.nats_reconciliation import nats_shadow_reconciler
 from .core.outbox import outbox_repository
 from .core.session import get_process_identity, get_session_token
 from .repositories.data_platform import data_platform_repository
@@ -51,44 +52,55 @@ async def simulation_loop() -> None:
             await asyncio.sleep(settings.simulation_base_interval_seconds)
 
 
+async def publish_outbox_batch(*, limit: int = 50) -> dict[str, int]:
+    result_counts = {"claimed": 0, "published": 0, "retried": 0, "dead_lettered": 0}
+    messages = await asyncio.to_thread(outbox_repository.claim_pending, limit=limit)
+    result_counts["claimed"] = len(messages)
+    for message in messages:
+        message_id = str(message["message_id"])
+        attempts = int(message["attempts"])
+        try:
+            envelope = TransportEnvelope.model_validate(message["payload"])
+        except Exception as exc:
+            await asyncio.to_thread(
+                outbox_repository.mark_dead_letter,
+                message_id,
+                f"invalid outbox envelope: {type(exc).__name__}",
+            )
+            result_counts["dead_lettered"] += 1
+            continue
+        publish_result = await nats_runtime.publish_envelope(envelope)
+        if publish_result.status == "published":
+            await asyncio.to_thread(outbox_repository.mark_published, message_id)
+            result_counts["published"] += 1
+        elif attempts >= 10:
+            await asyncio.to_thread(
+                outbox_repository.mark_dead_letter,
+                message_id,
+                publish_result.error_category or publish_result.status,
+            )
+            result_counts["dead_lettered"] += 1
+        else:
+            await asyncio.to_thread(
+                outbox_repository.mark_failed,
+                message_id,
+                publish_result.error_category or publish_result.status,
+                attempts,
+            )
+            result_counts["retried"] += 1
+    return result_counts
+
+
 async def outbox_publish_loop() -> None:
     while True:
         try:
             if not settings.persist_enabled or not settings.nats_enabled:
                 await asyncio.sleep(settings.nats_retry_seconds)
                 continue
-            messages = await asyncio.to_thread(outbox_repository.claim_pending, limit=50)
-            if not messages:
+            cycle = await publish_outbox_batch(limit=50)
+            if not cycle["claimed"]:
                 await asyncio.sleep(0.5)
                 continue
-            for message in messages:
-                message_id = str(message["message_id"])
-                attempts = int(message["attempts"])
-                try:
-                    envelope = TransportEnvelope.model_validate(message["payload"])
-                except Exception as exc:
-                    await asyncio.to_thread(
-                        outbox_repository.mark_dead_letter,
-                        message_id,
-                        f"invalid outbox envelope: {type(exc).__name__}",
-                    )
-                    continue
-                result = await nats_runtime.publish_envelope(envelope)
-                if result.status == "published":
-                    await asyncio.to_thread(outbox_repository.mark_published, message_id)
-                elif attempts >= 10:
-                    await asyncio.to_thread(
-                        outbox_repository.mark_dead_letter,
-                        message_id,
-                        result.error_category or result.status,
-                    )
-                else:
-                    await asyncio.to_thread(
-                        outbox_repository.mark_failed,
-                        message_id,
-                        result.error_category or result.status,
-                        attempts,
-                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -132,12 +144,15 @@ app = FastAPI(
 @app.get("/health")
 def health() -> dict[str, object]:
     task_status = {
-        name: "running" if not task.done() else "failed"
-        for name, task in _tasks.items()
+        name: "running" if not task.done() else "failed" for name, task in _tasks.items()
     }
     nats = nats_runtime.health()
+    reconciliation = nats_shadow_reconciler.report(enabled=bool(nats["enabled"]))
+    nats["reconciliation"] = reconciliation
     ready = bool(task_status) and all(status == "running" for status in task_status.values())
     if nats["enabled"] and nats["status"] != "live":
+        ready = False
+    if reconciliation["status"] in {"degraded", "unavailable"}:
         ready = False
     return {
         "status": "ok",
