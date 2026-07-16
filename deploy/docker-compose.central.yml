@@ -152,6 +152,8 @@ services:
     command: ["uvicorn", "app.worker:app", "--host", "0.0.0.0", "--port", "8084"]
     restart: unless-stopped
     environment: *central-environment
+    ports:
+      - "8084:8084"
     depends_on:
       central-api:
         condition: service_healthy

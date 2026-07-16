@@ -4,6 +4,8 @@ import ast
 import tomllib
 from pathlib import Path
 
+import yaml
+
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 PROJECT_ROOT = APP_ROOT.parents[2]
 ALLOWED_ROUTER_DEPENDENCIES = {
@@ -160,9 +162,9 @@ def test_supervisor_and_compose_use_the_same_runtime_service_names() -> None:
 
 
 def test_compose_uses_one_shot_migration_and_production_dashboard() -> None:
-    compose = (PROJECT_ROOT / "deploy" / "docker-compose.central.yml").read_text(
-        encoding="utf-8"
-    )
+    compose_path = PROJECT_ROOT / "deploy" / "docker-compose.central.yml"
+    compose = compose_path.read_text(encoding="utf-8")
+    compose_config = yaml.safe_load(compose)
     dashboard_dockerfile = (PROJECT_ROOT / "services" / "dashboard" / "Dockerfile").read_text(
         encoding="utf-8"
     )
@@ -172,6 +174,7 @@ def test_compose_uses_one_shot_migration_and_production_dashboard() -> None:
     assert 'DATABASE_AUTO_MIGRATE: "false"' in compose
     assert "mini_ogas_dev" not in compose
     assert ":-replace_" not in compose
+    assert compose_config["services"]["background-worker"]["ports"] == ["8084:8084"]
     assert "RUN npm run build" in dashboard_dockerfile
     assert "FROM nginx:" in dashboard_dockerfile
 
