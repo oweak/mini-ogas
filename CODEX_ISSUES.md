@@ -8,7 +8,7 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stages A-E are accepted. Stage F deployment convergence, Stage G AI-plane convergence and Stage H final closed loop remain open. |
+| Current A-H hardening objective | In progress | Stages A-F are accepted. Stage G AI-plane convergence and Stage H final closed loop remain open. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -49,6 +49,9 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | FIX-20260716-02 | Outbox retry backoff allowed newer per-node messages to bypass an older unavailable message, producing eight live order divergences. | Added a per-aggregate predecessor fence and index; the final outage gate recorded zero divergences. |
 | FIX-20260716-03 | A long NATS outage could leave the consumer task bound to a closed connection after the publisher opened a replacement. | Rebuild the consumer task whenever a new publisher connection is established; regression and live recovery gates pass. |
 | FIX-20260716-04 | Supervisor had no controlled one-component outage path, and an asynchronous stop could race a subsequent start. | Added loopback start/stop endpoints, dependency checks, `stopping` state and process-exit confirmation. |
+| FIX-20260716-05 | AI Dispatcher assumed a host repository path depth and crashed in its clean container. | Replaced fixed parent indexing with marker-based project discovery and shallow-container regression tests. |
+| FIX-20260716-06 | Compose heartbeats declared `deployment_mode=container`, but the Outbox transport contract rejected that value and returned 409. | Added `container` to the exported v3 contract and proved fact plus Outbox persistence in one transaction. |
+| FIX-20260716-07 | Background Worker was healthy inside Compose but its documented port was not published to the host. | Published `8084:8084` and added a parsed Compose architecture assertion. |
 
 ## Current Supported Runtime Truth
 
@@ -70,7 +73,7 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | --- | --- | --- | --- |
 | B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
 | B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
-| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; current full suite 288 passed | Closed |
+| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; current full suite 320 passed | Closed |
 | B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in latest Container Gate `29410060670` | Closed |
 | B5 | Complete Node Agent image inputs | Clean Linux image sent an observable authenticated SimPy heartbeat in the same gate | Closed |
 | B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
@@ -78,8 +81,8 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | B8 | Align status documents to evidence | README, project status, issues and baseline updated together | Closed |
 
 Stage B is accepted. Docker Desktop/CLI and WSL remain absent on this Windows host,
-but B4/B5 were independently proven on a clean GitHub Ubuntu runner. Full Compose
-startup is still a Stage F gap.
+but B4/B5 and the later full Compose gate were independently proven on clean GitHub
+Ubuntu runners.
 
 ## Stage C Acceptance
 
@@ -99,7 +102,6 @@ startup is still a Stage F gap.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Align Supervisor/Compose/Docker/startup components; run Dashboard production build in deployment. | Stage F |
 | P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
 | P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |
 
@@ -111,11 +113,11 @@ startup is still a Stage F gap.
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local verifier gates passed. Canonical counts are Central API 312, node
-simulator 39, Dashboard 73 across 16 files plus production build, AI dispatcher 4,
+Latest local verifier gates passed. Canonical counts are Central API 320, node
+simulator 40, Dashboard 73 across 16 files plus production build, AI dispatcher 6,
 CLI/workflow 36 plus 9 subtests, and both Go modules. Ruff correctness passes. The
 strict runtime reports 12/12 healthy processes, a ready dedicated worker, live NATS
 Shadow and 3/3 fresh SimPy nodes. The Stage E controlled outage gate also passed with
 100/100 matched receipts, zero duplicates, zero order divergence and P95 4007.568 ms.
-GitHub Container Gate `29414112173` on Stage D commit `93a1807` passed. Full Compose
-parity and Stages F-H remain open, so the current A-H objective is not complete.
+GitHub full Compose Container Gate `29489184819` on Stage F commit `829b295` passed.
+Stages G-H remain open, so the current A-H objective is not complete.

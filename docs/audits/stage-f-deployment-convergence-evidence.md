@@ -23,6 +23,9 @@ NATS to authority, prove multi-host edge deployment, or accept the unified AI pl
 - Required Compose credentials fail closed; placeholder defaults were removed.
 - GitHub Container Gate now starts the full stack and tests migration, infrastructure,
   three heartbeats, restart persistence and production Dashboard serving.
+- AI Dispatcher environment discovery no longer assumes a host-repository directory depth.
+- The transport contract accepts the explicit `container` deployment mode used by Compose.
+- The Background Worker publishes its documented `8084` health port on both deployment paths.
 
 ## Local Acceptance
 
@@ -41,12 +44,30 @@ Observed evidence:
 ## Automated Source Tests
 
 The focused migration, architecture, authentication and persistence set passed 49 tests.
-YAML and TOML source parsing passed. The complete local gate then passed 317 Central
-tests, 39 simulator tests, both Go suites, 4 AI Dispatcher tests, 36 workflow tests plus
+YAML and TOML source parsing passed. The complete local gate then passed 320 Central
+tests, 40 simulator tests, both Go suites, 6 AI Dispatcher tests, 36 workflow tests plus
 9 subtests, 73 Dashboard tests and production build, Ruff correctness, secret/ACL
 checks, strict runtime, and PostgreSQL Phase 1/3/4/5/6/7 gates.
 
-## Pending Acceptance Evidence
+## Independent Linux Acceptance
 
-- GitHub full Compose Container Gate conclusion and run URL;
-- status/document synchronization after the remote gate.
+GitHub Container Gate [29489184819](https://github.com/oweak/mini-ogas/actions/runs/29489184819)
+passed on commit `829b295` in 1 minute 22 seconds. The clean Ubuntu runner proved:
+
+- every image built from the checked-out source;
+- the one-shot migration exited successfully and reported PostgreSQL;
+- PostgreSQL, authenticated Redis, authenticated NATS JetStream and MinIO were healthy;
+- Central, Background Worker, AI Dispatcher, market simulator, production planner and
+  the production Nginx Dashboard were healthy;
+- all three SimPy nodes produced accepted heartbeats and typed telemetry;
+- at least three heartbeat facts existed in PostgreSQL before restart;
+- stopping the nodes and restarting Central plus Background Worker preserved the nodes;
+- the migration ledger count did not change during process restart;
+- restarting the nodes increased the durable heartbeat count.
+
+## Acceptance Decision
+
+Stage F is accepted. Supervisor and Compose now declare and run the same core component
+set, migration has one explicit owner, and both local process mode and clean Linux
+Compose mode have executable evidence. This decision does not accept Stage G, Stage H,
+multi-host deployment, NATS authority or autonomous AI control.

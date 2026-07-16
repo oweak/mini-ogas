@@ -12,19 +12,19 @@ proof.
 
 | Current stage | Status | Evidence boundary |
 | --- | --- | --- |
-| A - truthful baseline | Local and key-image paths verified; full Compose open | Tests, production frontend build, 12-process Supervisor runtime and clean Central/Node/Dashboard containers pass. Full Compose startup remains unproved. |
+| A - truthful baseline | Accepted | Tests, production frontend build, 12-process Supervisor runtime and clean full-Compose deployment are independently verified. |
 | B - P0 source fixes | Accepted | B1-B8 are tested; B4/B5 are proven by clean container build and live Node Agent heartbeat. |
 | C - unified identity/control | Accepted | Human, service, node and AI Agent Principals are persisted; node credentials are unique, bound, rotatable and revocable; sensitive command writes use the canonical control service. |
 | D - `MemoryStore` decomposition | Accepted | Command, Node, Production Execution, Quality, Simulation and Incident/Event ownership have repository/restart/transaction evidence; Outbox and Redis/NATS/MinIO adapters are isolated, and periodic work has one owner. |
 | E - data/event convergence | Accepted | One Outbox publisher, durable idempotent receipts, per-stream retry order, 100-message reconciliation thresholds and controlled NATS degrade/recovery are proved. NATS remains Shadow. |
-| F - deployment convergence | Not accepted | Supervisor works locally, but Compose differs and Supervisor still serves Dashboard with Vite dev mode. |
+| F - deployment convergence | Accepted | Supervisor and Compose run the same core services, migration is one-shot, Dashboard is production-built, and clean full-stack restart persistence passed. |
 | G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
 | H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
 
 ## Verified Runtime Truth
 
 ```text
-Vue Dashboard :5173 (Supervisor currently uses Vite development server)
+Vue Dashboard :5173 (Supervisor serves a production build with Vite preview)
         |
         | JWT + REST
         v
@@ -53,11 +53,11 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 312 passed |
-| Python node simulator | 39 passed |
+| Central API | 320 passed |
+| Python node simulator | 40 passed |
 | Dashboard | 16 files / 73 tests passed |
 | Dashboard production build | passed |
-| AI dispatcher | 4 passed |
+| AI dispatcher | 6 passed |
 | CLI/workflow | 36 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
@@ -66,8 +66,8 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 | Ruff correctness | passed |
 | Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
-| Clean key-image build/start | passed: GitHub Container Gate `29414112173` on Stage D commit `93a1807` |
-| Full Compose-stack startup | not yet proved |
+| Clean key-image build/start | passed |
+| Full Compose-stack startup and restart persistence | passed: GitHub Container Gate `29489184819` on Stage F commit `829b295` |
 
 ## Hard Boundaries
 
@@ -75,11 +75,11 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 2. Redis is a rebuildable projection and must never be described as authoritative.
 3. NATS is a loopback Shadow path and must never be described as authoritative edge transport.
 4. Live DeepSeek participation is proven only by an unlocked runtime verification result.
-5. Dashboard production build passes, but the current Supervisor path still serves Vite dev mode.
-6. Container Gate proves the three key images, but does not yet prove full Compose parity or persistence services.
+5. Supervisor serves the Dashboard production build through Vite preview; Compose serves it through Nginx.
+6. Container Gate proves clean full-Compose parity and PostgreSQL persistence across Central restart.
 7. Kali tooling remains laboratory-only; no registered, isolated Kali VM is currently claimed.
 
 ## Next Required Gate
 
-Continue Stage F from the accepted Stage E boundaries. Full Compose parity, explicit
-one-shot migration and Dashboard production serving remain open.
+Continue with Stage G from the accepted Stage F boundary. AI Dispatcher must become the
+sole model-call owner before Stage H closed-loop acceptance begins.

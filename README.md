@@ -181,8 +181,8 @@ alignment. It also runs Ruff correctness rules when the project development
 environment is installed. Optional Kali/VirtualBox state is not used as
 production-node proof.
 
-The latest local hardening verification on 2026-07-16 passed 317 Central API tests,
-39 simulator tests, 73 Dashboard tests and production build, 4 AI Dispatcher
+The latest local hardening verification on 2026-07-16 passed 320 Central API tests,
+40 simulator tests, 73 Dashboard tests and production build, 6 AI Dispatcher
 tests, 36 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
 checks and Ruff correctness. The strict runtime reported 12/12 healthy processes,
 a ready dedicated background worker, live NATS Shadow, three unique node credentials
@@ -197,7 +197,9 @@ AI model calls are only proven when the runtime check is run with:
 If that fails with `AI vault is present but locked`, the system is using rule
 fallback and must not be described as having live DeepSeek participation.
 
-The current Windows host does not have Docker/Compose installed. The GitHub Container
-Gate is therefore the independent Linux proof for the full Compose stack. Stage F is
-accepted only after that gate starts all services, completes the one-shot migration,
-observes three node heartbeats and proves PostgreSQL persistence across restart.
+The current Windows host does not have Docker/Compose installed. GitHub Container Gate
+[29489184819](https://github.com/oweak/mini-ogas/actions/runs/29489184819) is the
+independent Linux proof for the full Compose stack. It started all services, completed
+the one-shot migration, observed three node heartbeats and proved PostgreSQL persistence
+across Central and Background Worker restart. Stage F is accepted; Stages G and H remain
+open.
