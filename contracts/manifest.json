@@ -1,8 +1,8 @@
 {
   "contract_set": "mini-ogas-phase1",
   "files": {
-    "contracts/asyncapi/mini-ogas-shadow-v3.json": "cbe488f2f05f1209c755ea30252ef7818025b027f1f8d66a5679a474d5341ab6",
-    "contracts/events/transport-envelope-v3.schema.json": "0f2d93b685f6dfd21efff755c955bfbce70ab2aac399f563aa322ca62613fa8a",
+    "contracts/asyncapi/mini-ogas-shadow-v3.json": "b68f83f6e0883a9a0215145e216626372f91a6178d76d087bcc8d550c80d48d0",
+    "contracts/events/transport-envelope-v3.schema.json": "35c297dd9eadcac0f26c9f39fbf3c5ff064f15e0f31dadf24a7ed08c980a29eb",
     "contracts/openapi/mini-ogas-openapi-v1.json": "8b376d42aa763bc1ff472583e24925f2969ef7e2a68baf43322fc6e438c89460"
   },
   "generator": "tools/export_contracts.py"

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from app.core.database import get_db, init_db
+from app.core.config import settings
 from app.core.nats_contracts import (
     TransportEnvelope,
     build_heartbeat_envelope,
@@ -15,6 +16,7 @@ from app.core.security import ActorInfo
 from app.models import AuditLog, IncidentEvent, NodeCommand, Severity
 from app.persistence_repository import CentralFactRepository
 from app.routers import nodes as nodes_router
+from app.store import MemoryStore
 from nats.js.api import AckPolicy
 from pydantic import ValidationError
 
@@ -112,6 +114,49 @@ def test_v2_node_agent_runtime_source_maps_to_simulated_for_simpy() -> None:
     envelope = build_heartbeat_envelope(payload)
 
     assert envelope.data.runtime.runtime_source == "simulated"
+
+
+def test_compose_node_heartbeat_accepts_container_deployment_mode() -> None:
+    payload = heartbeat_payload()
+    payload["runtime"]["deployment_mode"] = "container"
+    payload["runtime"]["runtime_source"] = "simulated"
+
+    envelope = build_heartbeat_envelope(payload)
+
+    assert envelope.data.runtime.deployment_mode == "container"
+    assert envelope.data.runtime.runtime_source == "simulated"
+
+
+def test_container_heartbeat_persists_and_queues_outbox_in_one_transaction(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(settings, "persist_enabled", True)
+    monkeypatch.setattr(settings, "persist_backend", "sqlite")
+    monkeypatch.setattr(settings, "central_db_path", str(tmp_path / "container-heartbeat.db"))
+    monkeypatch.setattr(settings, "nats_enabled", True)
+    monkeypatch.setattr(settings, "demo_seed_enabled", False)
+    init_db()
+    runtime_store = MemoryStore()
+    payload = heartbeat_payload()
+    payload["runtime"]["deployment_mode"] = "container"
+    payload["runtime"]["runtime_source"] = "simulated"
+
+    result = runtime_store.record_node_heartbeat_v2(payload)
+
+    with get_db() as db:
+        heartbeat_count = db.execute(
+            "SELECT count(*) AS count FROM heartbeat_shadow WHERE run_id = ?",
+            ("RUN-001",),
+        ).fetchone()["count"]
+        outbox_count = db.execute(
+            """SELECT count(*) AS count FROM outbox_messages
+               WHERE message_type = ? AND aggregate_id = ?""",
+            ("heartbeat", "turning-workshop-01"),
+        ).fetchone()["count"]
+    assert result["_transport_outbox_accepted"] is True
+    assert heartbeat_count == 1
+    assert outbox_count == 1
 
 
 def test_v2_node_agent_runtime_source_maps_to_live_for_physical_runtime() -> None:

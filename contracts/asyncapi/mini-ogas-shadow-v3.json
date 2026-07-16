@@ -786,6 +786,7 @@
           "deployment_mode": {
             "enum": [
               "process",
+              "container",
               "vm",
               "physical"
             ],

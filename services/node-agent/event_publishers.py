@@ -46,11 +46,15 @@ class HTTPPublisher(EventPublisher):
                     "error": "",
                 }
         except urllib.error.HTTPError as error:
+            try:
+                detail = error.read().decode("utf-8", errors="replace")
+            except OSError:
+                detail = ""
             return {
                 "synced": False,
                 "request_id": request_id,
                 "http_status": error.code,
-                "error": str(error),
+                "error": detail or str(error),
             }
         except (urllib.error.URLError, TimeoutError) as error:
             return {

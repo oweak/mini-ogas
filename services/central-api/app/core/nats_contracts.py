@@ -79,7 +79,7 @@ class RuntimeData(StrictModel):
     simulation_started_at: datetime | None = None
     simulation_time: datetime
     wall_clock_time: datetime
-    deployment_mode: Literal["process", "vm", "physical"]
+    deployment_mode: Literal["process", "container", "vm", "physical"]
     runtime_source: Literal["live", "simulated", "replay", "fixture", "fallback"]
     part_flow_mode: str | None = Field(default=None, max_length=64)
     heartbeat_sec: int | None = Field(default=None, ge=1, le=60)

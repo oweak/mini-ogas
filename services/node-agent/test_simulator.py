@@ -1,4 +1,5 @@
 import os
+import io
 import json
 import tempfile
 import unittest
@@ -157,6 +158,24 @@ class NodeAgentTests(unittest.TestCase):
                 "timeout": 3,
             },
         )
+
+    def test_http_publisher_preserves_central_problem_detail(self) -> None:
+        problem = b'{"detail":{"code":"data_source_mismatch"}}'
+        error = urllib.error.HTTPError(
+            "http://central.test:8080/api/agents/turning-workshop-01/heartbeat",
+            409,
+            "Conflict",
+            {},
+            io.BytesIO(problem),
+        )
+        publisher = HTTPPublisher("http://central.test:8080", "node-token")
+
+        with patch("urllib.request.urlopen", side_effect=error):
+            result = publisher.publish_heartbeat({"node_code": "turning-workshop-01"})
+
+        self.assertFalse(result["synced"])
+        self.assertEqual(result["http_status"], 409)
+        self.assertEqual(result["error"], problem.decode("utf-8"))
 
     def test_parse_positive_int_rejects_invalid_values(self) -> None:
         with patch.dict(simulator.os.environ, {"BAD_INT": "abc", "ZERO_INT": "0"}):

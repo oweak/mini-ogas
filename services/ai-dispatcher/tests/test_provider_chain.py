@@ -1,8 +1,32 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from app import main
+
+
+def test_env_loader_tolerates_shallow_container_layout(monkeypatch, tmp_path: Path) -> None:
+    module_path = tmp_path / "app" / "app" / "main.py"
+    module_path.parent.mkdir(parents=True)
+
+    monkeypatch.delenv("OGAS_ENV_FILE", raising=False)
+
+    main._load_project_env(module_path)
+
+
+def test_env_loader_finds_marked_project_root(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    module_path = project_root / "services" / "ai-dispatcher" / "app" / "main.py"
+    module_path.parent.mkdir(parents=True)
+    (project_root / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    (project_root / ".env").write_text("AI_DISPATCHER_ENV_PROBE=loaded\n", encoding="utf-8")
+    monkeypatch.delenv("OGAS_ENV_FILE", raising=False)
+    monkeypatch.delenv("AI_DISPATCHER_ENV_PROBE", raising=False)
+
+    main._load_project_env(module_path)
+
+    assert main.os.environ["AI_DISPATCHER_ENV_PROBE"] == "loaded"
 
 
 def _request() -> main.DiagnosisRequest:

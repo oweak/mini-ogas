@@ -16,9 +16,23 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger("mini_ogas.ai_dispatcher")
 
 
-def _load_project_env() -> None:
-    env_path = Path(__file__).resolve().parents[3] / ".env"
-    if not env_path.exists():
+def _project_root(module_path: Path) -> Path | None:
+    for parent in module_path.resolve().parents:
+        if (parent / ".git").exists() or (parent / "docker-compose.yml").exists():
+            return parent
+    return None
+
+
+def _load_project_env(module_path: Path | None = None) -> None:
+    explicit_path = os.getenv("OGAS_ENV_FILE", "").strip()
+    if explicit_path:
+        env_path = Path(explicit_path).expanduser()
+    else:
+        project_root = _project_root(module_path or Path(__file__))
+        if project_root is None:
+            return
+        env_path = project_root / ".env"
+    if not env_path.is_file():
         return
     for raw_line in env_path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
