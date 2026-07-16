@@ -6,6 +6,7 @@ from .migrations import Migration
 
 STAGE_C_PRINCIPAL_VERSION = "2026.07.15-stage-c-principals"
 STAGE_C_AI_SUGGESTION_VERSION = "2026.07.15-stage-c-ai-suggestions-v2"
+STAGE_G_AI_SUGGESTION_COMMAND_VERSION = "2026.07.16-stage-g-ai-suggestion-command-v1"
 
 
 def _sqlite_principals(connection: Any) -> None:
@@ -122,6 +123,28 @@ def _postgres_ai_suggestions(connection: Any) -> None:
     )
 
 
+def _sqlite_ai_suggestion_command(connection: Any) -> None:
+    connection.execute("ALTER TABLE ai_suggestions ADD COLUMN command_id INTEGER")
+    connection.execute("ALTER TABLE ai_suggestions ADD COLUMN decided_at TEXT")
+    connection.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_suggestions_command_id
+           ON ai_suggestions(command_id) WHERE command_id IS NOT NULL"""
+    )
+
+
+def _postgres_ai_suggestion_command(connection: Any) -> None:
+    connection.execute(
+        "ALTER TABLE ai_suggestions ADD COLUMN IF NOT EXISTS command_id BIGINT"
+    )
+    connection.execute(
+        "ALTER TABLE ai_suggestions ADD COLUMN IF NOT EXISTS decided_at TIMESTAMPTZ"
+    )
+    connection.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_suggestions_command_id
+           ON ai_suggestions(command_id) WHERE command_id IS NOT NULL"""
+    )
+
+
 STAGE_C_PRINCIPAL_MIGRATIONS = [
     Migration(
         version=STAGE_C_PRINCIPAL_VERSION,
@@ -136,5 +159,12 @@ STAGE_C_PRINCIPAL_MIGRATIONS = [
         checksum_material="ai-suggestions-v1:principal-node:risk:evidence:human-review",
         sqlite_action=_sqlite_ai_suggestions,
         postgres_action=_postgres_ai_suggestions,
+    ),
+    Migration(
+        version=STAGE_G_AI_SUGGESTION_COMMAND_VERSION,
+        description="Link high-risk AI suggestions to canonical approval commands",
+        checksum_material="ai-suggestions-v3:command-id:decision-timestamp:unique-link",
+        sqlite_action=_sqlite_ai_suggestion_command,
+        postgres_action=_postgres_ai_suggestion_command,
     ),
 ]

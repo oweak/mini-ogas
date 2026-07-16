@@ -89,8 +89,18 @@ $nodeCredentialState = Get-MiniOgasNodeCredentialState -RuntimeRoot $RuntimeRoot
 $postgresDsn = Get-ConfigValue $PostgresConfigPath "POSTGRES_DSN"
 $jwtSecret = Get-ConfigValue $AuthConfigPath "JWT_SECRET"
 $bootstrapPassword = Get-ConfigValue $AuthConfigPath "AUTH_BOOTSTRAP_PASSWORD"
+$dispatcherToken = Get-ConfigValue $AuthConfigPath "AI_DISPATCHER_TOKEN"
 if (-not $postgresDsn) { throw "POSTGRES_DSN is missing from $PostgresConfigPath" }
 if (-not $jwtSecret -or -not $bootstrapPassword) { throw "auth.env is incomplete: $AuthConfigPath" }
+if ($dispatcherToken.Length -lt 32 -or $dispatcherToken -eq $token) {
+  $dispatcherToken = New-RandomHexToken
+  $authLines = @(
+    Get-Content -LiteralPath $AuthConfigPath |
+      Where-Object { $_ -notmatch '^AI_DISPATCHER_TOKEN=' }
+  )
+  $authLines += "AI_DISPATCHER_TOKEN=$dispatcherToken"
+  $authLines | Set-Content -LiteralPath $AuthConfigPath -Encoding ASCII
+}
 if (-not (Test-Path -LiteralPath $NatsBinary)) { throw "NATS Server is missing: $NatsBinary" }
 if (-not (Test-Path -LiteralPath $NatsConfigPath)) { throw "NATS configuration is missing: $NatsConfigPath" }
 if (-not (Test-Path -LiteralPath $RedisBinary)) { throw "Memurai runtime is missing: $RedisBinary" }
@@ -180,6 +190,7 @@ $env:TENANT_ID = $TenantId
 $env:SITE_ID = $SiteId
 $env:OGAS_API_TOKEN = $token
 $env:API_ACCESS_TOKEN = $token
+$env:AI_DISPATCHER_TOKEN = $dispatcherToken
 $env:NODE_INGEST_TOKEN = $token
 $env:NODE_CREDENTIALS_JSON = $nodeCredentialState.Json
 $env:ALLOW_LEGACY_NODE_TOKEN_AUTH = "false"

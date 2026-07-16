@@ -1,96 +1,122 @@
 from __future__ import annotations
 
-from ai_runtime import decrypt_vault_payload, encrypt_vault_payload
 from app.core.ai import vault as ai_vault
+from app.core.ai.dispatcher import DispatchResult
 from app.core.config import settings
-from app.routers import ai
-from app.routers import compat
+from app.routers import ai, compat
 
 
-def test_ai_vault_roundtrip_uses_current_format() -> None:
-    payload = {
-        "provider": "deepseek",
-        "model": "deepseek-v4-pro",
-        "base_url": "https://api.deepseek.com/v1",
-        "api_key": "test-token-not-real",
-    }
+def test_central_vault_unlock_delegates_without_returning_secret(monkeypatch) -> None:
+    observed: list[str] = []
+    monkeypatch.setattr(
+        ai_vault.dispatcher_client,
+        "unlock",
+        lambda password: observed.append(password)
+        or {
+            "ok": True,
+            "provider": "deepseek",
+            "model": "deepseek-chat",
+            "provider_model": "deepseek/deepseek-chat",
+            "egress_origin": "https://api.deepseek.com",
+        },
+    )
 
-    vault = encrypt_vault_payload(payload, "miniogas")
+    result = ai_vault.unlock_ai_runtime("test-password")
 
-    assert vault["version"] == "miniogas-vault-v1"
-    assert vault["kdf"] == "pbkdf2-sha256-240000"
-    assert decrypt_vault_payload(vault, "miniogas") == payload
+    assert observed == ["test-password"]
+    assert result["provider_model"] == "deepseek/deepseek-chat"
+    assert "api_key" not in result
 
 
-def test_login_unlocks_vault_before_ai_smoke(monkeypatch) -> None:
+def test_login_unlocks_dispatcher_vault_before_ai_smoke(monkeypatch) -> None:
     calls: list[str] = []
     monkeypatch.setattr(settings, "ai_enabled", True)
     monkeypatch.setattr(compat, "vault_present", lambda: True)
-    monkeypatch.setattr(compat, "unlock_ai_runtime", lambda password: calls.append(password) or {
-        "provider": "deepseek",
-        "model": "deepseek-v4-pro",
-        "base_url": "https://api.deepseek.com/v1",
-    })
-    monkeypatch.setattr(compat.registry, "is_any_live_provider", lambda: True)
-    monkeypatch.setattr(compat.registry, "chat_with_provenance", lambda *_args, **_kwargs: ("OK", "deepseek", []))
-    monkeypatch.setattr(compat.registry, "verified_provider", lambda: "deepseek")
+    monkeypatch.setattr(
+        compat,
+        "_ai_runtime",
+        lambda: {
+            "configured": True,
+            "reachable": True,
+            "vault_present": True,
+            "vault_unlocked": False,
+            "source": "configured",
+        },
+    )
+    monkeypatch.setattr(
+        compat,
+        "unlock_ai_runtime",
+        lambda password: calls.append(password) or {"provider": "deepseek"},
+    )
+    monkeypatch.setattr(
+        compat.dispatcher_client,
+        "connectivity_probe",
+        lambda: DispatchResult(
+            "OK",
+            None,
+            {
+                "request_id": "probe-1",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "source": "api",
+                "attempts": [],
+                "latency_ms": 5,
+            },
+        ),
+    )
 
-    result = compat.login(compat._LoginBody(operator="admin", password=settings.api_access_token))
+    result = compat.login(
+        compat._LoginBody(operator="admin", password=settings.api_access_token)
+    )
 
     assert calls == [settings.api_access_token]
     assert result["ai_smoke"]["ok"] is True
     assert result["ai_smoke"]["source"] == "api"
+    assert result["ai_smoke"]["provenance"]["request_id"] == "probe-1"
 
 
-def test_runtime_status_marks_vault_present_without_unlock(monkeypatch, tmp_path) -> None:
-    vault_path = tmp_path / "ai-vault.json"
-    vault_path.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(ai_vault, "default_vault_path", lambda: vault_path)
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
-    monkeypatch.setattr(settings, "groq_api_key", "")
+def test_runtime_status_is_owned_by_dispatcher(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ai_vault.dispatcher_client,
+        "status",
+        lambda: {
+            "owner": "ai-dispatcher",
+            "reachable": True,
+            "vault_present": True,
+            "vault_unlocked": False,
+            "provider": "rule_fallback",
+            "model": "deterministic-rules",
+        },
+    )
 
     status = ai_vault.runtime_status()
 
+    assert status["owner"] == "ai-dispatcher"
     assert status["vault_present"] is True
     assert status["vault_unlocked"] is False
 
 
-def test_runtime_status_reports_model_for_active_provider(monkeypatch, tmp_path) -> None:
-    vault_path = tmp_path / "missing-ai-vault.json"
-    monkeypatch.setattr(ai_vault, "default_vault_path", lambda: vault_path)
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
-    monkeypatch.setattr(settings, "groq_api_key", "")
-    monkeypatch.setattr(settings, "ollama_model", "deepseek-r1:7b-local")
-
-    class ActiveProvider:
-        name = "ollama"
-
-        def is_available(self) -> bool:
-            return True
-
-    from app.core.ai.registry import registry
-
-    monkeypatch.setattr(registry, "is_any_live_provider", lambda: True)
-    monkeypatch.setattr(registry, "first_available", lambda: ActiveProvider())
-
-    status = ai_vault.runtime_status()
-
-    assert status["provider"] == "ollama"
-    assert status["model"] == "deepseek-r1:7b-local"
-
-
-def test_dispatcher_rule_fallback_does_not_mask_central_live_provider(monkeypatch) -> None:
-    monkeypatch.setattr(settings, "microservices_enabled", True)
-    monkeypatch.setattr(ai.registry, "is_any_live_provider", lambda: True)
-    monkeypatch.setattr(ai, "post_json", lambda *_args, **_kwargs: (
-        True,
-        {
-            "root_cause": "local fallback",
+def test_dispatcher_rule_fallback_is_the_only_model_fallback(monkeypatch) -> None:
+    monkeypatch.setattr(
+        ai.dispatcher_client,
+        "diagnose",
+        lambda **_kwargs: {
+            "root_cause": "deterministic fallback",
             "recommended_action": "observe",
             "need_isolation": False,
+            "confidence": 0.5,
             "source": "local-fallback",
+            "provenance": {
+                "request_id": "fallback-1",
+                "provider": "rule_fallback",
+                "model": "deterministic-rules",
+                "provider_model": "rule_fallback/deterministic-rules",
+                "source": "rule_fallback",
+                "attempts": [],
+                "latency_ms": 1,
+            },
         },
-    ))
+    )
 
     result = ai.diagnose_via_dispatcher(
         ai.AiDiagnoseRequest(node_code="milling-workshop-01"),
@@ -99,4 +125,5 @@ def test_dispatcher_rule_fallback_does_not_mask_central_live_provider(monkeypatc
         None,
     )
 
-    assert result is None
+    assert result is not None
+    assert result["provenance"]["provider"] == "rule_fallback"

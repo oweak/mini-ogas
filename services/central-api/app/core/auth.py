@@ -200,11 +200,16 @@ def initialize_auth_store() -> None:
                     "roles": [str(row["role_name"]) for row in roles],
                 }
             )
-    from .principals import initialize_configured_node_principals, sync_human_principal
+    from .principals import (
+        ensure_ai_dispatcher_principal,
+        initialize_configured_node_principals,
+        sync_human_principal,
+    )
 
     for human in human_principals:
         sync_human_principal(human)
     initialize_configured_node_principals()
+    ensure_ai_dispatcher_principal()
 
 
 def authenticate_user(login_name: str, password: str) -> dict[str, Any] | None:

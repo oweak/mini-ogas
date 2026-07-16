@@ -68,6 +68,11 @@ def sync_human_principal(user: dict[str, Any]) -> None:
         _assign_role(principal_id, str(role_name))
 
 
+def ensure_ai_dispatcher_principal() -> None:
+    _ensure_principal("ai:dispatcher", "ai_agent", "AI Dispatcher")
+    _assign_role("ai:dispatcher", "ai_agent")
+
+
 def rotate_node_credential(node_code: str) -> dict[str, str]:
     if not NODE_CODE_PATTERN.fullmatch(node_code):
         raise ValueError("node_code must use 2-64 letters, digits, '.', '_' or '-'")

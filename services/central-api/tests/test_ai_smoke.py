@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.core.ai.base import DiagnosisResult
+from app.core.ai.dispatcher import DispatchResult
 from app.core.config import settings
 from app.core.security import ActorInfo
 from app.routers import compat
@@ -9,10 +9,28 @@ from app.routers import compat
 def test_login_smoke_reports_actual_provider_provenance(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ai_enabled", True)
     monkeypatch.setattr(compat, "_preflight_payload", lambda: {"ok": True, "checks": []})
-    monkeypatch.setattr(compat.registry, "is_any_live_provider", lambda: True)
-    monkeypatch.setattr(compat.registry, "chat_with_provenance", lambda *_args, **_kwargs: ("OK", "deepseek", []))
-    monkeypatch.setattr(compat.registry, "verified_provider", lambda: "deepseek")
-    monkeypatch.setattr(compat.registry, "model_for", lambda provider: "deepseek-chat")
+    monkeypatch.setattr(compat, "vault_present", lambda: False)
+    monkeypatch.setattr(
+        compat,
+        "_ai_runtime",
+        lambda: {"configured": True, "reachable": True, "source": "api"},
+    )
+    monkeypatch.setattr(
+        compat.dispatcher_client,
+        "connectivity_probe",
+        lambda: DispatchResult(
+            "OK",
+            None,
+            {
+                "request_id": "probe-live",
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+                "source": "api",
+                "attempts": [],
+                "latency_ms": 4,
+            },
+        ),
+    )
 
     result = compat.login(compat._LoginBody(password=settings.api_access_token))
 
@@ -27,13 +45,28 @@ def test_login_smoke_reports_actual_provider_provenance(monkeypatch) -> None:
 def test_login_smoke_reports_rule_fallback_when_provider_call_fails(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ai_enabled", True)
     monkeypatch.setattr(compat, "_preflight_payload", lambda: {"ok": True, "checks": []})
-    monkeypatch.setattr(compat.registry, "is_any_live_provider", lambda: True)
+    monkeypatch.setattr(compat, "vault_present", lambda: False)
     monkeypatch.setattr(
-        compat.registry,
-        "chat_with_provenance",
-        lambda *_args, **_kwargs: ("fallback", "rule_fallback", ["deepseek: timeout"]),
+        compat,
+        "_ai_runtime",
+        lambda: {"configured": True, "reachable": True, "source": "configured"},
     )
-    monkeypatch.setattr(compat.registry, "verified_provider", lambda: None)
+    monkeypatch.setattr(
+        compat.dispatcher_client,
+        "connectivity_probe",
+        lambda: DispatchResult(
+            "fallback",
+            None,
+            {
+                "request_id": "probe-fallback",
+                "provider": "rule_fallback",
+                "model": "deterministic-rules",
+                "source": "rule_fallback",
+                "attempts": [{"provider": "deepseek", "status": "failed"}],
+                "latency_ms": 8,
+            },
+        ),
+    )
 
     result = compat.login(compat._LoginBody(password=settings.api_access_token))
 
@@ -44,15 +77,24 @@ def test_login_smoke_reports_rule_fallback_when_provider_call_fails(monkeypatch)
 
 def test_compat_diagnosis_reports_actual_rule_fallback_provenance(monkeypatch) -> None:
     monkeypatch.setattr(settings, "ai_enabled", True)
-    monkeypatch.setattr(compat.registry, "is_any_live_provider", lambda: True)
     monkeypatch.setattr(
-        compat.registry,
-        "diagnose_with_provenance",
-        lambda *_args, **_kwargs: (
-            DiagnosisResult("rule root cause", "manual review", 0.55),
-            "rule_fallback",
-            ["deepseek: timeout"],
-        ),
+        compat.dispatcher_client,
+        "diagnose",
+        lambda **_kwargs: {
+            "root_cause": "rule root cause",
+            "recommended_action": "manual review",
+            "confidence": 0.55,
+            "need_isolation": False,
+            "provenance": {
+                "request_id": "diag-fallback",
+                "provider": "rule_fallback",
+                "model": "deterministic-rules",
+                "provider_model": "rule_fallback/deterministic-rules",
+                "source": "rule_fallback",
+                "attempts": [{"provider": "deepseek", "status": "failed"}],
+                "latency_ms": 10,
+            },
+        },
     )
 
     result = compat.diagnose_by_issue_id(
@@ -64,4 +106,4 @@ def test_compat_diagnosis_reports_actual_rule_fallback_provenance(monkeypatch) -
     assert result["provider"] == "rule_fallback"
     assert result["source"] == "rule_fallback"
     assert result["status"] == "local-fallback"
-    assert result["model_name"] == "local-fallback"
+    assert result["model_name"] == "rule_fallback/deterministic-rules"

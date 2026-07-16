@@ -4,8 +4,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ /app/app/
-COPY ai_runtime.py /app/ai_runtime.py
-COPY create_ai_vault.py /app/create_ai_vault.py
 COPY run_portable.py /app/run_portable.py
 
 EXPOSE 8080

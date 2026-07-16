@@ -11,8 +11,7 @@ import sys
 from ..core.health import check
 from ..core.services import PROJ_ROOT
 
-
-SENSITIVE_ENV_KEYS = {"DEEPSEEK_API_KEY", "API_ACCESS_TOKEN"}
+SENSITIVE_ENV_KEYS = {"AI_DISPATCHER_TOKEN", "API_ACCESS_TOKEN"}
 
 
 def run() -> None:
@@ -31,7 +30,12 @@ def run() -> None:
 
     print()
     print("  Environment:")
-    for key in ["MINI_OGAS_ENV", "DEEPSEEK_API_KEY", "API_ACCESS_TOKEN", "AI_ENABLED"]:
+    for key in [
+        "MINI_OGAS_ENV",
+        "AI_DISPATCHER_TOKEN",
+        "API_ACCESS_TOKEN",
+        "AI_ENABLED",
+    ]:
         val = os.environ.get(key, "")
         if not val or val == "replace-with-your-key":
             print(f"    {key:26s} NOT SET")

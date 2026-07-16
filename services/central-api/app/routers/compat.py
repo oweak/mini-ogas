@@ -7,12 +7,14 @@ prefix from incoming requests, so all routes here are defined *without*
 /api/.
 """
 
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from ..core.ai.registry import registry
+from ..core.ai.base import DiagnosisResult
+from ..core.ai.dispatcher import DispatcherError, dispatcher_client
 from ..core.ai.vault import runtime_status, unlock_ai_runtime, vault_present
 from ..core.auth import authenticate_user, issue_access_token
 from ..core.config import settings
@@ -74,7 +76,7 @@ class _EscalationDecisionBody(BaseModel):
 
 def _ai_runtime() -> dict:
     """Return verified AI provenance without treating configuration as a call."""
-    return runtime_status(verified_provider=registry.verified_provider())
+    return runtime_status()
 
 
 def _preflight_payload() -> dict[str, object]:
@@ -140,8 +142,8 @@ def _make_audit_event(action: str, message: str, severity: str = "info",
                       resource_type: str = "issue", resource_id: str = "",
                       result: str = "success", extra: Optional[dict] = None) -> dict:
     """Build an audit event dict matching the unified events format."""
-    from datetime import datetime, timezone
     import hashlib
+    from datetime import datetime, timezone
     raw = f"{action}-{message}-{datetime.now(timezone.utc).isoformat()}"
     eid = f"audit-{hashlib.sha256(raw.encode()).hexdigest()[:12]}"
     return {
@@ -211,28 +213,33 @@ def login(payload: _LoginBody):
         raise HTTPException(status_code=401, detail="密码错误")
 
     vault_error = ""
-    if settings.ai_enabled and vault_present():
+    initial_runtime = _ai_runtime()
+    if (
+        settings.ai_enabled
+        and vault_present()
+        and not bool(initial_runtime.get("vault_unlocked"))
+    ):
         try:
             unlock_ai_runtime(payload.password)
         except ValueError as exc:
             vault_error = str(exc)
 
     ai_smoke: dict = {"ok": False, "detail": "not_configured", "source": "rule_fallback"}
-    if settings.ai_enabled and registry.is_any_live_provider():
-        _, provider, errors = registry.chat_with_provenance(
-            [
-                {"role": "system", "content": "You are a Mini-OGAS connectivity probe."},
-                {"role": "user", "content": "Reply with exactly: OK"},
-            ],
-            timeout=max(10, min(settings.ai_timeout_seconds, 60)),
-        )
-        if provider != "rule_fallback":
+    current_runtime = _ai_runtime()
+    if settings.ai_enabled and current_runtime.get("configured"):
+        try:
+            result = dispatcher_client.connectivity_probe()
+        except DispatcherError as exc:
+            result = None
+            smoke_error = exc.code
+        if result is not None and result.live:
             ai_smoke = {
                 "ok": True,
                 "detail": "live provider call completed",
                 "source": "api",
-                "provider": provider,
-                "model": registry.model_for(provider),
+                "provider": result.provider,
+                "model": result.model,
+                "provenance": result.provenance,
             }
         else:
             ai_smoke = {
@@ -240,7 +247,7 @@ def login(payload: _LoginBody):
                 "detail": "all live providers failed; rule fallback returned",
                 "source": "rule_fallback",
                 "status": "api_error",
-                "error": "; ".join(errors) or "no live provider response",
+                "error": smoke_error if result is None else "no live provider response",
             }
     elif vault_error:
         ai_smoke = {
@@ -484,25 +491,37 @@ def diagnose_by_issue_id(issue_id: str,
     from ..routers.ai import _rule_diagnosis
 
     provider_name = "rule_fallback"
+    provenance: dict[str, object] = {}
     try:
-        if settings.ai_enabled and registry.is_any_live_provider():
-            prompt = (
-                f"车间节点: {node_code}\n"
-                f"告警: {alert.description}\n"
-                f"请判断根因、建议动作、置信度，以及是否需要隔离该车间节点。"
+        latest = store.latest_metrics().get(node_code)
+        if settings.ai_enabled:
+            data = dispatcher_client.diagnose(
+                node_code=node_code,
+                alert_type=alert_type,
+                severity=alert.severity.value,
+                description=alert.description,
+                recent_metrics=[latest.model_dump(mode="json")] if latest else [],
+                correlation_id=f"alert:{alert.id}",
+                timeout=settings.ai_timeout_seconds,
             )
-            result, provider_name, _ = registry.diagnose_with_provenance(prompt)
+            provenance = dict(data["provenance"])
+            provider_name = str(provenance.get("provider") or "rule_fallback")
+            result = DiagnosisResult(
+                root_cause=str(data["root_cause"]),
+                recommended_action=str(data["recommended_action"]),
+                confidence=float(data.get("confidence") or 0.5),
+                need_isolation=bool(data["need_isolation"]),
+                raw_text="",
+            )
         else:
             result = _rule_diagnosis(node_code)
-    except Exception as exc:
+    except DispatcherError as exc:
         result = _rule_diagnosis(node_code, str(exc))
 
     used_live_provider = provider_name != "rule_fallback"
     used_deepseek = provider_name == "deepseek"
-    model_name = (
-        f"{provider_name}/{registry.model_for(provider_name)}"
-        if used_live_provider
-        else "local-fallback"
+    model_name = str(
+        provenance.get("provider_model") or "rule_fallback/deterministic-rules"
     )
 
     diagnosis = store.add_ai_diagnosis(
@@ -513,7 +532,7 @@ def diagnose_by_issue_id(issue_id: str,
         confidence=result.confidence,
         need_isolation=result.need_isolation,
         model_name=model_name,
-        raw_response=result.raw_text,
+        raw_response=json.dumps(provenance, ensure_ascii=False, sort_keys=True),
     )
     alert.status = "diagnosed"
     store.persist_alert_state(alert)

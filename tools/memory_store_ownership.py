@@ -119,7 +119,8 @@ def method_domain(name: str) -> str:
     if "part" in normalized:
         return "material flow"
     if any(token in normalized for token in ("alert", "audit", "event", "diagnos")) or (
-        "escalat" in normalized or normalized == "add_ai_auto_briefing"
+        "escalat" in normalized
+        or normalized in {"add_ai_auto_briefing", "_deterministic_briefing"}
     ):
         return "incident, audit and AI evidence"
     if any(

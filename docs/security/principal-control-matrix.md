@@ -64,7 +64,7 @@ and permission rows are policy projections, not an independent policy source.
 | Claim/report command | `command:receive` / `command:report` | Node principal must match the command's `node_code` | Only claimable approved states are exposed | Command transition/event persistence |
 | Isolate/restore/retire node | Specific node control permission | Human principal; target node must exist | High risk, `CONFIRM`, `system_admin`; control-plane isolation is denied | Safety decision and node action audit |
 | Approve dispatch plan/escalation | `command:approve` | Verified human Principal; request-body actor is ignored | High risk, `CONFIRM`, `system_admin` | Safety decision and approval audit |
-| Submit AI suggestion | `ai:suggest` | Principal type must be `ai_agent` | High/critical suggestions remain `pending_human_review`; no command is created | Suggestion row and AI audit |
+| Submit AI suggestion | `ai:suggest` | Principal type must be `ai_agent` | High/critical suggestions create one human-only `waiting_approval` command; the command is never node-claimable and high risk requires `CONFIRM` plus `system_admin` | Linked suggestion/command facts, Safety decision, terminal decision timestamp and audit |
 | Rotate/revoke machine credential | `principal:manage` | Human administrator | Rotation revokes the previous active credential; revocation is irreversible without rotation | Credential lifecycle audit, no plaintext token stored |
 
 ## 5. Route-channel boundary

@@ -43,6 +43,11 @@ wait_health() {
 }
 
 PYTHON="$ROOT/services/central-api/.venv/Scripts/python.exe"
+AI_PYTHON="$ROOT/services/ai-dispatcher/.venv/Scripts/python.exe"
+if [ -z "${AI_DISPATCHER_TOKEN:-}" ]; then
+    AI_DISPATCHER_TOKEN="$($PYTHON -c 'import secrets; print(secrets.token_urlsafe(48))')"
+fi
+export AI_DISPATCHER_TOKEN
 
 # ================================================================
 # Phase 0 — Kill
@@ -60,12 +65,27 @@ taskkill //F //FI "IMAGENAME eq python.exe" 2>/dev/null | grep -i "agent" || tru
 sleep 1
 echo ""
 
+# The AI Dispatcher starts before Central API and is the only child process
+# allowed to inherit model-provider credentials.
+cd "$ROOT/services/ai-dispatcher"
+"$AI_PYTHON" -m uvicorn app.main:app --host 127.0.0.1 --port 8081 --log-level warning &
+AI_DISPATCHER_PID=$!
+wait_health "http://127.0.0.1:8081/health" 20 "ai-dispatcher" || {
+    echo "FATAL: ai-dispatcher failed to start"
+    exit 1
+}
+echo ""
+
 # ================================================================
 # Phase 1 — central-api (must be first)
 # ================================================================
 echo "=== Phase 1: 启动 central-api :8080 ==="
 cd "$ROOT/services/central-api"
-"$PYTHON" -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --log-level warning &
+env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL -u DEEPSEEK_MODEL \
+    -u GROQ_API_KEY -u GROQ_BASE_URL -u GROQ_MODEL \
+    -u OLLAMA_BASE_URL -u OLLAMA_MODEL -u LM_STUDIO_BASE_URL -u LM_STUDIO_MODEL \
+    AI_DISPATCHER_URL=http://127.0.0.1:8081 \
+    "$PYTHON" -m uvicorn app.main:app --host 127.0.0.1 --port 8080 --log-level warning &
 CENTRAL_PID=$!
 echo "  PID=$CENTRAL_PID"
 wait_health "http://127.0.0.1:8080/preflight" 20 "central-api" || { echo "FATAL: central-api 启动失败"; exit 1; }
@@ -74,7 +94,10 @@ echo ""
 # Periodic simulation and transport work belongs to a dedicated process.
 echo "=== Phase 1b: 启动 background-worker :8084 ==="
 cd "$ROOT/services/central-api"
-DATABASE_AUTO_MIGRATE=false "$PYTHON" -m uvicorn app.worker:app \
+env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL -u DEEPSEEK_MODEL \
+    -u GROQ_API_KEY -u GROQ_BASE_URL -u GROQ_MODEL \
+    -u OLLAMA_BASE_URL -u OLLAMA_MODEL -u LM_STUDIO_BASE_URL -u LM_STUDIO_MODEL \
+    -u AI_DISPATCHER_TOKEN DATABASE_AUTO_MIGRATE=false "$PYTHON" -m uvicorn app.worker:app \
     --host 127.0.0.1 --port 8084 --log-level warning &
 WORKER_PID=$!
 echo "  PID=$WORKER_PID"
@@ -93,11 +116,15 @@ start_svc() {
     local name="$1" port="$2" dir="$3"
     echo "  $name :$port ..."
     cd "$dir"
-    "$dir/.venv/Scripts/python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port "$port" --log-level warning &
+    env -u DEEPSEEK_API_KEY -u DEEPSEEK_BASE_URL -u DEEPSEEK_MODEL \
+        -u GROQ_API_KEY -u GROQ_BASE_URL -u GROQ_MODEL \
+        -u OLLAMA_BASE_URL -u OLLAMA_MODEL -u LM_STUDIO_BASE_URL -u LM_STUDIO_MODEL \
+        -u AI_DISPATCHER_TOKEN \
+        "$dir/.venv/Scripts/python.exe" -m uvicorn app.main:app \
+        --host 127.0.0.1 --port "$port" --log-level warning &
     wait_health "http://127.0.0.1:$port/health" 10 "$name" || echo "  WARNING: $name 未响应"
 }
 
-start_svc "ai-dispatcher"      8081 "$ROOT/services/ai-dispatcher"
 start_svc "market-simulator"   8082 "$ROOT/services/market-simulator"
 start_svc "production-planner" 8083 "$ROOT/services/production-planner"
 echo ""
@@ -113,7 +140,7 @@ declare -A AGENT_TYPES
 start_agent() {
     local code="$1" wstype="$2"
     echo "  $code ($wstype) ..."
-    "$PYTHON" -u "$ROOT/services/node-agent/agent.py" \
+    env -u AI_DISPATCHER_TOKEN "$PYTHON" -u "$ROOT/services/node-agent/agent.py" \
         --node-code "$code" \
         --workshop-type "$wstype" \
         --interval 3 \
@@ -179,7 +206,7 @@ while true; do
         wstype="${AGENT_TYPES[$code]}"
         if ! kill -0 "$pid" 2>/dev/null; then
             echo "$(date +%H:%M:%S) Watchdog: $code (PID $pid) crashed, restarting..."
-            "$PYTHON" -u "$ROOT/services/node-agent/agent.py" \
+            env -u AI_DISPATCHER_TOKEN "$PYTHON" -u "$ROOT/services/node-agent/agent.py" \
                 --node-code "$code" \
                 --workshop-type "$wstype" \
                 --interval 3 \

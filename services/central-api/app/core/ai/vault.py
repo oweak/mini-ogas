@@ -1,84 +1,29 @@
-"""Runtime AI vault integration for central-api."""
+"""AI runtime facade owned by the external AI Dispatcher control plane."""
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
-from ai_runtime import decrypt_vault_payload, valid_api_key
-
-from ..config import PROJECT_ROOT, settings
-
-
-def default_vault_path() -> Path:
-    configured = Path(settings.central_db_path).parent / "ai-vault.json"
-    legacy = PROJECT_ROOT / "services" / "central-api" / "secrets" / "ai-vault.json"
-    if configured.exists():
-        return configured
-    return legacy
+from .dispatcher import DispatcherError, dispatcher_client
 
 
 def vault_present() -> bool:
-    return default_vault_path().exists()
+    return bool(dispatcher_client.status().get("vault_present"))
 
 
-def env_provider_configured() -> bool:
-    return valid_api_key(settings.deepseek_api_key) or valid_api_key(settings.groq_api_key)
-
-
-def load_vault_payload(password: str) -> dict[str, Any]:
-    path = default_vault_path()
-    if not path.exists():
-        raise ValueError("ai_vault_missing")
-    vault = json.loads(path.read_text(encoding="utf-8"))
-    payload = decrypt_vault_payload(vault, password)
-    if str(payload.get("provider", "")).strip().lower() != "deepseek":
-        raise ValueError("unsupported_ai_vault_provider")
-    if not valid_api_key(str(payload.get("api_key", ""))):
-        raise ValueError("ai_vault_key_missing")
-    return payload
-
-
-def unlock_ai_runtime(password: str) -> dict[str, str]:
-    payload = load_vault_payload(password)
-    settings.deepseek_api_key = str(payload["api_key"])
-    settings.deepseek_base_url = str(payload.get("base_url") or settings.deepseek_base_url).rstrip("/")
-    settings.deepseek_model = str(payload.get("model") or settings.deepseek_model)
-    from .registry import registry
-
-    registry.reload()
+def unlock_ai_runtime(password: str) -> dict[str, Any]:
+    try:
+        result = dispatcher_client.unlock(password)
+    except DispatcherError as exc:
+        raise ValueError(exc.detail or exc.code) from exc
     return {
-        "provider": "deepseek",
-        "model": settings.deepseek_model,
-        "base_url": settings.deepseek_base_url,
+        "provider": str(result.get("provider") or ""),
+        "model": str(result.get("model") or ""),
+        "provider_model": str(result.get("provider_model") or ""),
+        "egress_origin": str(result.get("egress_origin") or ""),
     }
 
 
-def runtime_status(*, verified_provider: str | None = None) -> dict[str, object]:
-    from .registry import registry
-
-    configured = registry.is_any_live_provider()
-    active = registry.first_available()
-    provider = verified_provider or (active.name if active else "rule_fallback")
-    source = "api" if verified_provider else "configured" if configured else "rule_fallback"
-    return {
-        "status": "live" if verified_provider else "configured" if configured and settings.ai_enabled else "rule_fallback",
-        "provider": provider,
-        "model": _model_for_provider(provider),
-        "source": source,
-        "vault_present": vault_present() or env_provider_configured(),
-        "vault_unlocked": bool(verified_provider or env_provider_configured()),
-    }
-
-
-def _model_for_provider(provider: str) -> str:
-    if provider == "deepseek":
-        return settings.deepseek_model
-    if provider == "ollama":
-        return settings.ollama_model
-    if provider == "groq":
-        return settings.groq_model
-    if provider == "lm_studio":
-        return str(getattr(settings, "lm_studio_model", "") or "local-model")
-    return ""
+def runtime_status(*, verified_provider: str | None = None) -> dict[str, Any]:
+    del verified_provider
+    return dispatcher_client.status()

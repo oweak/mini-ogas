@@ -5,7 +5,6 @@ from datetime import datetime, timedelta
 
 from .models import NodeCommand, utc_now
 
-
 CLAIMABLE_STATUSES = {"pending", "queued"}
 APPROVAL_STATUS = "waiting_approval"
 RESULT_STATUSES = {"executed", "failed"}
@@ -154,6 +153,30 @@ class CommandManager:
             raise ValueError(f"command {command_id} is not waiting approval (current: {command.status})")
         command.status = "pending"
         command.operator = actor
+        command.updated_at = now
+        return command
+
+    def approve_human_review(
+        self,
+        commands: list[NodeCommand],
+        *,
+        command_id: int,
+        actor: str,
+        now: datetime | None = None,
+    ) -> NodeCommand:
+        now = now or utc_now()
+        command = self._find(commands, command_id)
+        if command.status != APPROVAL_STATUS:
+            raise ValueError(
+                f"command {command_id} is not waiting approval (current: {command.status})"
+            )
+        if command.parameters.get("workflow_kind") != "ai_suggestion_review":
+            raise ValueError("command is not a human-only AI suggestion review")
+        command.status = "verified"
+        command.operator = actor
+        command.result_message = f"AI suggestion accepted by {actor}"
+        command.verification_status = "verified"
+        command.verified_at = now
         command.updated_at = now
         return command
 

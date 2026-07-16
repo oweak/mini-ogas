@@ -1,13 +1,10 @@
+import json
 from pathlib import Path
 
-import json
-
 import pytest
-from pydantic import ValidationError
-
 from app.core.config import LOCAL_DEVELOPMENT_JWT_SECRET, Settings, settings
 from app.store import MemoryStore
-
+from pydantic import ValidationError
 
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 
@@ -24,6 +21,8 @@ def production_settings(**overrides) -> Settings:
         "persist_backend": "postgres",
         "postgres_dsn": "postgresql://miniogas:secret@127.0.0.1:5432/miniogas",
         "auth_jwt_secret": "j" * 48,
+        "api_access_token": "a" * 48,
+        "ai_dispatcher_token": "d" * 48,
         "node_ingest_token": "n" * 48,
         "node_credentials_json": json.dumps(
             {
@@ -103,6 +102,8 @@ def test_direct_runtime_dependencies_are_declared_for_clean_install() -> None:
         ),
         ({"allow_legacy_api_token_auth": True}, "legacy API token"),
         ({"allow_legacy_node_token_auth": True}, "legacy shared node token"),
+        ({"ai_dispatcher_token": "short"}, "AI_DISPATCHER_TOKEN"),
+        ({"ai_dispatcher_token": "a" * 48}, "must differ from API_ACCESS_TOKEN"),
     ],
 )
 def test_invalid_production_boundaries_fail_fast(overrides: dict, message: str) -> None:

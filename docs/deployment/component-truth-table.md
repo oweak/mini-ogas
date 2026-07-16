@@ -14,7 +14,7 @@ and persistence behavior pass the deployment gate.
 | Schema migration | `python -m app.migrate` | none | PostgreSQL healthy | exit code 0 and safe JSON report | `schema_migrations` ledger | pre-start job | `migrate` one-shot service |
 | Central API | `uvicorn app.main:app` | 8080 | migration, Redis, NATS, MinIO | `/health`: liveness `ok`, readiness `ready` | PostgreSQL facts | `central-api` | `central-api` |
 | Background worker | `uvicorn app.worker:app` | 8084 | Central, PostgreSQL, Redis, NATS | `/health`: task owner and NATS live | Outbox/receipt facts in PostgreSQL | `background-worker` | `background-worker` |
-| AI Dispatcher | `uvicorn app.main:app` | 8081 | Central identity token, provider configuration | `/health`; provider proof is a separate Stage G gate | no business authority | `ai-dispatcher` | `ai-dispatcher` |
+| AI Dispatcher | `uvicorn app.main:app` | 8081 | dedicated Dispatcher token, provider policy/vault | `/health` plus authenticated `/runtime/status`; live provider proof is recorded in the Stage G gate | no business authority | `ai-dispatcher` | `ai-dispatcher` |
 | Market simulator | `uvicorn app.main:app` | 8082 | Central | `/health` | Central persists accepted facts | `market-simulator` | `market-simulator` |
 | Production planner | `uvicorn app.main:app` | 8083 | Central | `/health` | Central persists accepted facts | `production-planner` | `production-planner` |
 | Dashboard | built `dist` via Vite preview / Nginx production image | 5173 | Central | HTTP 200 | none | `dashboard` | `dashboard` |
@@ -38,7 +38,7 @@ deployment path uses `vite dev`.
 
 ## Required Secret Inputs
 
-Compose fails configuration when service, JWT, administrator, three node, PostgreSQL,
+Compose fails configuration when service, dedicated AI Dispatcher, JWT, administrator, three node, PostgreSQL,
 Redis, NATS or MinIO credentials are absent. Actual values belong in an ignored root
 `.env` or an external secret provider. Supervisor continues to read protected files
 under `D:\MiniOGAS-VMs`. Migration reports and health output must not contain credentials

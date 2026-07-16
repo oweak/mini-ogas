@@ -9,9 +9,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$centralApiDir = Join-Path $ProjectRoot "services\central-api"
+$dispatcherDir = Join-Path $ProjectRoot "services\ai-dispatcher"
 if (-not $VaultPath) {
-  $VaultPath = Join-Path $centralApiDir "secrets\ai-vault.json"
+  $VaultPath = Join-Path $dispatcherDir "secrets\ai-vault.json"
 }
 
 function ConvertFrom-SecureStringPlainText([securestring]$Secure) {
@@ -48,7 +48,7 @@ $env:MINIOGAS_AI_MODEL = $Model
 $env:MINIOGAS_AI_BASE_URL = $BaseUrl
 $env:MINIOGAS_AI_VAULT_PATH = $VaultPath
 
-Push-Location $centralApiDir
+Push-Location $dispatcherDir
 try {
   python .\create_ai_vault.py | Out-Host
   if ($LASTEXITCODE -ne 0) {
@@ -59,7 +59,7 @@ try {
 import json
 import os
 from pathlib import Path
-from ai_runtime import decrypt_vault_payload
+from app.vault import decrypt_vault_payload
 
 vault_path = Path(os.environ["MINIOGAS_AI_VAULT_PATH"])
 payload = decrypt_vault_payload(json.loads(vault_path.read_text(encoding="utf-8")), os.environ["MINIOGAS_VAULT_PASSWORD"])
@@ -86,4 +86,4 @@ print(json.dumps({
 }
 
 Write-Host "AI vault reset complete: $VaultPath"
-Write-Host "Restart central-api, then log in with the vault password to unlock the model runtime."
+Write-Host "Restart ai-dispatcher, then log in with the vault password to unlock the model runtime."

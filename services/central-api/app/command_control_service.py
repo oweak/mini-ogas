@@ -7,6 +7,7 @@ from fastapi import HTTPException
 from .core.config import settings
 from .core.security import ActorInfo, actor_identity
 from .models import NodeCommand
+from .repositories.ai_suggestions import ai_suggestion_repository
 from .safety_governor import SafetyDecision, safety_governor
 from .store import MemoryStore, store
 
@@ -68,6 +69,57 @@ class CommandControlService:
         )
         return command
 
+    def issue_ai_review(
+        self,
+        *,
+        suggestion_id: str,
+        node_code: str,
+        risk_level: str,
+        recommendation: str,
+        evidence: dict[str, object],
+        actor: ActorInfo,
+    ) -> NodeCommand:
+        self._require_control_enabled()
+        self._require_node(node_code)
+        if actor.principal_type != "ai_agent":
+            raise HTTPException(status_code=403, detail="AI review requires an AI Agent principal")
+        decision = safety_governor.review_control_action(
+            action="review_ai_recommendation",
+            target_node=node_code,
+            risk_level=risk_level,
+            actor_role=actor.role,
+            actor_id=actor_identity(actor),
+            known_nodes=set(self.state.nodes),
+        )
+        self.state.record_safety_decision(decision)
+        if not decision.allow and decision.reason_code != "confirmation_code_required":
+            self._require_allowed(decision)
+        command = self.state.add_command(
+            node_code,
+            "review_ai_recommendation",
+            risk_level,
+            "waiting_approval",
+            actor_identity(actor),
+            parameters={
+                "workflow_kind": "ai_suggestion_review",
+                "node_executable": False,
+                "suggestion_id": suggestion_id,
+                "recommendation": recommendation,
+                "evidence": evidence,
+                "idempotency_key": f"ai-suggestion:{suggestion_id}",
+                "ttl_seconds": 86_400,
+            },
+        )
+        self.state.add_audit_log(
+            actor_identity(actor),
+            "ai:suggestion:command-created",
+            "command",
+            str(command.id),
+            command.status,
+            self._detail(command, decision),
+        )
+        return command
+
     def approve(
         self,
         command_id: int,
@@ -88,7 +140,20 @@ class CommandControlService:
         self.state.record_safety_decision(decision)
         if not decision.allow:
             return self._blocked(decision, command_id)
-        result = self.state.approve_command(command_id, actor_identity(actor))
+        if self._is_ai_suggestion_review(command):
+            result = self.state.approve_human_review_command(
+                command_id,
+                actor_identity(actor),
+            )
+            suggestion_id = ai_suggestion_repository.set_status_for_command(
+                command_id,
+                "accepted",
+            )
+            if suggestion_id:
+                result["suggestion_id"] = suggestion_id
+                result["suggestion_status"] = "accepted"
+        else:
+            result = self.state.approve_command(command_id, actor_identity(actor))
         self.state.add_audit_log(
             actor_identity(actor),
             "command:approve",
@@ -103,6 +168,14 @@ class CommandControlService:
         command = self._command(command_id)
         decision = self._review_lifecycle_action("reject_command", command, actor)
         result = self.state.reject_command(command_id, actor_identity(actor), reason)
+        if self._is_ai_suggestion_review(command):
+            suggestion_id = ai_suggestion_repository.set_status_for_command(
+                command_id,
+                "rejected",
+            )
+            if suggestion_id:
+                result["suggestion_id"] = suggestion_id
+                result["suggestion_status"] = "rejected"
         self.state.add_audit_log(
             actor_identity(actor),
             "command:reject",
@@ -116,7 +189,10 @@ class CommandControlService:
     def cancel(self, command_id: int, *, actor: ActorInfo, reason: str = "") -> NodeCommand:
         command = self._command(command_id)
         self._review_lifecycle_action("cancel_command", command, actor)
-        return self.state.cancel_command(command_id, actor_identity(actor), reason)
+        cancelled = self.state.cancel_command(command_id, actor_identity(actor), reason)
+        if self._is_ai_suggestion_review(command):
+            ai_suggestion_repository.set_status_for_command(command_id, "rejected")
+        return cancelled
 
     def retry(
         self,
@@ -126,6 +202,11 @@ class CommandControlService:
         confirmation_code: str = "",
     ) -> NodeCommand | dict[str, object]:
         command = self._command(command_id)
+        if self._is_ai_suggestion_review(command):
+            raise HTTPException(
+                status_code=409,
+                detail="AI suggestion review commands cannot be retried as node commands",
+            )
         decision = safety_governor.review_control_action(
             action=f"retry_{command.command_type}",
             target_node=command.node_code,
@@ -167,6 +248,10 @@ class CommandControlService:
     def _require_node(self, node_code: str) -> None:
         if node_code not in self.state.nodes:
             raise HTTPException(status_code=404, detail="node not found")
+
+    @staticmethod
+    def _is_ai_suggestion_review(command: NodeCommand) -> bool:
+        return command.parameters.get("workflow_kind") == "ai_suggestion_review"
 
     @staticmethod
     def _require_control_enabled() -> None:

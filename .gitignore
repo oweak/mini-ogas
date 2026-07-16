@@ -1,5 +1,7 @@
 services/central-api/secrets/*.json
 !services/central-api/secrets/.gitkeep
+services/ai-dispatcher/secrets/*.json
+!services/ai-dispatcher/secrets/.gitkeep
 
 # Runtime-generated deployment secrets. Examples stay committed under
 # deploy/env.*.example; actual node/edge env files and generated tokens do not.

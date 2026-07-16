@@ -228,6 +228,15 @@ def test_service_and_ai_agent_principals_are_restricted_and_revocable() -> None:
             },
             headers={"Authorization": f"Bearer {ai_token}"},
         )
+        suggestion_body = suggestion.json()
+        command_id = suggestion_body["command_id"]
+        pending_for_node = store.pending_commands_for_node("milling-workshop-01")
+        pending_reviews = client.get("/ops/pending-approvals", headers=admin)
+        approved = client.post(
+            f"/ops/approve/{command_id}?confirmation_code=CONFIRM",
+            headers=admin,
+        )
+        retry = client.post(f"/ops/commands/{command_id}/retry", headers=admin)
         ai_control = client.post(
             "/simulation/step",
             headers={"Authorization": f"Bearer {ai_token}"},
@@ -243,9 +252,10 @@ def test_service_and_ai_agent_principals_are_restricted_and_revocable() -> None:
 
     with get_db() as db:
         stored = db.execute(
-            """SELECT principal_id, node_code, risk_level, status
-               FROM ai_suggestions WHERE principal_id = ?""",
-            ("ai:diagnostics-agent",),
+            """SELECT principal_id, node_code, risk_level, status, command_id,
+                      decided_at
+               FROM ai_suggestions WHERE suggestion_id = ?""",
+            (suggestion_body["suggestion_id"],),
         ).fetchone()
 
     assert service_identity.status_code == 200
@@ -255,8 +265,21 @@ def test_service_and_ai_agent_principals_are_restricted_and_revocable() -> None:
     assert ai_identity.status_code == 200
     assert ai_identity.json()["principal_type"] == "ai_agent"
     assert suggestion.status_code == 201
-    assert suggestion.json()["status"] == "pending_human_review"
-    assert len(store.commands) == command_count
+    assert suggestion_body["status"] == "pending_human_review"
+    assert suggestion_body["approval_url"] == f"/ops/approve/{command_id}"
+    assert len(store.commands) == command_count + 1
+    assert pending_for_node == []
+    assert pending_reviews.status_code == 200
+    review = next(
+        item for item in pending_reviews.json()
+        if item["command"]["id"] == command_id
+    )
+    assert review["ai_suggestion"]["suggestion_id"] == suggestion_body["suggestion_id"]
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "verified"
+    assert approved.json()["suggestion_status"] == "accepted"
+    assert retry.status_code == 409
+    assert store.pending_commands_for_node("milling-workshop-01") == []
     assert ai_control.status_code == 403
     assert revoked.status_code == 200
     assert revoked_identity.status_code == 401
@@ -264,5 +287,8 @@ def test_service_and_ai_agent_principals_are_restricted_and_revocable() -> None:
         "ai:diagnostics-agent",
         "milling-workshop-01",
         "high",
-        "pending_human_review",
+        "accepted",
+        command_id,
+        stored["decided_at"],
     )
+    assert stored["decided_at"] is not None

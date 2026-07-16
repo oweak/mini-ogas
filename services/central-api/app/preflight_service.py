@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Protocol
 
-from .core.ai.vault import vault_present
+from .core.ai.vault import runtime_status
 from .core.config import settings
 from .core.service_client import get_json
 from .core.session import get_session_token
@@ -120,15 +120,18 @@ def _ai_environment_step() -> PreflightStep:
     if not settings.ai_enabled:
         step.status = "pass"
         step.detail = "AI 已禁用；系统仅使用规则引擎。"
-    elif vault_present():
-        step.status = "pass"
-        step.detail = "AI 密钥库已加载；登录前不调用模型，管理员验证后执行真实 Provider 烟测。"
-    elif settings.ai_provider_chain:
-        step.status = "pass"
-        step.detail = "AI Provider 链已配置；管理员登录后执行连通性和模型调用验证。"
     else:
-        step.status = "fail"
-        step.detail = "未配置 AI Provider 链或密钥库。"
+        runtime = runtime_status()
+        reachable = bool(runtime.get("reachable"))
+        configured = bool(runtime.get("configured"))
+        vault = bool(runtime.get("vault_present"))
+        if reachable:
+            step.status = "pass"
+            mode = "已配置" if configured else "等待密钥库解锁" if vault else "规则回退"
+            step.detail = f"AI Dispatcher 控制面可达，运行模式：{mode}。"
+        else:
+            step.status = "fail"
+            step.detail = "AI Dispatcher 控制面不可达；Central API 不会直接调用模型。"
     return _finish(step, started_at)
 
 

@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_API_URL = "http://127.0.0.1:8080"
 DEFAULT_OPERATOR = "\u8f66\u95f4\u4e3b\u7ba1"
 REQUEST_TIMEOUT_SEC = 45
@@ -332,7 +331,7 @@ def require_live_ai_runtime(args: argparse.Namespace, bearer_token: str) -> dict
         raise RuntimeError(
             "AI runtime is not using a live API. "
             f"status={state}, source={source or 'unknown'}, provider={provider}, model={model}. "
-            "Unlock the dashboard AI vault or configure DEEPSEEK_API_KEY before running the full red-team workflow; "
+            "Unlock the AI Dispatcher vault before running the full red-team workflow; "
             "pass --allow-rule-fallback only when you intentionally want a non-AI dry run."
         )
     return runtime

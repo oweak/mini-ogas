@@ -11,6 +11,7 @@ from ..core.security import (
     require_permission,
 )
 from ..models import ControlCommandRequest, ControlCommandResponse
+from ..repositories.ai_suggestions import ai_suggestion_repository
 from ..safety_governor import safety_governor
 from ..store import store
 from .control import execute_plan, plan_command
@@ -45,9 +46,11 @@ def list_pending_approvals():
     result = []
     for cmd in approvals:
         related_diag = next((d for d in diagnoses if d.node_code == cmd.node_code), None)
+        suggestion = ai_suggestion_repository.find_by_command(cmd.id)
         result.append({
             "command": cmd.model_dump(mode="json"),
             "ai_diagnosis": related_diag.model_dump(mode="json") if related_diag else None,
+            "ai_suggestion": suggestion,
         })
     return result
 

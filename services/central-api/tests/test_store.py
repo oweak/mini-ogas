@@ -1,13 +1,12 @@
-from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
-import pytest
-
-from app.core import database
-from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity, utc_now
-from app.core.config import settings
-from app.safety_governor import SafetyDecision
 import app.store as store_module
+import pytest
+from app.core import database
+from app.core.config import settings
+from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity, utc_now
+from app.safety_governor import SafetyDecision
 from app.store import MemoryStore, canonical_product_code, product_name, product_route
 
 
@@ -777,20 +776,26 @@ def test_record_metric_cpu_92_and_latency_800_triggers_ai_diagnosis(store: Memor
 
 
 def test_record_metric_persists_actual_ai_fallback_provenance(store: MemoryStore, monkeypatch) -> None:
-    from app.core.ai.base import DiagnosisResult
     from app import store as store_module
 
-    fallback = DiagnosisResult("rule root cause", "manual review", 0.55)
-    monkeypatch.setattr(store_module.registry, "diagnose", lambda *_args, **_kwargs: fallback)
     monkeypatch.setattr(
-        store_module.registry,
-        "diagnose_with_provenance",
-        lambda *_args, **_kwargs: (fallback, "rule_fallback", ["deepseek: timeout"]),
-    )
-    monkeypatch.setattr(
-        store_module.registry,
-        "first_available",
-        lambda: type("Provider", (), {"name": "deepseek"})(),
+        store_module.dispatcher_client,
+        "diagnose",
+        lambda **_kwargs: {
+            "root_cause": "rule root cause",
+            "recommended_action": "manual review",
+            "confidence": 0.55,
+            "need_isolation": False,
+            "provenance": {
+                "request_id": "store-fallback",
+                "provider": "rule_fallback",
+                "model": "deterministic-rules",
+                "provider_model": "rule_fallback/deterministic-rules",
+                "source": "rule_fallback",
+                "attempts": [{"provider": "deepseek", "status": "failed"}],
+                "latency_ms": 12,
+            },
+        },
     )
 
     store.record_metric(
@@ -806,7 +811,7 @@ def test_record_metric_persists_actual_ai_fallback_provenance(store: MemoryStore
         )
     )
 
-    assert store.ai_diagnoses[-1].model_name == "local-fallback"
+    assert store.ai_diagnoses[-1].model_name == "rule_fallback/deterministic-rules"
 
 
 def test_record_metric_network_100m_isolates_node(store: MemoryStore) -> None:

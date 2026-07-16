@@ -282,7 +282,7 @@ class AiDiagnoseRequest(BaseModel):
     alert_id: int | None = None
     node_code: str = "cloud-workshop-01"
     question: str | None = None
-    provider: str = "auto"  # "auto" = chain fallback, or name a specific provider
+    provider: str = "auto"  # "auto" = Dispatcher policy, "rule_fallback" = no model call
     # Frontend-provided fields (used to enrich the diagnosis prompt)
     alert_description: str | None = None
     alert_type: str | None = None
@@ -327,6 +327,7 @@ class AiChatResponse(BaseModel):
     answer: str
     provider: str = "rule_fallback"
     source: str = "rule_fallback"
+    provenance: dict[str, object] = Field(default_factory=dict)
 
 
 class AiShortcut(BaseModel):

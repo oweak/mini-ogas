@@ -12,7 +12,7 @@ import psutil
 
 from .command_manager import CommandManager, CommandTransition
 from .command_verifier import CommandVerifier
-from .core.ai.registry import registry
+from .core.ai.dispatcher import DispatcherError, dispatcher_client
 from .core.config import settings
 from .core.database import get_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
@@ -1846,7 +1846,7 @@ class MemoryStore:
         # L2 (medium): CPU + latency correlation -> AI diagnosis
         if metric.cpu_usage >= 92 and metric.api_latency_ms >= 800:
             alert = self.create_alert(metric.node_code, "cpu_latency_correlation", Severity.medium,
-                                      "CPU 与 API 延迟同时升高，建议调用 DeepSeek 辅助诊断。", "ai")
+                                      "CPU 与 API 延迟同时升高，建议调用 AI Dispatcher 辅助诊断。", "ai")
             alerts.append(alert)
             with self._lock:
                 node.status = NodeStatus.degraded
@@ -1875,27 +1875,44 @@ class MemoryStore:
                 )
                 self.isolate_node(metric.node_code, "safety_automation", decision)
 
-        # ---- AI diagnosis (outside lock — slow DeepSeek call) ----
+        # ---- AI diagnosis (outside lock — model calls belong to AI Dispatcher) ----
         if degraded_alert is not None:
             with self._lock:
                 recent = [m for m in self.metrics if m.node_code == metric.node_code][-5:]
-            prompt = (
-                f"车间节点 {metric.node_code} 触发 CPU/延迟复杂故障。\n"
-                f"告警：{degraded_alert.description}\n"
-                f"最近 5 条指标：{[m.model_dump(mode='json') for m in recent]}\n"
-                "请判断根因、推荐动作、置信度以及是否需要隔离。"
-            )
             try:
-                result, provider_name, _ = registry.diagnose_with_provenance(prompt)
-                rc, ra, cf, ni = (result.root_cause, result.recommended_action,
-                                  result.confidence, result.need_isolation)
-                model = registry.model_for(provider_name)
-                mn = f"{provider_name}/{model}" if provider_name != "rule_fallback" else "local-fallback"
-            except Exception:
+                data = dispatcher_client.diagnose(
+                    node_code=metric.node_code,
+                    alert_type=degraded_alert.alert_type,
+                    severity=degraded_alert.severity.value,
+                    description=degraded_alert.description,
+                    recent_metrics=[item.model_dump(mode="json") for item in recent],
+                    correlation_id=f"alert:{degraded_alert.id}",
+                    timeout=settings.ai_timeout_seconds,
+                )
+                provenance = dict(data["provenance"])
+                rc = str(data["root_cause"])
+                ra = str(data["recommended_action"])
+                cf = float(data.get("confidence") or 0.5)
+                ni = bool(data["need_isolation"])
+                mn = str(
+                    provenance.get("provider_model")
+                    or "rule_fallback/deterministic-rules"
+                )
+                raw = json.dumps(provenance, ensure_ascii=False, sort_keys=True)
+            except (DispatcherError, KeyError, TypeError, ValueError):
                 rc = "车间节点负载升高并伴随加工队列等待，可能由批量订单与本地缓存竞争导致。"
                 ra = "重启加工调度进程，限制新任务下发，并观察 10 分钟。"
-                cf, ni, mn = 0.82, False, "local-fallback"
-            self.add_ai_diagnosis(degraded_alert.id, metric.node_code, rc, ra, cf, ni, mn, "")
+                cf, ni, mn, raw = 0.58, False, "rule_fallback/deterministic-rules", ""
+            self.add_ai_diagnosis(
+                degraded_alert.id,
+                metric.node_code,
+                rc,
+                ra,
+                cf,
+                ni,
+                mn,
+                raw,
+            )
             self.add_command(metric.node_code, "restart_workshop_scheduler", "medium",
                              "waiting_approval", "ai-policy")
         return alerts
@@ -2432,6 +2449,27 @@ class MemoryStore:
         )
         self._persist_command_events([command], event)
         return {"accepted": True, "command_id": command_id, "status": command.status, "actor": actor}
+
+    def approve_human_review_command(self, command_id: int, actor: str) -> dict[str, object]:
+        with self._lock:
+            command = self.command_manager.approve_human_review(
+                self.commands,
+                command_id=command_id,
+                actor=actor,
+            )
+        event = self._append_event(
+            command.node_code,
+            "ai-suggestion-approved",
+            Severity.info,
+            f"运维人员 {actor} 审批通过 AI 建议命令 #{command_id}。",
+        )
+        self._persist_command_events([command], event)
+        return {
+            "accepted": True,
+            "command_id": command_id,
+            "status": command.status,
+            "actor": actor,
+        }
 
     def reject_command(self, command_id: int, actor: str, reason: str = "") -> dict[str, object]:
         with self._lock:
@@ -3902,7 +3940,7 @@ class MemoryStore:
         self.add_event("simulation-engine", "tick", Severity.info,
                        f"tick={tick_now} 已推进：车间指标、设备负载与排产状态完成刷新。")
 
-        # ---- AI auto-briefing (outside lock — slow DeepSeek call) ----
+        # ---- AI auto-briefing (outside lock — AI Dispatcher owns model calls) ----
         if tick_now % 20 == 0:
             self.add_ai_auto_briefing()
 
@@ -3919,19 +3957,36 @@ class MemoryStore:
             f"CPU均={summary.avg_cpu_usage:.1f}%, 内存均={summary.avg_memory_usage:.1f}%"
         )
         try:
-            content = registry.chat([
-                {"role": "system", "content": "你是 Mini-OGAS 主动运维简报助手，只输出一句话。"},
-                {"role": "user", "content":
-                    f"请用一句中文概括当前工厂最需要关注的问题。context={minimal_context}"},
-            ])
-        except Exception:
-            if summary.defect_rate >= 5:
-                content = f"当前不良率约 {summary.defect_rate:.1f}%，建议检查刀具磨损与质量工序。"
-            elif summary.critical_alert_count > 0:
-                content = "当前存在严重告警，建议立即检查对应车间节点状态。"
-            else:
-                content = "当前工厂总体稳定，车间在线率正常，排产顺畅。"
+            result = dispatcher_client.infer(
+                [
+                    {
+                        "role": "system",
+                        "content": "你是 Mini-OGAS 主动运维简报助手，只输出一句话。",
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "请用一句中文概括当前工厂最需要关注的问题。"
+                            f"context={minimal_context}"
+                        ),
+                    },
+                ],
+                task_type="incident_briefing",
+                max_tokens=min(settings.ai_chat_max_tokens, 256),
+                timeout=settings.ai_timeout_seconds,
+            )
+            content = result.content if result.live else self._deterministic_briefing(summary)
+        except DispatcherError:
+            content = self._deterministic_briefing(summary)
         self.add_event("ai-auto-briefing", "ai-auto-briefing", Severity.info, content.strip())
+
+    @staticmethod
+    def _deterministic_briefing(summary: DashboardSummary) -> str:
+        if summary.defect_rate >= 5:
+            return f"当前不良率约 {summary.defect_rate:.1f}%，建议检查刀具磨损与质量工序。"
+        if summary.critical_alert_count > 0:
+            return "当前存在严重告警，建议立即检查对应车间节点状态。"
+        return "当前工厂总体稳定，车间在线率正常，排产顺畅。"
 
     def _initial_metric(self, node_code: str, workshop_type: str | None = None) -> MetricIn:
         baseline = _workshop_baseline(workshop_type or "general")

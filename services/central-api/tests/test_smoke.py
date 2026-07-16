@@ -184,8 +184,16 @@ def test_preflight_is_read_only_and_defers_ai_until_login(monkeypatch) -> None:
 
     expected = list(settings.expected_production_nodes)
     monkeypatch.setattr(settings, "ai_enabled", True)
-    monkeypatch.setattr(settings, "microservices_enabled", False)
-    monkeypatch.setattr(preflight_service, "vault_present", lambda: True)
+    monkeypatch.setattr(
+        preflight_service,
+        "runtime_status",
+        lambda: {
+            "reachable": True,
+            "configured": False,
+            "vault_present": True,
+            "vault_unlocked": False,
+        },
+    )
     monkeypatch.setattr(
         preflight_service,
         "supervisor_health",
@@ -223,7 +231,7 @@ def test_preflight_is_read_only_and_defers_ai_until_login(monkeypatch) -> None:
 
     assert result.all_pass is True
     ai_step = next(step for step in result.steps if step.key == "ai-runtime")
-    assert "登录前不调用模型" in ai_step.detail
+    assert "等待密钥库解锁" in ai_step.detail
     assert next(step for step in result.steps if step.key == "dry_run").status == "pass"
 
 

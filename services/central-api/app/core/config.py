@@ -75,29 +75,18 @@ class Settings(BaseModel):
     simulation_base_interval_seconds: float = 3.0
     heartbeat_timeout_seconds: int = int(os.getenv("HEARTBEAT_TIMEOUT_SECONDS", "30"))
     command_claim_timeout_seconds: int = int(os.getenv("COMMAND_CLAIM_TIMEOUT_SECONDS", "120"))
-    # ---- AI multi-provider settings ----
+    # ---- AI Dispatcher client settings ----
     ai_enabled: bool = os.getenv("AI_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     ai_timeout_seconds: int = int(os.getenv("AI_TIMEOUT_SECONDS", "25"))
     ai_chat_max_tokens: int = int(os.getenv("AI_CHAT_MAX_TOKENS", "4096"))
     ai_rule_explanation_cache_seconds: int = int(os.getenv("AI_RULE_EXPLANATION_CACHE_SECONDS", "60"))
-    ai_provider_chain: list[str] = _csv_env(
-        "AI_PROVIDER_CHAIN", "deepseek,ollama,lm_studio,groq"
-    )
-    # DeepSeek
-    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
-    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-    # Ollama
-    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3")
-    # LM Studio
-    lm_studio_base_url: str = os.getenv("LM_STUDIO_BASE_URL", "http://localhost:1234")
-    # Groq
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
-    groq_model: str = os.getenv("GROQ_MODEL", "mixtral-8x7b-32768")
     # WARNING: Default tokens below are for local dev only.
     # Override API_ACCESS_TOKEN and NODE_INGEST_TOKEN in production.
     api_access_token: str = os.getenv("API_ACCESS_TOKEN", "")
+    ai_dispatcher_token: str = os.getenv(
+        "AI_DISPATCHER_TOKEN",
+        os.getenv("API_ACCESS_TOKEN", ""),
+    )
     node_ingest_token: str = os.getenv("NODE_INGEST_TOKEN", os.getenv("API_ACCESS_TOKEN", ""))
     node_credentials_json: str = os.getenv("NODE_CREDENTIALS_JSON", "").strip()
     auth_jwt_secret: str = os.getenv("JWT_SECRET", LOCAL_DEVELOPMENT_JWT_SECRET)
@@ -255,6 +244,10 @@ class Settings(BaseModel):
                 problems.append("POSTGRES_DSN must be configured")
             if self.auth_jwt_secret == LOCAL_DEVELOPMENT_JWT_SECRET or len(self.auth_jwt_secret) < 32:
                 problems.append("JWT_SECRET must be a non-default secret of at least 32 characters")
+            if len(self.ai_dispatcher_token) < 32:
+                problems.append("AI_DISPATCHER_TOKEN must be at least 32 characters")
+            if self.ai_dispatcher_token == self.api_access_token:
+                problems.append("AI_DISPATCHER_TOKEN must differ from API_ACCESS_TOKEN")
             try:
                 node_credentials = json.loads(self.node_credentials_json)
             except json.JSONDecodeError:

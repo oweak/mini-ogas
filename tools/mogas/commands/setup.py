@@ -24,15 +24,6 @@ def run() -> None:
 
     content = example_path.read_text(encoding="utf-8")
 
-    print()
-    key = input("  DeepSeek API Key [Enter=skip]: ").strip()
-    if key:
-        content = content.replace(
-            "DEEPSEEK_API_KEY=replace-with-your-key",
-            f"DEEPSEEK_API_KEY={key}",
-        )
-        print("    -> DeepSeek configured")
-
     ollama = input("  Enable Ollama local model? [y/N]: ").strip().lower()
     if ollama != "y":
         content = content.replace(
@@ -43,5 +34,6 @@ def run() -> None:
 
     env_path.write_text(content, encoding="utf-8")
     print(f"\n  .env written to {env_path}")
+    print("  Cloud model keys are not written here. Use deploy/reset-ai-vault.ps1.")
     print("  Run 'mogas doctor' to verify your environment.")
     print()

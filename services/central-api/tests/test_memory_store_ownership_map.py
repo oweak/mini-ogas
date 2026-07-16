@@ -25,7 +25,7 @@ def test_memory_store_inventory_is_complete_and_classified() -> None:
         "## Method Inventory", 1
     )[0]
 
-    assert "Inventory: 28 instance fields and 139 methods." in document
+    assert "Inventory: 28 instance fields and 141 methods." in document
     assert "unclassified" not in document
     assert "CommandRepository / CommandService" in document
     assert "NodeRepository / NodeService" in document

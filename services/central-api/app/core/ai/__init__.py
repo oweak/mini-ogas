@@ -1,1 +1,1 @@
-"""AI module — provider registry, abstract interface, and individual backend implementations."""
+"""Central API facade for the separately deployed AI Dispatcher control plane."""

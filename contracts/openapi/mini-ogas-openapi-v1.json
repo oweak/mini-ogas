@@ -134,6 +134,10 @@
             "title": "Model",
             "type": "string"
           },
+          "provenance": {
+            "title": "Provenance",
+            "type": "object"
+          },
           "provider": {
             "default": "rule_fallback",
             "title": "Provider",

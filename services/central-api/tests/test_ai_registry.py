@@ -1,29 +1,43 @@
 from __future__ import annotations
 
-from app.core.ai.providers.rule_fallback import RuleFallbackProvider
-from app.core.ai.registry import ProviderRegistry
+from pathlib import Path
+
+from app.core.ai.dispatcher import DispatcherClient, DispatcherError
 
 
-class EmptyProvider:
-    name = "empty-provider"
+def test_central_api_contains_no_model_provider_transport_stack() -> None:
+    app_root = Path(__file__).resolve().parents[1] / "app"
+    forbidden = (
+        "chat/completions",
+        "api.deepseek.com",
+        "api.groq.com",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "AI_PROVIDER_CHAIN",
+        "ProviderRegistry",
+    )
+    matches: list[str] = []
+    for path in app_root.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                matches.append(f"{path.relative_to(app_root)}:{token}")
 
-    def is_available(self) -> bool:
-        return True
-
-    def chat(self, _messages, timeout=None) -> str:
-        return ""
+    assert matches == []
 
 
-def test_chat_chain_rejects_empty_provider_output() -> None:
-    registry = ProviderRegistry.__new__(ProviderRegistry)
-    registry._providers = [EmptyProvider(), RuleFallbackProvider()]
-    registry._verified_provider = None
-
-    answer, provider, errors = registry.chat_with_provenance(
-        [{"role": "user", "content": "diagnose"}]
+def test_unreachable_dispatcher_is_explicit_rule_fallback(monkeypatch) -> None:
+    client = DispatcherClient()
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            DispatcherError("dispatcher_unreachable")
+        ),
     )
 
-    assert answer
-    assert provider == "rule_fallback"
-    assert registry.verified_provider() is None
-    assert errors == ["empty-provider: provider returned an empty chat response"]
+    status = client.status()
+
+    assert status["reachable"] is False
+    assert status["source"] == "rule_fallback"
+    assert status["owner"] == "ai-dispatcher"

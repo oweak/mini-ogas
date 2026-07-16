@@ -73,6 +73,7 @@ function Initialize-AuthConfig {
   New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
   $jwtSecret = Get-AuthValue "JWT_SECRET"
   $bootstrapPassword = Get-AuthValue "AUTH_BOOTSTRAP_PASSWORD"
+  $dispatcherToken = Get-AuthValue "AI_DISPATCHER_TOKEN"
   if (-not $jwtSecret) {
     $bytes = New-Object byte[] 48
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
@@ -82,11 +83,21 @@ function Initialize-AuthConfig {
     # Preserve the previous local login secret on the one-time RBAC migration.
     $bootstrapPassword = if ($AdminPassword) { $AdminPassword } else { $token }
   }
+  if (-not $dispatcherToken) {
+    $bytes = New-Object byte[] 48
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $dispatcherToken = [Convert]::ToBase64String($bytes)
+  }
   Set-Content -LiteralPath $AuthConfigPath -Value @(
     "JWT_SECRET=$jwtSecret",
-    "AUTH_BOOTSTRAP_PASSWORD=$bootstrapPassword"
+    "AUTH_BOOTSTRAP_PASSWORD=$bootstrapPassword",
+    "AI_DISPATCHER_TOKEN=$dispatcherToken"
   ) -Encoding ASCII
-  return @{ jwt_secret = $jwtSecret; bootstrap_password = $bootstrapPassword }
+  return @{
+    jwt_secret = $jwtSecret
+    bootstrap_password = $bootstrapPassword
+    ai_dispatcher_token = $dispatcherToken
+  }
 }
 
 $PostgresDsn = Get-PostgresDsn
@@ -278,12 +289,27 @@ try {
       if (-not (Test-PortListening $service.port)) {
         $serviceLog = Join-Path $RuntimeLogRoot "$($service.name).out.log"
         $servicePython = Get-ServicePython $service.directory
+        $providerEnvironment = if ($service.name -eq "ai-dispatcher") {
+@"
+`$env:AI_DISPATCHER_TOKEN = '$($authConfig.ai_dispatcher_token)'
+`$env:AI_PROVIDER_CHAIN = 'deepseek,ollama,lm_studio,groq'
+`$env:AI_TIMEOUT_SECONDS = '60'
+`$env:AI_PROVIDER_TIMEOUT_SECONDS = '20'
+`$env:AI_PROVIDER_RETRIES = '1'
+`$env:AI_MAX_TOKENS = '4096'
+"@
+        } else {
+@"
+Remove-Item Env:\DEEPSEEK_API_KEY,Env:\DEEPSEEK_BASE_URL,Env:\DEEPSEEK_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\GROQ_API_KEY,Env:\GROQ_BASE_URL,Env:\GROQ_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\OLLAMA_BASE_URL,Env:\OLLAMA_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\LM_STUDIO_BASE_URL,Env:\LM_STUDIO_MODEL -ErrorAction SilentlyContinue
+"@
+        }
         $serviceCommand = @"
 `$env:API_ACCESS_TOKEN = '$token'
 `$env:OGAS_SESSION_TOKEN = '$LaunchSessionToken'
-`$env:DEEPSEEK_API_KEY = '$env:DEEPSEEK_API_KEY'
-`$env:DEEPSEEK_BASE_URL = '$env:DEEPSEEK_BASE_URL'
-`$env:DEEPSEEK_MODEL = '$env:DEEPSEEK_MODEL'
+$providerEnvironment
 Set-Location -LiteralPath '$ProjectRoot\services\$($service.directory)'
 & '$servicePython' -m uvicorn app.main:app --host 127.0.0.1 --port $($service.port) *> '$serviceLog'
 "@
@@ -315,6 +341,7 @@ Set-Location -LiteralPath '$ProjectRoot\services\$($service.directory)'
 $apiCommand = @"
 `$env:OGAS_API_TOKEN = '$token'
 `$env:API_ACCESS_TOKEN = '$token'
+`$env:AI_DISPATCHER_TOKEN = '$($authConfig.ai_dispatcher_token)'
 `$env:NODE_INGEST_TOKEN = '$token'
 `$env:NODE_CREDENTIALS_JSON = '$($nodeCredentialState.Json)'
 `$env:ALLOW_LEGACY_NODE_TOKEN_AUTH = 'false'
@@ -335,6 +362,11 @@ $apiCommand = @"
 `$env:MICROSERVICES_ENABLED = 'true'
 `$env:JWT_SECRET = '$($authConfig.jwt_secret)'
 `$env:AUTH_BOOTSTRAP_PASSWORD = '$($authConfig.bootstrap_password)'
+`$env:AI_DISPATCHER_URL = 'http://127.0.0.1:8081'
+Remove-Item Env:\DEEPSEEK_API_KEY,Env:\DEEPSEEK_BASE_URL,Env:\DEEPSEEK_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\GROQ_API_KEY,Env:\GROQ_BASE_URL,Env:\GROQ_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\OLLAMA_BASE_URL,Env:\OLLAMA_MODEL -ErrorAction SilentlyContinue
+Remove-Item Env:\LM_STUDIO_BASE_URL,Env:\LM_STUDIO_MODEL -ErrorAction SilentlyContinue
 Set-Location -LiteralPath '$ProjectRoot\services\central-api'
 & '$centralPython' -m app.migrate
 if (`$LASTEXITCODE -ne 0) { throw 'Explicit Central API migration failed.' }
