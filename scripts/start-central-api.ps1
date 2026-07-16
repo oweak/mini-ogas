@@ -12,6 +12,9 @@ if (-not (Test-Path $Python)) {
 }
 
 Push-Location $ServiceDir
+$env:PERSIST_ENABLED = "true"
+$env:DATABASE_AUTO_MIGRATE = "false"
+& $Python -m app.migrate
+if ($LASTEXITCODE -ne 0) { throw "Explicit Central API migration failed." }
 & $Python -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
 Pop-Location
-

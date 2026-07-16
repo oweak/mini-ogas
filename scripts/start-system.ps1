@@ -21,6 +21,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $CheckOnly) {
+  throw "The script-managed runtime was retired in Stage F. Use start-miniogas.ps1 (Supervisor) or start-compose.ps1."
+}
 $ProjectRoot = Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")
 $ApiPort = [int]([uri]$ApiUrl).Port
 if ($ApiPort -le 0) { $ApiPort = 8080 }
@@ -328,10 +331,13 @@ $apiCommand = @"
 `$env:PERSIST_BACKEND = 'postgres'
 `$env:CENTRAL_FACT_SOURCE = '$FactSource'
 `$env:POSTGRES_DSN = '$PostgresDsn'
+`$env:DATABASE_AUTO_MIGRATE = 'false'
 `$env:MICROSERVICES_ENABLED = 'true'
 `$env:JWT_SECRET = '$($authConfig.jwt_secret)'
 `$env:AUTH_BOOTSTRAP_PASSWORD = '$($authConfig.bootstrap_password)'
 Set-Location -LiteralPath '$ProjectRoot\services\central-api'
+& '$centralPython' -m app.migrate
+if (`$LASTEXITCODE -ne 0) { throw 'Explicit Central API migration failed.' }
 & '$centralPython' -m uvicorn app.main:app --host 127.0.0.1 --port $ApiPort *> '$apiLog'
 "@
       Start-HiddenPowerShell "central-api" $apiCommand (Join-Path $ProjectRoot "services\central-api")
@@ -385,11 +391,13 @@ Set-Location -LiteralPath '$ProjectRoot\services\central-api'
       $dashboardLog = Join-Path $RuntimeLogRoot "dashboard.out.log"
       $dashboardCommand = @"
 Set-Location -LiteralPath '$ProjectRoot\services\dashboard'
-npm.cmd run dev -- --host 127.0.0.1 --port $DashboardPort *> '$dashboardLog'
+npm.cmd run build *> '$dashboardLog'
+if (`$LASTEXITCODE -ne 0) { throw 'Dashboard production build failed.' }
+npm.cmd run preview -- --host 127.0.0.1 --port $DashboardPort *>> '$dashboardLog'
 "@
       Start-HiddenPowerShell "dashboard" $dashboardCommand (Join-Path $ProjectRoot "services\dashboard")
       Start-Sleep -Seconds 3
-      $checks.Add((New-CheckResult "dashboard-process" (Test-PortListening $DashboardPort) "Dashboard dev server port $DashboardPort checked."))
+      $checks.Add((New-CheckResult "dashboard-process" (Test-PortListening $DashboardPort) "Dashboard production preview port $DashboardPort checked."))
     }
   } else {
     $checks.Add((New-CheckResult "dashboard-process" $true "Port $DashboardPort is already listening."))

@@ -18,6 +18,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $SupervisorRoot = Join-Path $ProjectRoot "services\supervisor"
+$DashboardRoot = Join-Path $ProjectRoot "services\dashboard"
 $ConfigPath = Join-Path $ProjectRoot "config\supervisor.toml"
 $RuntimeBin = Join-Path $ProjectRoot ".runtime\bin"
 $RuntimeLogRoot = Join-Path $ProjectRoot ".runtime\logs"
@@ -106,7 +107,7 @@ if (-not $MinioBinary -or -not (Test-Path -LiteralPath $MinioBinary)) {
 
 $occupied = @($Ports | ForEach-Object { Get-PortProcessIds $_ } | Select-Object -Unique)
 if ($occupied.Count -gt 0 -and -not $ReplaceRunning) {
-  throw "Mini-OGAS service ports are already occupied. Use start-system.ps1 for the running stack, or pass -ReplaceRunning to transfer ownership to the Go supervisor."
+  throw "Mini-OGAS service ports are already occupied. Inspect the active runtime or pass -ReplaceRunning to transfer ownership to the Go supervisor."
 }
 if ($ReplaceRunning) {
   # Stop the old supervisor first so it cannot restart children while their
@@ -202,12 +203,42 @@ $env:MINIO_ROOT_USER = $minioRootUser
 $env:MINIO_ROOT_PASSWORD = $minioRootPassword
 $env:CENTRAL_API_PYTHON = $CentralApiPython
 $env:CENTRAL_FACT_SOURCE = $FactSource
+$env:PERSIST_ENABLED = "true"
+$env:PERSIST_BACKEND = "postgres"
+$env:DATABASE_AUTO_MIGRATE = "false"
 $env:OGAS_RUN_ID = "RUN-LOCAL-$(Get-Date -Format yyyyMMdd-HHmmss)"
 $env:OGAS_SIMULATION_START_TIME = (Get-Date).ToUniversalTime().ToString("o")
 Set-Content -LiteralPath $SessionPath -Value $env:OGAS_SESSION_TOKEN -Encoding ASCII
 $protectSecrets = Join-Path $PSScriptRoot "protect-secrets.ps1"
 & $protectSecrets -RuntimeRoot $RuntimeRoot
 if (-not $?) { throw "Secret ACL provisioning failed." }
+
+Push-Location (Join-Path $ProjectRoot "services\central-api")
+try {
+  $migrationOutput = @(& $CentralApiPython -m app.migrate 2>&1)
+  if ($LASTEXITCODE -ne 0) {
+    throw "PostgreSQL migration failed before service startup. No runtime process was started."
+  }
+  $migrationReport = ($migrationOutput | Select-Object -Last 1) | ConvertFrom-Json
+  if ($migrationReport.status -ne "migrated" -or $migrationReport.backend -ne "postgresql") {
+    throw "Migration entrypoint returned an invalid deployment report."
+  }
+  $migrationEvidencePath = Join-Path $RuntimeLogRoot "migration-last.json"
+  $migrationReport | ConvertTo-Json | Set-Content -LiteralPath $migrationEvidencePath -Encoding ASCII
+} finally {
+  Pop-Location
+}
+
+if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+  throw "npm.cmd is required to build the production Dashboard artifact."
+}
+Push-Location $DashboardRoot
+try {
+  & npm.cmd run build
+  if ($LASTEXITCODE -ne 0) { throw "Dashboard production build failed." }
+} finally {
+  Pop-Location
+}
 
 if (-not (Test-Path -LiteralPath $GoExe)) { throw "Go toolchain was not found: $GoExe" }
 $env:GOMODCACHE = Join-Path $ProjectRoot ".runtime\go\modcache"
@@ -278,6 +309,8 @@ if ($minioHealth.StatusCode -ne 200) {
   log = $stdout
   ownership = "go-supervisor"
   healthy_processes = $expectedProcessCount
+  migration_evidence = $migrationEvidencePath
+  dashboard_serving = "production-dist"
   redis_authenticated = $true
   minio_live = $true
 } | ConvertTo-Json

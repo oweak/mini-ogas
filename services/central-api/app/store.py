@@ -14,7 +14,7 @@ from .command_manager import CommandManager, CommandTransition
 from .command_verifier import CommandVerifier
 from .core.ai.registry import registry
 from .core.config import settings
-from .core.database import get_db, init_db, persistence_backend, persistence_label
+from .core.database import get_db, persistence_backend, persistence_label
 from .core.service_client import get_json, post_json
 from .core.session import get_session_token
 from .domain.simulation import RuntimeSimulationState
@@ -185,8 +185,6 @@ class MemoryStore:
         self._primary_projection_in_progress = False
         self._persistence_write_failures: dict[str, dict[str, object]] = {}
 
-        if settings.persist_enabled and settings.database_auto_migrate:
-            init_db()
         if settings.demo_seed_enabled:
             self.seed_demo()
         if settings.persist_enabled:
@@ -3665,7 +3663,6 @@ class MemoryStore:
             "outbox_messages",
         )
         try:
-            init_db()
             with get_db() as db:
                 if backend == "postgres":
                     rows = db.execute(

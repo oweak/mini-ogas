@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from app.core import database
 from app.models import Machine, MetricIn, NodeStatus, ProductionPlanIn, Severity, utc_now
 from app.core.config import settings
 from app.safety_governor import SafetyDecision
@@ -530,6 +531,7 @@ def test_shadow_persistence_restores_part_queue_and_commands(tmp_path) -> None:
     settings.persist_enabled = True
     settings.central_db_path = str(tmp_path / "central-shadow.db")
     try:
+        database.init_db()
         first = MemoryStore()
         part = first.create_ready_part("WO-SHADOW", "A3")
         claimed = first.claim_next_part_for_node("milling-workshop-01")

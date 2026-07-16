@@ -1,89 +1,225 @@
+x-central-environment: &central-environment
+  APP_ENV: ${APP_ENV:-digital_twin}
+  DATA_SOURCE: ${DATA_SOURCE:-simulated}
+  CONTROL_MODE: ${CONTROL_MODE:-operator_assisted}
+  DEMO_SEED_ENABLED: ${DEMO_SEED_ENABLED:-true}
+  TENANT_ID: ${TENANT_ID:-tenant-local}
+  SITE_ID: ${SITE_ID:-site-digital-twin}
+  API_ACCESS_TOKEN: ${API_ACCESS_TOKEN:?API_ACCESS_TOKEN is required}
+  NODE_INGEST_TOKEN: ${NODE_INGEST_TOKEN:?NODE_INGEST_TOKEN is required}
+  NODE_CREDENTIALS_JSON: >-
+    {"turning-workshop-01":"${TURNING_NODE_TOKEN:?TURNING_NODE_TOKEN is required}","milling-workshop-01":"${MILLING_NODE_TOKEN:?MILLING_NODE_TOKEN is required}","grinding-workshop-01":"${GRINDING_NODE_TOKEN:?GRINDING_NODE_TOKEN is required}"}
+  ALLOW_LEGACY_API_TOKEN_AUTH: "false"
+  ALLOW_LEGACY_NODE_TOKEN_AUTH: "false"
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+  AUTH_BOOTSTRAP_PASSWORD: ${AUTH_BOOTSTRAP_PASSWORD:?AUTH_BOOTSTRAP_PASSWORD is required}
+  PERSIST_ENABLED: "true"
+  PERSIST_BACKEND: postgres
+  CENTRAL_FACT_SOURCE: postgresql
+  POSTGRES_DSN: postgresql://mini_ogas:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/mini_ogas?sslmode=disable
+  DATABASE_AUTO_MIGRATE: "false"
+  REDIS_ENABLED: "true"
+  REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD is required}@redis:6379/0
+  NATS_ENABLED: "true"
+  NATS_URL: nats://nats:4222
+  NATS_AUTH_TOKEN: ${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN is required}
+  NATS_STREAM: OGAS_V3_SHADOW
+  NATS_CONSUMER: ogas-v3-postgres-worker
+  OBJECT_STORAGE_ENABLED: "true"
+  OBJECT_STORAGE_ENDPOINT: minio:9000
+  OBJECT_STORAGE_ACCESS_KEY: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+  OBJECT_STORAGE_SECRET_KEY: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+  OBJECT_STORAGE_BUCKET: miniogas-documents
+  OBJECT_STORAGE_SECURE: "false"
+  TELEMETRY_BOOTSTRAP_CATALOG_ENABLED: "true"
+  MICROSERVICES_ENABLED: "true"
+  AI_ENABLED: "true"
+  AI_PROVIDER_CHAIN: ${AI_PROVIDER_CHAIN:-deepseek,ollama,lm_studio,groq}
+  DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+  DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+  AI_DISPATCHER_URL: http://ai-dispatcher:8081
+  MARKET_SIMULATOR_URL: http://market-simulator:8082
+  PRODUCTION_PLANNER_URL: http://production-planner:8083
+  BACKGROUND_WORKER_URL: http://background-worker:8084
+  EXPECTED_PRODUCTION_NODES: turning-workshop-01,milling-workshop-01,grinding-workshop-01
+
+x-python-healthcheck: &python-healthcheck
+  interval: 10s
+  timeout: 4s
+  retries: 12
+  start_period: 10s
+
 services:
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: mini_ogas
       POSTGRES_USER: mini_ogas
-      POSTGRES_PASSWORD: mini_ogas_dev
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mini_ogas -d mini_ogas"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis:
     image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD is required}"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD is required}
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   nats:
     image: nats:2-alpine
-    command: ["-js", "-sd", "/data", "-m", "8222"]
+    restart: unless-stopped
+    command: ["-js", "-sd", "/data", "-m", "8222", "--auth", "${NATS_AUTH_TOKEN:?NATS_AUTH_TOKEN is required}"]
     ports:
       - "4222:4222"
       - "8222:8222"
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8222/healthz?js-enabled-only=true'"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    restart: unless-stopped
+    command: ["server", "/data", "--address", ":9000", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    image: miniogas-central-api:local
+    build: ../services/central-api
+    restart: "no"
+    command: ["python", "-m", "app.migrate"]
+    environment: *central-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   central-api:
+    image: miniogas-central-api:local
     build: ../services/central-api
-    env_file:
-      - ./env.central.example
-    environment:
-      ALLOW_LEGACY_NODE_TOKEN_AUTH: "false"
-      DATABASE_AUTO_MIGRATE: "true"
-      BACKGROUND_WORKER_URL: http://background-worker:8084
-      NODE_CREDENTIALS_JSON: >-
-        {"turning-workshop-01":"${TURNING_NODE_TOKEN:-replace_turning_node_token_000000000000}","milling-workshop-01":"${MILLING_NODE_TOKEN:-replace_milling_node_token_000000000000}","grinding-workshop-01":"${GRINDING_NODE_TOKEN:-replace_grinding_node_token_000000000000}"}
+    restart: unless-stopped
+    environment: *central-environment
     ports:
       - "8080:8080"
     depends_on:
-      - postgres
-      - redis
-      - nats
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3).read()"]
 
   background-worker:
+    image: miniogas-central-api:local
     build: ../services/central-api
     command: ["uvicorn", "app.worker:app", "--host", "0.0.0.0", "--port", "8084"]
     restart: unless-stopped
-    env_file:
-      - ./env.central.example
-    environment:
-      DATABASE_AUTO_MIGRATE: "false"
-      TELEMETRY_BOOTSTRAP_CATALOG_ENABLED: "true"
+    environment: *central-environment
     depends_on:
-      - central-api
-      - postgres
-      - redis
-      - nats
+      central-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8084/health', timeout=3).read()"]
 
   ai-dispatcher:
     build: ../services/ai-dispatcher
-    env_file:
-      - ./env.central.example
+    restart: unless-stopped
+    environment:
+      API_ACCESS_TOKEN: ${API_ACCESS_TOKEN:?API_ACCESS_TOKEN is required}
+      AI_PROVIDER_CHAIN: ${AI_PROVIDER_CHAIN:-deepseek,ollama,lm_studio,groq}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
     ports:
       - "8081:8081"
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health', timeout=3).read()"]
 
   market-simulator:
     build: ../services/market-simulator
-    env_file:
-      - ./env.central.example
+    restart: unless-stopped
     ports:
       - "8082:8082"
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8082/health', timeout=3).read()"]
 
   production-planner:
     build: ../services/production-planner
-    env_file:
-      - ./env.central.example
+    restart: unless-stopped
     ports:
       - "8083:8083"
+    depends_on:
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      <<: *python-healthcheck
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8083/health', timeout=3).read()"]
 
   dashboard:
     build: ../services/dashboard
+    restart: unless-stopped
     ports:
       - "5173:5173"
     depends_on:
-      - central-api
+      central-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:5173/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
 
 volumes:
   postgres_data:
+  redis_data:
   nats_data:
+  minio_data:

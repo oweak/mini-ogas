@@ -114,7 +114,7 @@ class Settings(BaseModel):
     rate_limit_per_minute: int = int(os.getenv("RATE_LIMIT_PER_MINUTE", "1200"))
     microservices_enabled: bool = os.getenv("MICROSERVICES_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
     persist_enabled: bool = os.getenv("PERSIST_ENABLED", "false").lower() in {"1", "true", "yes", "on"}
-    database_auto_migrate: bool = os.getenv("DATABASE_AUTO_MIGRATE", "true").lower() in {
+    database_auto_migrate: bool = os.getenv("DATABASE_AUTO_MIGRATE", "false").lower() in {
         "1", "true", "yes", "on",
     }
     persist_backend: str = os.getenv("PERSIST_BACKEND", "auto").strip().lower()
@@ -204,6 +204,10 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def validate_environment_boundary(self) -> "Settings":
+        if self.database_auto_migrate:
+            raise ValueError(
+                "DATABASE_AUTO_MIGRATE is no longer supported; run python -m app.migrate before startup"
+            )
         if self.telemetry_raw_retention_days < 1:
             raise ValueError("TELEMETRY_RAW_RETENTION_DAYS must be at least 1")
         if self.telemetry_aggregate_retention_days <= self.telemetry_raw_retention_days:

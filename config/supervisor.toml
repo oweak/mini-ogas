@@ -68,7 +68,7 @@ PERSIST_ENABLED = "true"
 PERSIST_BACKEND = "postgres"
 CENTRAL_FACT_SOURCE = "${CENTRAL_FACT_SOURCE}"
 POSTGRES_DSN = "${POSTGRES_DSN}"
-DATABASE_AUTO_MIGRATE = "true"
+DATABASE_AUTO_MIGRATE = "false"
 BACKGROUND_WORKER_URL = "http://127.0.0.1:8084"
 MICROSERVICES_ENABLED = "true"
 JWT_SECRET = "${JWT_SECRET}"
@@ -182,11 +182,12 @@ retries = 5
 [[process]]
 name = "dashboard"
 command = "npm.cmd"
-args = ["run", "dev", "--", "--host", "127.0.0.1", "--port", "5173"]
+args = ["run", "preview", "--", "--host", "127.0.0.1", "--port", "5173"]
 dir = "services/dashboard"
 depends_on = ["central-api"]
 [process.health]
-type = "process"
+type = "http-status"
+endpoint = "http://127.0.0.1:5173/"
 interval = 10
 timeout = 5
 retries = 3

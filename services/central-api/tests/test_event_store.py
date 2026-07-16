@@ -9,6 +9,7 @@ def test_event_envelope_is_ordered_idempotent_and_restart_restorable(tmp_path, m
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(tmp_path / "events.db"))
     monkeypatch.setattr(settings, "central_fact_source", "memory")
+    database.init_db()
 
     first = MemoryStore()
     first.record_node_heartbeat_v2({

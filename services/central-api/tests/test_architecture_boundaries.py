@@ -78,6 +78,23 @@ def test_periodic_business_tasks_are_owned_by_dedicated_worker() -> None:
     assert len(_asyncio_create_task_calls(background_worker)) == 2
 
 
+def test_schema_migration_is_owned_by_one_shot_entrypoint() -> None:
+    callers: list[str] = []
+    for path in APP_ROOT.rglob("*.py"):
+        if path.name == "database.py":
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "init_db"
+            for node in ast.walk(tree)
+        ):
+            callers.append(str(path.relative_to(APP_ROOT)))
+
+    assert callers == ["migrate.py"]
+
+
 def test_nats_publish_is_owned_only_by_dedicated_worker() -> None:
     api_lifecycle = (APP_ROOT / "core" / "lifecycle.py").read_text(encoding="utf-8")
     node_routes = (APP_ROOT / "routers" / "nodes.py").read_text(encoding="utf-8")
@@ -104,6 +121,76 @@ def test_supervisor_registers_one_background_worker() -> None:
     assert workers[0]["args"][2] == "app.worker:app"
     assert workers[0]["env"]["DATABASE_AUTO_MIGRATE"] == "false"
 
+    dashboards = [
+        process for process in supervisor["process"] if process["name"] == "dashboard"
+    ]
+    assert len(dashboards) == 1
+    assert dashboards[0]["args"][1] == "preview"
+    assert dashboards[0]["health"]["type"] == "http-status"
+
+
+def test_supervisor_and_compose_use_the_same_runtime_service_names() -> None:
+    with (PROJECT_ROOT / "config" / "supervisor.toml").open("rb") as handle:
+        supervisor = tomllib.load(handle)
+    supervisor_names = {process["name"] for process in supervisor["process"]}
+    compose = (PROJECT_ROOT / "deploy" / "docker-compose.central.yml").read_text(
+        encoding="utf-8"
+    )
+    node_compose = (PROJECT_ROOT / "deploy" / "docker-compose.node.yml").read_text(
+        encoding="utf-8"
+    )
+
+    shared = {
+        "central-api",
+        "background-worker",
+        "ai-dispatcher",
+        "market-simulator",
+        "production-planner",
+        "dashboard",
+    }
+    assert shared <= supervisor_names
+    assert all(f"  {name}:" in compose for name in shared)
+    node_names = {
+        "turning-simpy-node",
+        "milling-simpy-node",
+        "grinding-simpy-node",
+    }
+    assert node_names <= supervisor_names
+    assert all(f"  {name}:" in node_compose for name in node_names)
+
+
+def test_compose_uses_one_shot_migration_and_production_dashboard() -> None:
+    compose = (PROJECT_ROOT / "deploy" / "docker-compose.central.yml").read_text(
+        encoding="utf-8"
+    )
+    dashboard_dockerfile = (PROJECT_ROOT / "services" / "dashboard" / "Dockerfile").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'command: ["python", "-m", "app.migrate"]' in compose
+    assert "condition: service_completed_successfully" in compose
+    assert 'DATABASE_AUTO_MIGRATE: "false"' in compose
+    assert "mini_ogas_dev" not in compose
+    assert ":-replace_" not in compose
+    assert "RUN npm run build" in dashboard_dockerfile
+    assert "FROM nginx:" in dashboard_dockerfile
+
+
+def test_legacy_script_controller_is_retired() -> None:
+    start_system = (PROJECT_ROOT / "scripts" / "start-system.ps1").read_text(
+        encoding="utf-8"
+    )
+    start_all = (PROJECT_ROOT / "scripts" / "start-all.ps1").read_text(encoding="utf-8")
+    start_miniogas = (PROJECT_ROOT / "scripts" / "start-miniogas.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'if (-not $CheckOnly)' in start_system
+    assert "script-managed runtime was retired in Stage F" in start_system
+    assert "npm.cmd run dev" not in start_system
+    assert 'Join-Path $PSScriptRoot "start-miniogas.ps1"' in start_all
+    assert "UseScriptLauncher was retired in Stage F" in start_miniogas
+
 
 def test_compose_environment_enables_worker_transport_adapters() -> None:
     values = {}
@@ -114,8 +201,12 @@ def test_compose_environment_enables_worker_transport_adapters() -> None:
             key, value = line.split("=", 1)
             values[key] = value
 
+    assert values["DATABASE_AUTO_MIGRATE"] == "false"
     assert values["NATS_ENABLED"] == "true"
     assert values["NATS_URL"] == "nats://nats:4222"
+    assert values["NATS_AUTH_TOKEN"] == "replace_nats_token"
     assert values["REDIS_ENABLED"] == "true"
-    assert values["REDIS_URL"] == "redis://redis:6379/0"
+    assert values["REDIS_URL"] == "redis://:replace_redis_password@redis:6379/0"
+    assert values["OBJECT_STORAGE_ENABLED"] == "true"
+    assert values["OBJECT_STORAGE_ENDPOINT"] == "minio:9000"
     assert "REDIS_ADDR" not in values

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 import pytest
+from app.core import database
 from app.core.config import settings
 from app.models import NodeStatus, utc_now
 from app.store import MemoryStore
@@ -71,6 +72,7 @@ def test_node_repository_rebuilds_heartbeat_projection_after_restart(
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
     monkeypatch.setattr(settings, "demo_seed_enabled", False)
+    database.init_db()
 
     first = MemoryStore()
     first.record_node_heartbeat_v2(_heartbeat())

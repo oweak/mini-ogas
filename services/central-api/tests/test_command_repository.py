@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from app.core import database
 from app.core.config import settings
 from app.store import MemoryStore
 
@@ -24,6 +25,7 @@ def test_command_repository_recovers_command_state_after_restart(
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
     monkeypatch.setattr(settings, "demo_seed_enabled", False)
+    database.init_db()
 
     first = MemoryStore()
     command = first.add_command(

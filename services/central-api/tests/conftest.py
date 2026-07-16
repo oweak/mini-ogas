@@ -33,3 +33,9 @@ os.environ["NATS_ENABLED"] = "false"
 os.environ["ALLOW_LEGACY_API_TOKEN_AUTH"] = "true"
 os.environ["ALLOW_LEGACY_NODE_TOKEN_AUTH"] = "true"
 os.environ["JWT_SECRET"] = "mini-ogas-test-jwt-secret"
+
+# Tests own their schema setup explicitly. Production API and worker processes
+# never apply migrations during import, lifespan, login, or health queries.
+from app.core.database import init_db
+
+init_db()

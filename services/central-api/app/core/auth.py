@@ -16,7 +16,7 @@ import time
 from typing import Any
 
 from .config import settings
-from .database import get_db, init_db
+from .database import get_db
 
 ALL_PERMISSIONS = (
     "node:view",
@@ -133,7 +133,6 @@ def verify_password(password: str, password_hash: str, salt: str) -> bool:
 
 def initialize_auth_store() -> None:
     """Seed fixed RBAC policy and a first administrator exactly once."""
-    init_db()
     human_principals: list[dict[str, Any]] = []
     with get_db() as db:
         for permission in ALL_PERMISSIONS:

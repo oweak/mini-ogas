@@ -2,52 +2,50 @@ x-node-base: &node-base
   build: ../services/node-agent
   restart: unless-stopped
   depends_on:
-    - central-api
-  volumes:
-    - ../scripts:/opt/mini-ogas/scripts:ro
+    central-api:
+      condition: service_healthy
+  environment: &node-environment
+    CENTRAL_API_URL: http://central-api:8080
+    LOCAL_DB_PATH: /data/node.db
+    SIMULATION_ENGINE: simpy
+    SIMULATION_RANDOM_SEED: ${SIMULATION_RANDOM_SEED:-20260713}
+    SIMULATION_SPEED: ${SIMULATION_SPEED:-1}
+    SIMULATION_MODE: ${SIMULATION_MODE:-normal}
+    OGAS_RUN_ID: ${OGAS_RUN_ID:-RUN-COMPOSE-DIGITAL-TWIN}
+    OGAS_SCENARIO_ID: ${OGAS_SCENARIO_ID:-SCN-NORMAL-SIMPY-FLOW-001}
+    OGAS_SIMULATION_START_TIME: ${OGAS_SIMULATION_START_TIME:-2026-07-13T00:00:00Z}
+    NODE_DEPLOYMENT_MODE: container
 
 services:
-  turning-node:
+  turning-simpy-node:
     <<: *node-base
     environment:
+      <<: *node-environment
       NODE_CODE: turning-workshop-01
       WORKSHOP_TYPE: turning
-      CENTRAL_API_URL: http://central-api:8080
-      OGAS_API_TOKEN: ${TURNING_NODE_TOKEN:-replace_turning_node_token_000000000000}
-      LOCAL_DB_PATH: /data/node.db
-      SIMULATION_ENGINE: simpy
-      SIMULATION_RANDOM_SEED: "20260713"
+      OGAS_API_TOKEN: ${TURNING_NODE_TOKEN:?TURNING_NODE_TOKEN is required}
     volumes:
       - turning_node_data:/data
-      - ../scripts:/opt/mini-ogas/scripts:ro
 
-  milling-node:
+  milling-simpy-node:
     <<: *node-base
     environment:
+      <<: *node-environment
       NODE_CODE: milling-workshop-01
       WORKSHOP_TYPE: milling
-      CENTRAL_API_URL: http://central-api:8080
-      OGAS_API_TOKEN: ${MILLING_NODE_TOKEN:-replace_milling_node_token_000000000000}
-      LOCAL_DB_PATH: /data/node.db
-      SIMULATION_ENGINE: simpy
-      SIMULATION_RANDOM_SEED: "20260714"
+      OGAS_API_TOKEN: ${MILLING_NODE_TOKEN:?MILLING_NODE_TOKEN is required}
     volumes:
       - milling_node_data:/data
-      - ../scripts:/opt/mini-ogas/scripts:ro
 
-  grinding-node:
+  grinding-simpy-node:
     <<: *node-base
     environment:
+      <<: *node-environment
       NODE_CODE: grinding-workshop-01
       WORKSHOP_TYPE: grinding
-      CENTRAL_API_URL: http://central-api:8080
-      OGAS_API_TOKEN: ${GRINDING_NODE_TOKEN:-replace_grinding_node_token_000000000000}
-      LOCAL_DB_PATH: /data/node.db
-      SIMULATION_ENGINE: simpy
-      SIMULATION_RANDOM_SEED: "20260715"
+      OGAS_API_TOKEN: ${GRINDING_NODE_TOKEN:?GRINDING_NODE_TOKEN is required}
     volumes:
       - grinding_node_data:/data
-      - ../scripts:/opt/mini-ogas/scripts:ro
 
 volumes:
   turning_node_data:

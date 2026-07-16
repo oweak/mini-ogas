@@ -428,6 +428,7 @@ def test_replay_readiness_survives_new_store_instance(tmp_path, monkeypatch: pyt
     monkeypatch.setattr(settings, "persist_enabled", True)
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
 
     first = MemoryStore()
     first.record_node_heartbeat_v2({
@@ -491,6 +492,7 @@ def test_alert_ai_and_audit_shadows_survive_new_store_instance(tmp_path, monkeyp
     monkeypatch.setattr(settings, "persist_enabled", True)
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
 
     first = MemoryStore()
     first.record_node_heartbeat_v2({
@@ -570,6 +572,7 @@ def test_alert_state_write_updates_current_projection_after_stale_reference(
     monkeypatch.setattr(settings, "persist_enabled", True)
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
 
     store = MemoryStore()
     stale_alert = store.create_alert(
@@ -603,6 +606,7 @@ def test_planning_and_dispatch_shadows_survive_new_store_instance(tmp_path, monk
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
     monkeypatch.setattr(settings, "microservices_enabled", False)
+    database.init_db()
 
     first = MemoryStore()
     order = first.submit_allocation_order(AllocationOrderIn(
@@ -638,6 +642,7 @@ def test_heartbeat_shadow_retention_keeps_latest_rows_per_node(tmp_path, monkeyp
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
     monkeypatch.setattr(settings, "heartbeat_shadow_retention_per_node", 2)
+    database.init_db()
 
     store = MemoryStore()
     for index in range(5):
@@ -685,6 +690,7 @@ def test_heartbeat_upserts_scenario_and_run_entities(tmp_path, monkeypatch: pyte
     monkeypatch.setattr(settings, "persist_enabled", True)
     monkeypatch.setattr(settings, "persist_backend", "sqlite")
     monkeypatch.setattr(settings, "central_db_path", str(db_path))
+    database.init_db()
 
     store = MemoryStore()
     store.record_node_heartbeat_v2({

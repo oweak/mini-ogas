@@ -1,8 +1,5 @@
-# Mini-OGAS root compose — wraps central services and node agents.
-# Usage:
-#   docker compose up -d                     # central + all nodes
-#   docker compose -f docker-compose.yml \
-#     -f deploy/docker-compose.central.yml up -d  # central only
+# Mini-OGAS root Compose stack: central services and three SimPy node agents.
+# Required secrets are read from the shell or a root .env file.
 
 include:
   - deploy/docker-compose.central.yml

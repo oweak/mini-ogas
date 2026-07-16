@@ -129,6 +129,10 @@ resolved by the runtime bootstrap path:
 .\scripts\start-miniogas.ps1
 ```
 
+The Supervisor executes the explicit PostgreSQL migration job before starting
+any service, builds the Dashboard production artifact, and serves that artifact.
+API and Worker processes never migrate schema during startup.
+
 If a script-managed stack is already running and you intentionally want the Go
 supervisor to take ownership, run:
 
@@ -147,11 +151,22 @@ The NATS process may remain available in this rollback mode, but Central does
 not publish or consume shadow messages. The authoritative HTTP/PostgreSQL path
 is unchanged.
 
-The legacy lightweight launcher remains available with:
+For the converged container deployment, create an ignored `.env` from
+`.env.example`, replace every credential placeholder with a distinct secret, then run:
 
 ```powershell
-.\scripts\start-miniogas.ps1 -UseScriptLauncher
+.\scripts\start-compose.ps1
 ```
+
+The root Compose stack includes PostgreSQL, authenticated Redis, authenticated
+NATS JetStream, MinIO, a one-shot migration service, Central API, Background
+Worker, all three microservices, the Nginx production Dashboard and three SimPy
+nodes. Its migration container must exit successfully before Central can start.
+The deployment contract is documented in
+`docs/deployment/component-truth-table.md`.
+
+The former script-managed runtime is retired. `start-system.ps1 -CheckOnly`
+remains a read-only diagnostic gate and cannot start a second controller.
 
 Use the verification script below as the current truth check:
 
@@ -166,7 +181,7 @@ alignment. It also runs Ruff correctness rules when the project development
 environment is installed. Optional Kali/VirtualBox state is not used as
 production-node proof.
 
-The latest local hardening verification on 2026-07-15 passed 288 Central API tests,
+The latest local hardening verification on 2026-07-16 passed 317 Central API tests,
 39 simulator tests, 73 Dashboard tests and production build, 4 AI Dispatcher
 tests, 36 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
 checks and Ruff correctness. The strict runtime reported 12/12 healthy processes,
@@ -182,9 +197,7 @@ AI model calls are only proven when the runtime check is run with:
 If that fails with `AI vault is present but locked`, the system is using rule
 fallback and must not be described as having live DeepSeek participation.
 
-The current Windows host does not have Docker/Compose installed. Clean Linux image
-build and startup are nevertheless verified by GitHub Container Gate run
-`29410060670` on commit `3125430`: Central API health, a real Node Agent heartbeat,
-and the production
-Nginx Dashboard all passed. Full Compose-stack startup is still a later deployment
-gate and must not be inferred from this image-level proof.
+The current Windows host does not have Docker/Compose installed. The GitHub Container
+Gate is therefore the independent Linux proof for the full Compose stack. Stage F is
+accepted only after that gate starts all services, completes the one-shot migration,
+observes three node heartbeats and proves PostgreSQL persistence across restart.

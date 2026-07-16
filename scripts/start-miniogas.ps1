@@ -22,7 +22,11 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 
-if ($UseScriptLauncher -or $CheckOnly -or $StartKali) {
+if ($UseScriptLauncher) {
+  throw "UseScriptLauncher was retired in Stage F; use the Supervisor or start-compose.ps1."
+}
+
+if ($CheckOnly -or $StartKali) {
   $args = @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
@@ -34,7 +38,7 @@ if ($UseScriptLauncher -or $CheckOnly -or $StartKali) {
     "-AppEnv", $AppEnv, "-DataSource", $DataSource, "-ControlMode", $ControlMode,
     "-TenantId", $TenantId, "-SiteId", $SiteId
   )
-  if ($CheckOnly) { $args += "-CheckOnly" }
+  $args += "-CheckOnly"
   if ($RequireAiApi) { $args += "-RequireAiApi" }
   if ($StartKali) { $args += "-StartKali" }
   & powershell.exe @args
