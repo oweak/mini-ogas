@@ -18,7 +18,7 @@ proof.
 | D - `MemoryStore` decomposition | Accepted | Command, Node, Production Execution, Quality, Simulation and Incident/Event ownership have repository/restart/transaction evidence; Outbox and Redis/NATS/MinIO adapters are isolated, and periodic work has one owner. |
 | E - data/event convergence | Accepted | One Outbox publisher, durable idempotent receipts, per-stream retry order, 100-message reconciliation thresholds and controlled NATS degrade/recovery are proved. NATS remains Shadow. |
 | F - deployment convergence | Accepted | Supervisor and Compose run the same core services, migration is one-shot, Dashboard is production-built, and clean full-stack restart persistence passed. |
-| G - unified AI plane | Not accepted | AI Agent suggestions are provenance-bearing and cannot create commands, but AI Dispatcher is not yet the sole model-call owner. |
+| G - unified AI plane | Accepted | AI Dispatcher is the sole model-call owner; provider policy, provenance, timeout/retry/token budgets, fallback, cost, latency, redaction, egress and dedicated service authentication are unified. High-risk advice enters a human-only command approval chain. |
 | H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
 
 ## Verified Runtime Truth
@@ -53,11 +53,11 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 320 passed |
+| Central API | 326 passed |
 | Python node simulator | 40 passed |
 | Dashboard | 16 files / 73 tests passed |
 | Dashboard production build | passed |
-| AI dispatcher | 6 passed |
+| AI dispatcher | 12 passed |
 | CLI/workflow | 36 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
@@ -67,7 +67,7 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 | Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
 | Clean key-image build/start | passed |
-| Full Compose-stack startup and restart persistence | passed: GitHub Container Gate `29489184819` on Stage F commit `829b295` |
+| Full Compose-stack startup and restart persistence | passed: Stage G GitHub Container Gate `29493157247` on commit `4807f9d` |
 
 ## Hard Boundaries
 
@@ -81,5 +81,6 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 ## Next Required Gate
 
-Continue with Stage G from the accepted Stage F boundary. AI Dispatcher must become the
-sole model-call owner before Stage H closed-loop acceptance begins.
+Continue with Stage H from the accepted Stage G boundary. Prove one complete automated
+market/order-to-plan-to-approved-command-to-SimPy-state-to-audit workflow without
+manual database repair or fixture substitution.

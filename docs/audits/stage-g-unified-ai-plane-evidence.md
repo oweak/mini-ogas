@@ -111,10 +111,16 @@ the dedicated internal token.
 
 ## Independent Container Gate
 
-Pending the first pushed Stage G commit. Stage G is not accepted until the clean Linux
-Compose gate validates the updated required token and service environment.
+GitHub Container Gate
+[29493157247](https://github.com/oweak/mini-ogas/actions/runs/29493157247)
+passed on commit `4807f9d` in 1 minute 16 seconds. The clean Ubuntu runner built every
+image, supplied a distinct required Dispatcher token, ran the one-shot PostgreSQL
+migration, started the complete stack, accepted all three SimPy heartbeats and proved
+Central restart persistence.
 
 ## Acceptance Decision
 
-Local Stage G requirements are satisfied. Final Stage G acceptance remains conditional
-on the independent Container Gate for the pushed commit.
+Stage G is accepted. AI Dispatcher is the sole model-call owner, the unified inference
+contract is executable in local Supervisor and clean Compose modes, and high-risk AI
+advice is bound to the canonical human approval chain. This decision does not grant AI
+direct control authority and does not accept Stage H.

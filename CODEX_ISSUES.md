@@ -8,7 +8,7 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stages A-F are accepted. Stage G AI-plane convergence and Stage H final closed loop remain open. |
+| Current A-H hardening objective | In progress | Stages A-G are accepted. Stage H final closed-loop proof remains open. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -93,8 +93,9 @@ Ubuntu runners.
   `node_code`; cross-node resource access is rejected.
 - Sensitive command lifecycle actions use `CommandControlService`, verified
   permissions, resource ownership, Safety Governor, approval policy and audit.
-- AI Agents can submit provenance-bearing suggestions only. A live high-risk
-  suggestion persisted as `pending_human_review` without changing command count.
+- AI Agents submit provenance-bearing suggestions only. High-risk advice creates one
+  human-only, non-node-executable approval command and becomes accepted or rejected
+  with the canonical command decision.
 - The complete matrix and route evidence are recorded in
   `docs/security/principal-control-matrix.md`.
 
@@ -102,7 +103,6 @@ Ubuntu runners.
 
 | Priority | Item | Target |
 | --- | --- | --- |
-| P1 | Make AI Dispatcher the sole provider-chain owner and route high-risk advice through approval. | Stage G |
 | P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |
 
 ## Verification
@@ -113,11 +113,11 @@ Ubuntu runners.
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local verifier gates passed. Canonical counts are Central API 320, node
-simulator 40, Dashboard 73 across 16 files plus production build, AI dispatcher 6,
+Latest local verifier gates passed. Canonical counts are Central API 326, node
+simulator 40, Dashboard 73 across 16 files plus production build, AI dispatcher 12,
 CLI/workflow 36 plus 9 subtests, and both Go modules. Ruff correctness passes. The
 strict runtime reports 12/12 healthy processes, a ready dedicated worker, live NATS
 Shadow and 3/3 fresh SimPy nodes. The Stage E controlled outage gate also passed with
 100/100 matched receipts, zero duplicates, zero order divergence and P95 4007.568 ms.
-GitHub full Compose Container Gate `29489184819` on Stage F commit `829b295` passed.
-Stages G-H remain open, so the current A-H objective is not complete.
+GitHub full Compose Container Gate `29493157247` on Stage G commit `4807f9d` passed.
+Stage H remains open, so the current A-H objective is not complete.
