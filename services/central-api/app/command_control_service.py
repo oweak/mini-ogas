@@ -25,6 +25,67 @@ class CommandControlService:
         target_rate: float,
         actor: ActorInfo,
     ) -> NodeCommand:
+        return self._issue_target_rate(
+            node_code=node_code,
+            target_rate=target_rate,
+            actor=actor,
+            risk_level="low",
+            status="pending",
+            parameters={},
+            audit_action="command:issue",
+        )
+
+    def issue_dispatch_target_rate(
+        self,
+        *,
+        node_code: str,
+        target_rate: float,
+        actor: ActorInfo,
+        order_id: str,
+        product_code: str,
+        plan_target_quantity: int,
+        dispatch_task_ids: list[int],
+        planning_horizon_minutes: int,
+        physical_limit: float,
+    ) -> NodeCommand:
+        return self._issue_target_rate(
+            node_code=node_code,
+            target_rate=target_rate,
+            actor=actor,
+            risk_level="high",
+            status="waiting_approval",
+            parameters={
+                "workflow_kind": "dispatch_target_rate",
+                "node_executable": True,
+                "source_order_id": order_id,
+                "product_code": product_code,
+                "plan_target_quantity": plan_target_quantity,
+                "dispatch_task_ids": dispatch_task_ids,
+                "planning_horizon_minutes": planning_horizon_minutes,
+                "physical_limit": round(physical_limit, 3),
+                "rate_unit": "parts_per_minute",
+                "idempotency_key": (
+                    f"dispatch:{order_id}:{node_code}:{plan_target_quantity}:"
+                    f"{planning_horizon_minutes}"
+                ),
+                "ttl_seconds": 1800,
+            },
+            audit_action="dispatch:target-rate-proposed",
+            allow_confirmation_pending=True,
+        )
+
+    def _issue_target_rate(
+        self,
+        *,
+        node_code: str,
+        target_rate: float,
+        actor: ActorInfo,
+        risk_level: str,
+        status: str,
+        parameters: dict[str, object],
+        audit_action: str,
+        allow_confirmation_pending: bool = False,
+    ) -> NodeCommand:
         self._require_control_enabled()
         self._require_node(node_code)
         physical_limit = self.state.reported_physical_rate_limit_per_minute(node_code)
@@ -44,24 +105,28 @@ class CommandControlService:
         decision = safety_governor.review_control_action(
             action="set_target_rate",
             target_node=node_code,
-            risk_level="low",
+            risk_level=risk_level,
             actor_role=actor.role,
             actor_id=actor_identity(actor),
             known_nodes=set(self.state.nodes),
         )
         self.state.record_safety_decision(decision)
-        self._require_allowed(decision)
+        if not decision.allow and not (
+            allow_confirmation_pending
+            and decision.reason_code == "confirmation_code_required"
+        ):
+            self._require_allowed(decision)
         command = self.state.add_command(
             node_code,
             "set_target_rate",
-            "low",
-            "pending",
+            risk_level,
+            status,
             actor_identity(actor),
-            parameters={"target_rate": target_rate},
+            parameters={"target_rate": target_rate, **parameters},
         )
         self.state.add_audit_log(
             actor_identity(actor),
-            "command:issue",
+            audit_action,
             "command",
             str(command.id),
             command.status,
@@ -154,6 +219,8 @@ class CommandControlService:
                 result["suggestion_status"] = "accepted"
         else:
             result = self.state.approve_command(command_id, actor_identity(actor))
+            if self._is_dispatch_target_rate(command):
+                self.state.update_dispatch_control_status(command, "approved")
         self.state.add_audit_log(
             actor_identity(actor),
             "command:approve",
@@ -176,6 +243,8 @@ class CommandControlService:
             if suggestion_id:
                 result["suggestion_id"] = suggestion_id
                 result["suggestion_status"] = "rejected"
+        if self._is_dispatch_target_rate(command):
+            self.state.update_dispatch_control_status(command, "rejected")
         self.state.add_audit_log(
             actor_identity(actor),
             "command:reject",
@@ -192,6 +261,8 @@ class CommandControlService:
         cancelled = self.state.cancel_command(command_id, actor_identity(actor), reason)
         if self._is_ai_suggestion_review(command):
             ai_suggestion_repository.set_status_for_command(command_id, "rejected")
+        if self._is_dispatch_target_rate(command):
+            self.state.update_dispatch_control_status(command, "cancelled")
         return cancelled
 
     def retry(
@@ -252,6 +323,10 @@ class CommandControlService:
     @staticmethod
     def _is_ai_suggestion_review(command: NodeCommand) -> bool:
         return command.parameters.get("workflow_kind") == "ai_suggestion_review"
+
+    @staticmethod
+    def _is_dispatch_target_rate(command: NodeCommand) -> bool:
+        return command.parameters.get("workflow_kind") == "dispatch_target_rate"
 
     @staticmethod
     def _require_control_enabled() -> None:

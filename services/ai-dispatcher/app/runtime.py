@@ -412,7 +412,8 @@ class AiRuntime:
         )
         response.raise_for_status()
         data = response.json()
-        content = str(data["choices"][0]["message"]["content"])
+        raw_content = data["choices"][0]["message"].get("content")
+        content = raw_content if isinstance(raw_content, str) else ""
         if not content.strip():
             raise ValueError("provider returned an empty response")
         structured = _parse_json_object(content) if response_format == "json_object" else None

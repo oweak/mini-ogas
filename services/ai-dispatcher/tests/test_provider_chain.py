@@ -89,6 +89,45 @@ def test_chain_uses_next_provider_after_first_provider_fails(monkeypatch) -> Non
     assert result.provenance.attempts[0].error_class == "invalid_response"
 
 
+def test_provider_null_content_is_rejected_instead_of_becoming_none_text() -> None:
+    config = _config("deepseek")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": None,
+                            "reasoning_content": "unfinished reasoning",
+                        }
+                    }
+                ]
+            },
+        )
+
+    async def invoke() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await AiRuntime._call_provider(
+                client,
+                config,
+                messages=[{"role": "user", "content": "probe"}],
+                response_format="text",
+                temperature=0,
+                max_tokens=16,
+                timeout=1,
+            )
+
+    try:
+        asyncio.run(invoke())
+    except ValueError as exc:
+        assert str(exc) == "provider returned an empty response"
+    else:
+        raise AssertionError("null provider content must not be accepted")
+
+
 def test_chain_reaches_rule_fallback_only_after_all_providers_fail(monkeypatch) -> None:
     runtime = AiRuntime()
     monkeypatch.setenv("AI_PROVIDER_RETRIES", "0")

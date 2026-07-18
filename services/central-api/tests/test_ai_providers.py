@@ -87,3 +87,34 @@ def test_inference_rejects_missing_provenance_fields(monkeypatch) -> None:
             [{"role": "user", "content": "diagnose"}],
             task_type="chat",
         )
+
+
+def test_connectivity_probe_reserves_enough_output_for_reasoning_models(monkeypatch) -> None:
+    client = DispatcherClient()
+    captured: dict[str, object] = {}
+
+    def fake_request(method, path, payload=None, **kwargs):
+        captured.update(
+            {"method": method, "path": path, "payload": payload, "timeout": kwargs.get("timeout")}
+        )
+        return {
+            "content": "OK",
+            "structured_output": None,
+            "provenance": {
+                "request_id": "probe-128",
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "source": "api",
+                "attempts": [],
+                "latency_ms": 10,
+            },
+        }
+
+    monkeypatch.setattr(client, "_request", fake_request)
+
+    result = client.connectivity_probe()
+
+    assert result.live is True
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/v1/inference"
+    assert captured["payload"]["max_tokens"] == 128

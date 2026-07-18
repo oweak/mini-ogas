@@ -323,6 +323,66 @@ def _snapshot_alert(issue: dict) -> dict:
 def _snapshot_dispatch_plan(work_orders: list[dict]) -> dict:
     blocked = [order for order in work_orders if order.get("status") == "blocked"]
     rerouted = [order for order in work_orders if order.get("status") in {"approved", "approved_executed"}]
+    dispatch_commands = [
+        command
+        for command in store.commands
+        if command.parameters.get("workflow_kind") == "dispatch_target_rate"
+    ]
+    active_command = next(
+        (
+            command
+            for command in reversed(dispatch_commands)
+            if command.status in {"waiting_approval", "pending", "queued", "claimed", "applied"}
+        ),
+        None,
+    )
+    command = active_command or (dispatch_commands[-1] if dispatch_commands else None)
+    if command is not None:
+        target_rate = command.parameters.get("target_rate")
+        status = {
+            "waiting_approval": "waiting_approval",
+            "pending": "approved_executing",
+            "queued": "approved_executing",
+            "claimed": "approved_executing",
+            "applied": "approved_executing",
+            "verified": "approved_executed",
+            "failed": "failed",
+            "rejected": "rejected",
+            "cancelled": "cancelled",
+            "expired": "failed",
+        }.get(command.status, command.status)
+        summary = (
+            f"Order {command.parameters.get('source_order_id', '')} proposes "
+            f"{target_rate} parts/min for {command.node_code}."
+        )
+        result = command.result_message or (
+            "Supervisor approval is required."
+            if command.status == "waiting_approval"
+            else "The node command is waiting for execution evidence."
+        )
+        return {
+            "id": f"DP-CMD-{command.id}",
+            "command_id": command.id,
+            "status": status,
+            "summary": summary,
+            "source_order": str(command.parameters.get("source_order_id") or ""),
+            "from_node": "production-planner",
+            "to_node": command.node_code,
+            "risk": command.risk_level,
+            "target_rate": target_rate,
+            "rate_unit": command.parameters.get("rate_unit", "parts_per_minute"),
+            "verification_status": command.verification_status,
+            "steps": [
+                "Approve the governed target-rate command.",
+                "Wait for the bound node agent to claim and execute it.",
+                "Verify the SimPy production effect from subsequent heartbeats.",
+                "Archive command, heartbeat, and audit evidence in PostgreSQL.",
+            ],
+            "confirmation_code_hint": "CONFIRM" if command.status == "waiting_approval" else "",
+            "result": result,
+            "work_order_count": len(work_orders),
+            "blocked_count": len(blocked),
+        }
     status = "waiting_approval" if blocked else "no_action"
     if rerouted and not blocked:
         status = "approved_executed"

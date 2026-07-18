@@ -1,6 +1,11 @@
 from fastapi import APIRouter, Depends
 
-from ..core.security import PERM_EXECUTION_MANAGE, ActorInfo, require_permission
+from ..core.security import (
+    PERM_EXECUTION_MANAGE,
+    ActorInfo,
+    actor_identity,
+    require_permission,
+)
 from ..models import AllocationOrderIn, ProductionPlanIn
 from ..store import store
 
@@ -23,6 +28,17 @@ def create_allocation_order(
     actor: ActorInfo = Depends(require_permission(PERM_EXECUTION_MANAGE)),
 ):
     created = store.submit_allocation_order(order)
+    store.add_audit_log(
+        actor_identity(actor),
+        "allocation-order:create",
+        "allocation_order",
+        created.order_id,
+        created.status,
+        (
+            f"product_code={created.product_code}; required_quantity={created.required_quantity}; "
+            f"deadline_hours={created.deadline_hours}; priority={created.priority}"
+        ),
+    )
     return {"accepted": True, "order": created, "plans": store.production_plans}
 
 

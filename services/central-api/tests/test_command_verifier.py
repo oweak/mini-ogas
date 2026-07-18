@@ -142,6 +142,46 @@ def test_verifier_uses_own_rate_for_a_target_increase() -> None:
     assert result.evidence["own_rate_moved"] is True
 
 
+def test_sink_rate_decrease_uses_approved_target_as_dynamic_throughput_floor() -> None:
+    verifier = CommandVerifier(min_observations=3, max_observations=5)
+    command = _command()
+    command.node_code = "grinding-workshop-01"
+    command.parameters = {"target_rate": 0.7}
+    command.verification_baseline["grinding-workshop-01"].update(
+        {"target_rate": 1.081, "actual_rate": 0.681}
+    )
+    system = _system(12, grinding_actual=0.441)
+    system["grinding-workshop-01"]["target_rate"] = 0.7
+
+    assert verifier.observe(command, system).status == "observing"
+    assert verifier.observe(command, system).status == "observing"
+    result = verifier.observe(command, system)
+
+    assert result.status == "effective"
+    assert result.evidence["throughput_floor_ok"] is True
+    assert result.evidence["sink_expected_rate"] == 0.681 * 0.7 / 1.081
+    assert result.evidence["throughput_floor_rate"] == result.evidence["sink_expected_rate"] * 0.9
+
+
+def test_sink_rate_decrease_still_fails_below_dynamic_throughput_floor() -> None:
+    verifier = CommandVerifier(min_observations=3, max_observations=5)
+    command = _command()
+    command.node_code = "grinding-workshop-01"
+    command.parameters = {"target_rate": 0.7}
+    command.verification_baseline["grinding-workshop-01"].update(
+        {"target_rate": 1.081, "actual_rate": 0.681}
+    )
+    system = _system(12, grinding_actual=0.2)
+    system["grinding-workshop-01"]["target_rate"] = 0.7
+
+    verifier.observe(command, system)
+    verifier.observe(command, system)
+    result = verifier.observe(command, system)
+
+    assert result.status == "failed"
+    assert result.evidence["throughput_floor_ok"] is False
+
+
 def test_command_metadata_has_version_expiry_and_lifecycle_timestamps() -> None:
     now = utc_now()
     command = NodeCommand(

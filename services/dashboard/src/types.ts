@@ -173,6 +173,7 @@ export type AiSmokeState = {
 
 export type DispatchPlan = {
   id: string
+  command_id?: number
   status: string
   summary: string
   source_order: string
@@ -180,6 +181,9 @@ export type DispatchPlan = {
   to_node: string
   risk: string
   steps: string[]
+  target_rate?: number
+  rate_unit?: string
+  verification_status?: string
   confirmation_code_hint?: string
   result?: string
 }

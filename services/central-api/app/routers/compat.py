@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from ..command_control_service import command_control_service
 from ..core.ai.base import DiagnosisResult
 from ..core.ai.dispatcher import DispatcherError, dispatcher_client
 from ..core.ai.vault import runtime_status, unlock_ai_runtime, vault_present
@@ -26,6 +27,7 @@ from ..core.security import (
     actor_identity,
     require_permission,
 )
+from ..dispatch_control_service import dispatch_control_service
 from ..models import Severity
 from ..safety_governor import safety_governor
 from ..store import store
@@ -332,6 +334,12 @@ def recalculate_dispatch_plan(
     store.generate_production_plan()
     tasks = store.rebuild_dispatch()
     blocked = sum(1 for t in tasks if t.status == "blocked")
+    proposal: dict[str, object] | None = None
+    proposal_error: object = None
+    try:
+        proposal = dispatch_control_service.propose_target_rates(actor=actor)
+    except HTTPException as exc:
+        proposal_error = exc.detail
     payload = _dispatch_payload()
     return {
         "ok": True,
@@ -339,6 +347,8 @@ def recalculate_dispatch_plan(
         "total": len(tasks),
         "dispatched": len(tasks) - blocked,
         "blocked": blocked,
+        "target_rate_proposal": proposal,
+        "proposal_error": proposal_error,
         **payload,
     }
 
@@ -348,6 +358,57 @@ def approve_dispatch_plan(payload: _ActorPayload,
                           actor: ActorInfo = Depends(require_permission(PERM_COMMAND_APPROVE))):
     """Approve a dispatch plan and return the updated dashboard contract."""
     operator = actor_identity(actor)
+    governed_commands = [
+        command
+        for command in store.pending_approvals()
+        if command.parameters.get("workflow_kind") == "dispatch_target_rate"
+    ]
+    if governed_commands:
+        results: list[dict[str, object]] = []
+        for command in governed_commands:
+            result = command_control_service.approve(
+                command.id,
+                actor=actor,
+                confirmation_code=payload.confirmation_code,
+            )
+            results.append(result)
+            if not result.get("accepted"):
+                current = _dispatch_payload()
+                return {
+                    "ok": False,
+                    "accepted": False,
+                    "executed": False,
+                    "status": "confirmation_required",
+                    "message": str(result.get("safety", {}).get("message") or "Approval blocked."),
+                    "safety": result.get("safety", {}),
+                    "commands": results,
+                    **current,
+                }
+        command_ids = [int(result["command_id"]) for result in results]
+        result_message = (
+            f"Approved governed dispatch command(s) {command_ids}; "
+            "waiting for the bound node agents to claim and execute them."
+        )
+        updated = _dispatch_payload(status_override="approved_executing", result=result_message)
+        return {
+            "ok": True,
+            "accepted": True,
+            "executed": False,
+            "status": "approved_executing",
+            "message": result_message,
+            "commands": results,
+            **updated,
+            "audit_event": _make_audit_event(
+                action="command:approve",
+                message=result_message,
+                actor=operator,
+                resource_type="command",
+                resource_id=",".join(str(command_id) for command_id in command_ids),
+                result="pending-node-execution",
+                extra={"command_ids": command_ids},
+            ),
+        }
+
     safety = safety_governor.review_manual_approval(
         action="dispatch_plan_approve",
         actor_role=actor.role,

@@ -121,7 +121,7 @@ class DispatcherClient:
                 {"role": "user", "content": "Reply with exactly: OK"},
             ],
             task_type="connectivity_probe",
-            max_tokens=16,
+            max_tokens=128,
             timeout=max(10.0, min(float(settings.ai_timeout_seconds), 60.0)),
         )
 

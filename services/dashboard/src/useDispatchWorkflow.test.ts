@@ -146,4 +146,23 @@ describe('useDispatchWorkflow', () => {
     expect(fetchAlarmData).toHaveBeenCalled()
     expect(fetchAuditEvents).toHaveBeenCalled()
   })
+
+  it('does not archive a dispatch while the node and verifier are still running', async () => {
+    approveMock.mockResolvedValue(jsonResponse({
+      ok: true,
+      dispatch_plan: pendingPlan({
+        status: 'approved_executing',
+        result: 'waiting for the bound node agent and Verifier evidence'
+      }),
+      work_orders: []
+    }))
+    const { workflow, resolvedEffects } = createWorkflow(ref(pendingPlan()))
+    workflow.dispatchConfirmCode.value = 'CONFIRM'
+
+    await workflow.approveDispatchPlan()
+
+    expect(workflow.dispatchFeedback.value).toContain('waiting for the bound node agent')
+    expect(workflow.dispatchPanelTitle.value).toContain('等待节点执行与验证')
+    expect(resolvedEffects.value).toEqual([])
+  })
 })

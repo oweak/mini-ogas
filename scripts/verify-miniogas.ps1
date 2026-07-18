@@ -55,8 +55,12 @@ try {
     Push-Location .\services\ai-dispatcher
     try { & $aiDispatcherPython -m pytest .\tests -q } finally { Pop-Location }
   }
+  Invoke-Step "Production planner tests" {
+    Push-Location .\services\production-planner
+    try { & $centralPython -m pytest .\tests -q } finally { Pop-Location }
+  }
   Invoke-Step "CLI and workflow tests" {
-    python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py .\scripts\test_runtime_workflow_auth.py -q
+    python -m pytest .\tools\mogas\tests .\scripts\test_check_secrets.py .\scripts\test_kali_redteam_workflow.py .\scripts\test_runtime_workflow_auth.py .\scripts\test_stage_h_closed_loop.py -q
   }
   Invoke-Step "dashboard tests and build" {
     Push-Location .\services\dashboard
@@ -89,6 +93,9 @@ try {
     }
     Invoke-Step "Phase 7 Historian, projection, object integrity and retention gate" {
       & $centralPython .\scripts\check_phase7_data_platform.py
+    }
+    Invoke-Step "Stage H governed production closed-loop gate" {
+      & $centralPython .\scripts\check_stage_h_closed_loop.py
     }
   }
 } finally {

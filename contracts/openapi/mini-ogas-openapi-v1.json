@@ -1170,6 +1170,22 @@
         "title": "DemoScenario",
         "type": "object"
       },
+      "DispatchTargetRateProposalIn": {
+        "properties": {
+          "node_code": {
+            "default": "",
+            "title": "Node Code",
+            "type": "string"
+          },
+          "order_id": {
+            "default": "",
+            "title": "Order Id",
+            "type": "string"
+          }
+        },
+        "title": "DispatchTargetRateProposalIn",
+        "type": "object"
+      },
       "DispositionIn": {
         "additionalProperties": false,
         "properties": {
@@ -5980,6 +5996,45 @@
           }
         },
         "summary": "List Resource Allocations",
+        "tags": [
+          "dispatch"
+        ]
+      }
+    },
+    "/dispatch/target-rate-proposals": {
+      "post": {
+        "operationId": "propose_dispatch_target_rates_dispatch_target_rate_proposals_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DispatchTargetRateProposalIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Propose Dispatch Target Rates",
         "tags": [
           "dispatch"
         ]

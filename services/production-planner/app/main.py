@@ -42,9 +42,19 @@ class NodeHealth(BaseModel):
     load_score: float = Field(ge=0, le=100)
 
 
+class AllocationOrder(BaseModel):
+    order_id: str
+    product_code: str
+    required_quantity: int = Field(ge=1)
+    priority: int = Field(ge=1, le=10)
+    deadline_hours: int = Field(ge=1)
+    status: str = "received"
+
+
 class PlanningRequest(BaseModel):
     market_signals: list[MarketSignal]
     node_health: list[NodeHealth]
+    allocation_orders: list[AllocationOrder] = Field(default_factory=list)
 
 
 class PlanItem(BaseModel):
@@ -79,24 +89,54 @@ def plan(req: PlanningRequest, _: None = Depends(_verify_token)) -> list[PlanIte
         for node in req.node_health
         if node.status == "online" and node.load_score < 80
     }
+    signals = {signal.product_code: signal for signal in req.market_signals}
+    orders_by_product: dict[str, list[AllocationOrder]] = {}
+    for order in req.allocation_orders:
+        if order.status in {"completed", "cancelled", "rejected"}:
+            continue
+        orders_by_product.setdefault(order.product_code, []).append(order)
+
     plans: list[PlanItem] = []
-    for signal in req.market_signals:
-        route = ROUTES.get(signal.product_code, ["turning"])
+    product_codes = sorted(set(signals) | set(orders_by_product))
+    for product_code in product_codes:
+        signal = signals.get(product_code)
+        route = ROUTES.get(product_code, ["turning"])
         route_available = all(step in healthy_workshops for step in route)
-        pressure = signal.demand_index - signal.inventory_pressure
-        priority = 2 if pressure > 60 and route_available else 6
-        quantity = max(10, int(pressure * 2)) if route_available else max(5, int(pressure))
+        pressure = (
+            signal.demand_index - signal.inventory_pressure
+            if signal is not None
+            else 0.0
+        )
+        market_priority = 2 if pressure > 60 and route_available else 6
+        market_quantity = (
+            max(10, int(pressure * 2))
+            if route_available
+            else max(5, int(pressure))
+        )
+        active_orders = orders_by_product.get(product_code, [])
+        committed_quantity = sum(order.required_quantity for order in active_orders)
+        priority = min(
+            [market_priority, *(order.priority for order in active_orders)]
+        )
+        quantity = max(market_quantity, committed_quantity)
+        order_context = ""
+        if active_orders:
+            order_context = (
+                "; accepted_orders="
+                + ",".join(order.order_id for order in active_orders)
+                + f"; committed_quantity={committed_quantity}"
+            )
         plans.append(
             PlanItem(
-                product_code=signal.product_code,
+                product_code=product_code,
                 target_quantity=quantity,
                 priority=priority,
                 route=route,
                 reason=(
-                    "市场需求高且路线健康，建议提高排产"
+                    "Market demand and route capacity support the production plan"
                     if priority <= 2
-                    else "受库存压力或节点健康影响，建议谨慎排产"
-                ),
+                    else "Inventory pressure or node health constrains the production plan"
+                ) + order_context,
             )
         )
     return sorted(plans, key=lambda item: item.priority)

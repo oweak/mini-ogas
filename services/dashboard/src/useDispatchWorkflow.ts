@@ -45,13 +45,18 @@ export function useDispatchWorkflow(options: DispatchWorkflowOptions) {
   const dispatchAwaitingApproval = computed(() => options.dispatchPlan.value?.status === 'waiting_approval')
   const dispatchPanelTitle = computed(() => {
     if (options.dispatchPlan.value?.status === 'waiting_approval') return '待批准调度变更'
-    if (options.dispatchPlan.value?.status === 'approved_executed') return '调度变更已执行'
+    if (options.dispatchPlan.value?.status === 'approved_executing') return '已批准，等待节点执行与验证'
+    if (options.dispatchPlan.value?.status === 'approved_executed') return '调度变更已执行并验证'
     if (options.dispatchPlan.value?.status === 'no_action') return '当前无需调度变更'
     return '调度状态评估'
   })
-  const dispatchApprovalLabel = computed(() =>
-    dispatchAwaitingApproval.value ? '审批：需要车间主管输入确认码' : '审批：暂无待批准方案'
-  )
+  const dispatchApprovalLabel = computed(() => {
+    if (dispatchAwaitingApproval.value) return '审批：需要系统管理员输入确认码'
+    if (options.dispatchPlan.value?.status === 'approved_executing') {
+      return '执行：节点领取后由 Verifier 判断实际效果'
+    }
+    return '审批：暂无待批准方案'
+  })
 
   async function recalculateDispatchPlan() {
     dispatchLoading.value = 'recalculate'
@@ -106,10 +111,14 @@ export function useDispatchWorkflow(options: DispatchWorkflowOptions) {
         ]
       }
       dispatchConfirmCode.value = ''
-      dispatchFeedback.value = `${data.dispatch_plan.result ?? '调度变更已批准并执行。'} 已归档至日志管理。`
+      dispatchFeedback.value = data.dispatch_plan.status === 'approved_executing'
+        ? (data.dispatch_plan.result ?? '调度变更已批准，等待节点领取、执行和效果验证。')
+        : `${data.dispatch_plan.result ?? '调度变更已执行并验证。'} 已归档至日志管理。`
       dispatchFeedbackKind.value = 'success'
-      options.resolvedEffects.value.unshift(`${options.currentTime()} 调度变更已执行：${dispatchFeedback.value}`)
-      options.resolvedEffects.value = options.resolvedEffects.value.slice(0, 3)
+      if (data.dispatch_plan.status !== 'approved_executing') {
+        options.resolvedEffects.value.unshift(`${options.currentTime()} 调度变更已执行：${dispatchFeedback.value}`)
+        options.resolvedEffects.value = options.resolvedEffects.value.slice(0, 3)
+      }
       options.liveLogs.value.unshift(`${options.currentTime()} 调度批准执行：${dispatchFeedback.value}`)
       options.playSound('success')
       await options.loadDashboardState()

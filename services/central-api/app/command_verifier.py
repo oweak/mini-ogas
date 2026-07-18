@@ -121,14 +121,32 @@ class CommandVerifier:
         )
         baseline_sink_rate = _number(baseline_sink.get("actual_rate"))
         current_sink_rate = _number(sink.get("actual_rate"))
+        baseline_requested = _number(baseline_target.get("target_rate"))
+        sink_expected_rate: float | None = None
+        if (
+            command.node_code == "grinding-workshop-01"
+            and expected_target is not None
+            and baseline_requested is not None
+            and baseline_requested > 0
+            and baseline_sink_rate is not None
+        ):
+            sink_expected_rate = baseline_sink_rate * expected_target / baseline_requested
+        throughput_floor_rate = (
+            sink_expected_rate * 0.9
+            if sink_expected_rate is not None
+            else (baseline_sink_rate * 0.7 if baseline_sink_rate is not None else None)
+        )
         throughput_floor_ok = (
             baseline_sink_rate is None
             or baseline_sink_rate <= 0
-            or (current_sink_rate is not None and current_sink_rate >= baseline_sink_rate * 0.7)
+            or (
+                current_sink_rate is not None
+                and throughput_floor_rate is not None
+                and current_sink_rate >= throughput_floor_rate
+            )
         )
         baseline_actual = _number(baseline_target.get("actual_rate"))
         current_actual = _number(target.get("actual_rate"))
-        baseline_requested = _number(baseline_target.get("target_rate"))
         rate_direction = "unchanged"
         if expected_target is not None and baseline_requested is not None:
             if expected_target < baseline_requested - 0.001:
@@ -157,6 +175,8 @@ class CommandVerifier:
             "rate_direction": rate_direction,
             "own_rate_moved": own_rate_moved,
             "severe_starvation": severe_starvation,
+            "sink_expected_rate": sink_expected_rate,
+            "throughput_floor_rate": throughput_floor_rate,
             "throughput_floor_ok": throughput_floor_ok,
             "observations": observations,
         }
@@ -187,7 +207,11 @@ class CommandVerifier:
             elif rate_direction == "unchanged":
                 message = "requested target was already applied"
             else:
-                message = "target applied and observed downstream flow improved"
+                message = (
+                    "target applied and observed downstream flow improved"
+                    if downstream_code
+                    else "target applied and observed node production rate decreased"
+                )
             return self._finish(command, "effective", message, evidence)
 
         if len(observations) < self.max_observations:

@@ -1632,6 +1632,16 @@ class MemoryStore:
 
         for observed_command in observed_commands:
             self.persist_command_shadow(observed_command)
+            if observed_command.verification_status in {
+                "effective",
+                "partial",
+                "failed",
+                "inconclusive",
+            }:
+                self.update_dispatch_control_status(
+                    observed_command,
+                    observed_command.verification_status,
+                )
         self._apply_command_transitions(verification_transitions)
 
         incoming_alarm_types: set[str] = set()
@@ -2125,6 +2135,54 @@ class MemoryStore:
         if command is None:
             raise ValueError(f"command {command_id} not found")
         return self.record_command_result(command.node_code, command_id, status, message)
+
+    def update_dispatch_control_status(self, command: NodeCommand, status: str) -> None:
+        """Project a governed dispatch command back to its order and task read models."""
+        if command.parameters.get("workflow_kind") != "dispatch_target_rate":
+            return
+        order_id = str(command.parameters.get("source_order_id") or "")
+        task_ids = {
+            int(value)
+            for value in command.parameters.get("dispatch_task_ids", [])
+            if isinstance(value, int) or (isinstance(value, str) and value.isdigit())
+        }
+        order_status = {
+            "approved": "dispatched",
+            "effective": "in_progress",
+            "partial": "in_progress",
+            "failed": "blocked",
+            "inconclusive": "blocked",
+            "rejected": "rejected",
+            "cancelled": "cancelled",
+        }.get(status)
+        task_status = {
+            "effective": "in_progress",
+            "partial": "in_progress",
+            "failed": "blocked",
+            "inconclusive": "blocked",
+            "rejected": "blocked",
+            "cancelled": "blocked",
+        }.get(status)
+        changed_order = False
+        changed_tasks = False
+        with self._lock:
+            if order_status:
+                order = next(
+                    (item for item in self.allocation_orders if item.order_id == order_id),
+                    None,
+                )
+                if order is not None and order.status != order_status:
+                    order.status = order_status
+                    changed_order = True
+            if task_status and task_ids:
+                for task in self.dispatch_tasks:
+                    if task.id in task_ids and task.status != task_status:
+                        task.status = task_status
+                        changed_tasks = True
+        if changed_order:
+            self.persist_allocation_order_shadow()
+        if changed_tasks:
+            self.persist_dispatch_task_shadow()
 
     def _observe_command_effects_locked(
         self,
@@ -2635,6 +2693,14 @@ class MemoryStore:
     # Production planning and dispatch
     # ------------------------------------------------------------------
 
+    def _active_allocation_orders_by_product(self) -> dict[str, list[AllocationOrder]]:
+        grouped: dict[str, list[AllocationOrder]] = {}
+        for order in self.allocation_orders:
+            if order.status in {"completed", "cancelled", "rejected"}:
+                continue
+            grouped.setdefault(order.product_code, []).append(order)
+        return grouped
+
     def generate_production_plan(self) -> list[ProductionPlanIn]:
         if settings.microservices_enabled:
             self.refresh_market_via_service()
@@ -2646,18 +2712,35 @@ class MemoryStore:
 
         signals = {s.product_code: s for s in self.market_signals}
         inventory = {i.product_code: i for i in self.inventory}
+        orders_by_product = self._active_allocation_orders_by_product()
         plans: list[ProductionPlanIn] = []
         for code in PRODUCTS:
             signal = signals.get(code)
             demand = signal.demand_index if signal else 80.0
             pressure = inventory[code].pressure_score if code in inventory else 40.0
-            target = int(demand * 1.5 + pressure)
+            market_target = int(demand * 1.5 + pressure)
             urgency = demand * (signal.season_factor if signal else 1.0) + pressure
-            priority = max(1, min(10, 6 - int(urgency // 40)))
+            market_priority = max(1, min(10, 6 - int(urgency // 40)))
+            active_orders = orders_by_product.get(code, [])
+            order_target = sum(order.required_quantity for order in active_orders)
+            target = max(market_target, order_target)
+            priority = min(
+                [market_priority, *(order.priority for order in active_orders)]
+            )
+            order_reason = ""
+            if active_orders:
+                order_reason = (
+                    "; accepted_orders="
+                    + ",".join(order.order_id for order in active_orders)
+                    + f"; committed_quantity={order_target}"
+                )
             plans.append(ProductionPlanIn(
                 product_code=code, target_quantity=target, priority=priority,
                 route=product_route(code),
-                reason=f"需求指数 {demand:.0f}、库存压力 {pressure:.0f}，按优先级 {priority} 排产。",
+                reason=(
+                    f"Demand index {demand:.0f}, inventory pressure {pressure:.0f}, "
+                    f"priority {priority}{order_reason}."
+                ),
             ))
         plans.sort(key=lambda p: p.priority)
         self.production_plans = plans
@@ -2675,6 +2758,18 @@ class MemoryStore:
                 for signal in self.market_signals
             ],
             "node_health": self._planner_node_health(),
+            "allocation_orders": [
+                {
+                    "order_id": order.order_id,
+                    "product_code": order.product_code,
+                    "required_quantity": order.required_quantity,
+                    "priority": order.priority,
+                    "deadline_hours": order.deadline_hours,
+                    "status": order.status,
+                }
+                for orders in self._active_allocation_orders_by_product().values()
+                for order in orders
+            ],
         }
         ok, data = post_json(f"{settings.production_planner_url}/plan", payload)
         self.update_integration_edge("production-planner", ok)

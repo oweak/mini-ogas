@@ -82,6 +82,11 @@ defineEmits<{
       <div class="decision-stack">
         <span>状态：{{ dispatchPlan?.status ?? '待重新计算' }}</span>
         <span>约束：{{ dispatchPlan?.risk ?? '等待调度引擎评估节点心跳与工单状态' }}</span>
+        <span v-if="dispatchPlan?.command_id">命令：#{{ dispatchPlan.command_id }}</span>
+        <span v-if="dispatchPlan?.target_rate !== undefined">
+          目标速率：{{ dispatchPlan.target_rate }} {{ dispatchPlan.rate_unit ?? 'parts_per_minute' }}
+        </span>
+        <span v-if="dispatchPlan?.verification_status">验证：{{ dispatchPlan.verification_status }}</span>
         <span>{{ dispatchApprovalLabel }}</span>
       </div>
       <ol v-if="dispatchPlan?.steps?.length" class="dispatch-steps">
