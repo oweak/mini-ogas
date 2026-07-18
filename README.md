@@ -181,12 +181,20 @@ alignment. It also runs Ruff correctness rules when the project development
 environment is installed. Optional Kali/VirtualBox state is not used as
 production-node proof.
 
-The latest local hardening verification on 2026-07-16 passed 320 Central API tests,
-40 simulator tests, 73 Dashboard tests and production build, 6 AI Dispatcher
-tests, 36 CLI/workflow tests plus 9 subtests, both Go module suites, secret/ACL
-checks and Ruff correctness. The strict runtime reported 12/12 healthy processes,
-a ready dedicated background worker, live NATS Shadow, three unique node credentials
-and 3/3 authenticated SimPy nodes.
+The latest canonical hardening verification on 2026-07-18 passed 330 Central API
+tests, 40 simulator tests, 74 Dashboard tests and production build, 13 AI Dispatcher
+tests, 2 Production Planner tests, 41 CLI/workflow tests plus 9 subtests, both Go
+module suites, secret/ACL checks and Ruff correctness. The strict runtime reported
+the complete supervised process set, a ready dedicated Background Worker, live
+DeepSeek, NATS Shadow, three unique node credentials and 3/3 authenticated SimPy
+nodes.
+
+The Stage H gate also proved one complete order-driven control loop. Order `AO-006`
+changed the P3 plan, command `60` passed permission/Safety Governor/CONFIRM approval,
+the bound grinding node claimed it, the SimPy target changed from `0.592` to `0.750`,
+actual rate moved from `0.432` to `0.547`, finished quantity changed from `6` to `7`, and
+PostgreSQL plus Dashboard reported `verified/effective` with a complete audit/event
+chain.
 
 AI model calls are only proven when the runtime check is run with:
 
@@ -198,8 +206,12 @@ If that fails with `AI vault is present but locked`, the system is using rule
 fallback and must not be described as having live DeepSeek participation.
 
 The current Windows host does not have Docker/Compose installed. GitHub Container Gate
-[29489184819](https://github.com/oweak/mini-ogas/actions/runs/29489184819) is the
-independent Linux proof for the full Compose stack. It started all services, completed
-the one-shot migration, observed three node heartbeats and proved PostgreSQL persistence
-across Central and Background Worker restart. Stage F is accepted; Stages G and H remain
-open.
+[29632887914](https://github.com/oweak/mini-ogas/actions/runs/29632887914) is the
+independent Linux proof for the Stage H implementation commit. It built the full
+Compose stack from a clean checkout, completed the one-shot migration, observed three
+node heartbeats and proved PostgreSQL persistence across service restart. Stages A-H
+are accepted; independent factory hosts, industrial HA and real-factory validation
+remain unproven and are not claimed.
+
+The requirement-by-requirement acceptance record is
+`docs/audits/current-objective-completion-audit.md`.

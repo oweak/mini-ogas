@@ -1,14 +1,14 @@
 # Mini-OGAS Project Status
 
-Verified: 2026-07-16 on branch `codex/current-stage-hardening`
+Verified: 2026-07-18 on branch `codex/current-stage-hardening`
 
 ## Current Position
 
-Mini-OGAS has a verified local supervised runtime and broad functional coverage, but
-the current A-H hardening objective is not complete. Historical v2.2/v2.5 functional
-gates do not replace the current requirements for clean container builds, unified
-identity/control, PostgreSQL fact ownership, deployment convergence and end-to-end
-proof.
+Mini-OGAS has completed the current A-H hardening objective. Acceptance is based on
+the canonical full verifier, a live DeepSeek call, a real three-process SimPy control
+loop, PostgreSQL fact/audit evidence and an independent clean Container Gate. This
+does not convert the prototype into a mature MES/MOM or prove multi-host production
+deployment.
 
 | Current stage | Status | Evidence boundary |
 | --- | --- | --- |
@@ -19,7 +19,7 @@ proof.
 | E - data/event convergence | Accepted | One Outbox publisher, durable idempotent receipts, per-stream retry order, 100-message reconciliation thresholds and controlled NATS degrade/recovery are proved. NATS remains Shadow. |
 | F - deployment convergence | Accepted | Supervisor and Compose run the same core services, migration is one-shot, Dashboard is production-built, and clean full-stack restart persistence passed. |
 | G - unified AI plane | Accepted | AI Dispatcher is the sole model-call owner; provider policy, provenance, timeout/retry/token budgets, fallback, cost, latency, redaction, egress and dedicated service authentication are unified. High-risk advice enters a human-only command approval chain. |
-| H - final closed-loop proof | Not accepted | Existing workflow gates are useful evidence, but the entire market-to-audit chain has not yet been proven as one automated scenario. |
+| H - final closed-loop proof | Accepted | Order `AO-006` changed the P3 plan and approved grinding target; command `60` was claimed, applied and verified from SimPy rate/output changes, then reconciled through PostgreSQL, Dashboard and audit/event history. |
 
 ## Verified Runtime Truth
 
@@ -53,12 +53,13 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 
 | Suite or gate | Latest result |
 | --- | ---: |
-| Central API | 326 passed |
+| Central API | 330 passed |
 | Python node simulator | 40 passed |
-| Dashboard | 16 files / 73 tests passed |
+| Dashboard | 16 files / 74 tests passed |
 | Dashboard production build | passed |
-| AI dispatcher | 12 passed |
-| CLI/workflow | 36 passed + 9 subtests |
+| AI dispatcher | 13 passed |
+| Production planner | 2 passed |
+| CLI/workflow | 41 passed + 9 subtests |
 | Go node-agent | passed |
 | Go supervisor | passed |
 | API and generated contracts | passed |
@@ -67,7 +68,8 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 | Strict Supervisor runtime | passed, 12 healthy processes, dedicated worker ready and 3/3 fresh nodes |
 | Runtime identity/control | passed, 3 distinct node credentials; rotation/revocation and AI suggestion isolation verified |
 | Clean key-image build/start | passed |
-| Full Compose-stack startup and restart persistence | passed: Stage G GitHub Container Gate `29493157247` on commit `4807f9d` |
+| Stage H governed closed loop | passed: command `60`, `0.592 -> 0.750`, actual `0.432 -> 0.547`, finished `6 -> 7`, PostgreSQL/Dashboard effective |
+| Full Compose-stack startup and restart persistence | passed: GitHub Container Gate `29632887914` on Stage H implementation commit `51eba35` |
 
 ## Hard Boundaries
 
@@ -79,8 +81,10 @@ deployment. HTTP/REST remains authoritative; NATS remains Shadow.
 6. Container Gate proves clean full-Compose parity and PostgreSQL persistence across Central restart.
 7. Kali tooling remains laboratory-only; no registered, isolated Kali VM is currently claimed.
 
-## Next Required Gate
+## Current Objective Decision
 
-Continue with Stage H from the accepted Stage G boundary. Prove one complete automated
-market/order-to-plan-to-approved-command-to-SimPy-state-to-audit workflow without
-manual database repair or fixture substitution.
+Stages A-H are accepted. The complete evidence is recorded in
+`docs/audits/current-objective-completion-audit.md` and
+`docs/audits/stage-h-governed-closed-loop-evidence.md`. Future work may pursue real
+independent edge hosts, registered isolated Kali infrastructure and industrial HA,
+but those are outside this accepted hardening objective and remain unclaimed.

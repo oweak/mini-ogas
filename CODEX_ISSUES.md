@@ -1,6 +1,6 @@
 # Mini-OGAS Issues Status
 
-Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
+Last verified: 2026-07-18 on branch `codex/current-stage-hardening`
 
 ## Acceptance Summary
 
@@ -8,7 +8,7 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | --- | --- | --- |
 | Historical v2.2 trusted loop | Functionally accepted | Contracts, Heartbeat v2, SimPy, rules, AI explanation, command polling, WIP flow and persistence tests pass. |
 | Historical v2.5 local cleanup | Functionally accepted, not the current hardening gate | PostgreSQL authority, wrappers, Command Manager, Safety Governor, replay, formal run/scenario and adapter boundaries pass locally. |
-| Current A-H hardening objective | In progress | Stages A-G are accepted. Stage H final closed-loop proof remains open. |
+| Current A-H hardening objective | Accepted | Stages A-H passed the canonical local verifier and Stage H implementation passed the clean GitHub Container Gate. |
 | True distributed deployment | Not claimed | Separate edge hosts, certificate-bound node identities, registered Kali lab and HA remain unproven. |
 
 ## Closed In This Audit
@@ -52,6 +52,12 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | FIX-20260716-05 | AI Dispatcher assumed a host repository path depth and crashed in its clean container. | Replaced fixed parent indexing with marker-based project discovery and shallow-container regression tests. |
 | FIX-20260716-06 | Compose heartbeats declared `deployment_mode=container`, but the Outbox transport contract rejected that value and returned 409. | Added `container` to the exported v3 contract and proved fact plus Outbox persistence in one transaction. |
 | FIX-20260716-07 | Background Worker was healthy inside Compose but its documented port was not published to the host. | Published `8084:8084` and added a parsed Compose architecture assertion. |
+| FIX-20260718-01 | Allocation orders were accepted but did not control plan quantity or produce a governed node target-rate command. | Added order-aware fallback/service planning and `DispatchControlService`, binding order, plan, dispatch task, physical capacity and canonical command approval. |
+| FIX-20260718-02 | Dispatch approval could be displayed and locally archived as executed before a node claim or production evidence existed. | Dashboard now distinguishes `approved_executing` from `approved_executed`; only `verified/effective` is resolved. |
+| FIX-20260718-03 | The Verifier's fixed sink floor rejected a proportional approved grinding slowdown. | Added a target-relative dynamic sink throughput floor with a 10 percent safety allowance and positive/negative tests; severe underperformance still fails. |
+| FIX-20260718-04 | The 16-token AI connectivity probe intermittently exhausted reasoning output and falsely reported fallback; null content could be stringified as `None`. | Raised the bounded probe budget to 128, rejected null/empty provider content and proved live `deepseek-v4-pro` provenance. |
+| FIX-20260718-05 | The initial Stage H gate expected a nonexistent `last_seen_sec` field and could not associate all lifecycle event message formats. | Compute heartbeat age from timezone-aware snapshot timestamps and match command IDs across created/approved/claimed/result/verification events. |
+| FIX-20260718-06 | `mogas up` still invoked the retired script-managed launcher and passed a parameter that the supported Supervisor launcher does not accept. | Delegate to `start-miniogas.ps1`, read the Supervisor-created session proof, reject missing/stale health, align CLI help and add launcher/session regression tests. |
 
 ## Current Supported Runtime Truth
 
@@ -72,8 +78,8 @@ Last verified: 2026-07-16 on branch `codex/current-stage-hardening`
 | ID | Requirement | Current evidence | Gate status |
 | --- | --- | --- | --- |
 | B1 | Block node-token cross-node command creation | RBAC/smoke subset: 57 passed | Closed |
-| B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 73 tests; production build passed | Closed |
-| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; current full suite 320 passed | Closed |
+| B2 | Repair Dashboard data-quality encoding/build | Dashboard: 16 files / 74 tests; production build passed | Closed |
+| B3 | Declare Central API runtime dependencies | `psutil==7.1.3` pinned; dependency regression test; current full suite 330 passed | Closed |
 | B4 | Complete Central API image inputs | Clean Linux image started and passed `/health` in latest Container Gate `29410060670` | Closed |
 | B5 | Complete Node Agent image inputs | Clean Linux image sent an observable authenticated SimPy heartbeat in the same gate | Closed |
 | B6 | Reject illegal environment aliases | Environment suite: 11 passed | Closed |
@@ -99,11 +105,14 @@ Ubuntu runners.
 - The complete matrix and route evidence are recorded in
   `docs/security/principal-control-matrix.md`.
 
-## Remaining Work
+## Outside The Accepted Objective
 
-| Priority | Item | Target |
-| --- | --- | --- |
-| P1 | Prove the full market-to-audit production-control loop, including state change and persistence. | Stage H |
+| Boundary | Current truth |
+| --- | --- |
+| Independent factory hosts | Not proven; the three SimPy nodes are separate processes on one Windows host. |
+| Registered isolated Kali VM | Prepared disk/tooling exists, but the VM is not registered or claimed as running. |
+| Industrial HA and real-factory validation | Not proven and not claimed. |
+| Authoritative NATS edge transport | NATS remains loopback Shadow; authenticated REST/PostgreSQL remains authoritative. |
 
 ## Verification
 
@@ -113,11 +122,11 @@ Ubuntu runners.
 .\scripts\check-runtime-status.ps1
 ```
 
-Latest local verifier gates passed. Canonical counts are Central API 326, node
-simulator 40, Dashboard 73 across 16 files plus production build, AI dispatcher 12,
-CLI/workflow 36 plus 9 subtests, and both Go modules. Ruff correctness passes. The
-strict runtime reports 12/12 healthy processes, a ready dedicated worker, live NATS
-Shadow and 3/3 fresh SimPy nodes. The Stage E controlled outage gate also passed with
-100/100 matched receipts, zero duplicates, zero order divergence and P95 4007.568 ms.
-GitHub full Compose Container Gate `29493157247` on Stage G commit `4807f9d` passed.
-Stage H remains open, so the current A-H objective is not complete.
+Latest canonical counts are Central API 330, node simulator 40, Dashboard 74 across
+16 files plus production build, AI Dispatcher 13, Production Planner 2, CLI/workflow
+41 plus 9 subtests, and both Go modules. Ruff correctness passes. The strict runtime
+reports the complete supervised process set, live DeepSeek, PostgreSQL authority,
+NATS Shadow and 3/3 fresh SimPy nodes. Stage H command `60` was verified effective
+from target, actual-rate and finished-quantity changes with complete PostgreSQL
+audit/event evidence. GitHub Container Gate `29632887914` passed implementation
+commit `51eba35`. The current A-H objective is accepted.

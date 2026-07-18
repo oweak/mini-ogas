@@ -34,7 +34,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--all",
         action="store_true",
-        help="(with up) Also start microservices and dashboard",
+        help="(with up) Compatibility flag; the complete supervised stack is always started",
     )
     p.add_argument(
         "scenario",
@@ -94,8 +94,8 @@ def main(argv: list[str] | None = None) -> None:
 
 def _quickref() -> None:
     print("Quick reference:")
-    print("  mogas up                        Start core + agents")
-    print("  mogas up --all                  Full stack (core + microservices + dashboard + agents)")
+    print("  mogas up                        Start the complete supervised stack")
+    print("  mogas up --all                  Compatibility alias for the same full stack")
     print("  mogas down                      Stop everything")
     print("  mogas status                    Node health overview")
     print("  mogas doctor                    Environment diagnosis")
