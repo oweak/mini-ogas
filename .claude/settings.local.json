@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m venv .venv)",
-      "Bash(./.venv/Scripts/python -m pip install -q --disable-pip-version-check -r requirements.txt pytest httpx)",
-      "Bash(ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=accept-new root1@192.168.1.5 \"curl -s http://localhost:8081/ 2>&1; echo '---'; curl -s http://localhost:8082/ 2>&1; echo '---'; curl -s http://localhost:8083/ 2>&1\")"
-    ]
-  }
-}

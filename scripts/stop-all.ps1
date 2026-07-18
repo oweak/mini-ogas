@@ -1,47 +1,67 @@
-$ErrorActionPreference = "Continue"
+param(
+  [int]$TimeoutSeconds = 20
+)
 
-. "$PSScriptRoot\env.ps1"
+$ErrorActionPreference = "Stop"
 
-Write-Host "=== Stopping all Mini-OGAS services ===" -ForegroundColor Cyan
-
-# 1. Kill by saved PIDs (if start-all.ps1 was used)
-$PidDir = Join-Path $script:RuntimeDir "pids"
-if (Test-Path $PidDir) {
-    Get-ChildItem $PidDir -Filter "*.pid" | ForEach-Object {
-        $pidVal = Get-Content $_.FullName -ErrorAction SilentlyContinue
-        if ($pidVal -and $pidVal -match '^\d+$') {
-            taskkill /F /PID $pidVal 2>$null | Out-Null
-            Write-Host "  Stopped $($_.BaseName) (PID $pidVal)"
-        }
-        Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue
+function Get-PortProcessIds {
+  param([Parameter(Mandatory = $true)][int]$Port)
+  $ids = @()
+  foreach ($line in @(& netstat -ano -p tcp 2>$null)) {
+    if ($line -notmatch "LISTENING") { continue }
+    $parts = @($line.Trim() -split "\s+")
+    if ($parts.Count -lt 5 -or $parts[1] -notmatch ":$Port$") { continue }
+    $candidate = $parts[-1]
+    if ($candidate -match "^\d+$" -and $candidate -ne "0") {
+      $ids += [int]$candidate
     }
+  }
+  return @($ids | Select-Object -Unique)
 }
 
-# 2. Kill by port (catches anything missed by PID files)
-$Ports = @(8080, 8081, 8082, 8083, 8084)
-foreach ($port in $Ports) {
-    $line = netstat -ano 2>$null | Select-String ":$port " | Select-String "LISTENING"
-    if ($line) {
-        foreach ($l in $line) {
-            $parts = -split $l
-            $pidVal = $parts[-1]
-            if ($pidVal -and $pidVal -match '^\d+$' -and $pidVal -ne '0') {
-                taskkill /F /PID $pidVal 2>$null | Out-Null
-                Write-Host "  Killed PID $pidVal on port $port"
-            }
-        }
-    }
+$managedPorts = @(9099, 8080, 8081, 8082, 8083, 8084, 5173, 4222, 6379, 9000)
+$gracefulRequested = $false
+
+if (@(Get-PortProcessIds -Port 9099).Count -gt 0) {
+  try {
+    Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:9099/supervisor/stopall" -TimeoutSec 5 | Out-Null
+    $gracefulRequested = $true
+  } catch {
+    Write-Warning "Supervisor stop request failed; guarded process cleanup will be used."
+  }
 }
 
-# 3. Kill any remaining agent.py processes
-Get-Process -Name "python" -ErrorAction SilentlyContinue | ForEach-Object {
-    try {
-        $cmd = (Get-WmiObject Win32_Process -Filter "ProcessId=$($_.Id)").CommandLine
-        if ($cmd -match "agent\.py") {
-            Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
-            Write-Host "  Killed agent.py (PID $($_.Id))"
-        }
-    } catch { }
+$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+do {
+  $remaining = @()
+  foreach ($port in $managedPorts) {
+    if (@(Get-PortProcessIds -Port $port).Count -gt 0) { $remaining += $port }
+  }
+  if ($remaining.Count -eq 0) { break }
+  Start-Sleep -Milliseconds 250
+} while ((Get-Date) -lt $deadline)
+
+$forcedPids = @()
+foreach ($port in $managedPorts) {
+  foreach ($processId in @(Get-PortProcessIds -Port $port)) {
+    if ($forcedPids -contains $processId) { continue }
+    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+    $forcedPids += $processId
+  }
 }
 
-Write-Host "Done." -ForegroundColor Green
+Start-Sleep -Milliseconds 500
+$stillListening = @()
+foreach ($port in $managedPorts) {
+  if (@(Get-PortProcessIds -Port $port).Count -gt 0) { $stillListening += $port }
+}
+if ($stillListening.Count -gt 0) {
+  throw "Mini-OGAS shutdown incomplete; listening ports: $($stillListening -join ', ')"
+}
+
+[pscustomobject]@{
+  status = "stopped"
+  supervisor_stop_requested = $gracefulRequested
+  forced_process_count = $forcedPids.Count
+  checked_ports = $managedPorts
+} | ConvertTo-Json

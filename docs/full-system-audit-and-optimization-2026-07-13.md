@@ -274,11 +274,10 @@ heartbeat_fault
 本轮已同步：
 
 - `README.md`
-- `CODEX_ISSUES.md`
 - `PROJECT_STATUS.md`
-- `SYSTEM_ISSUES.md`
 - `docs/ARCHITECTURE_DEBT.md`
 - `docs/api-compatibility-plan.md`
+- 本地 issue/system 过程台账（不进入公开源码树）
 - 本报告
 
 历史报告保留作为阶段记录，不再作为当前运行事实来源。

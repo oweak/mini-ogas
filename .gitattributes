@@ -18,3 +18,11 @@
 *.example text eol=lf
 Dockerfile text eol=lf
 .dockerignore text eol=lf
+.githooks/* text eol=lf
+
+# Generated documentation and media are binary artifacts.
+*.pdf binary
+*.docx binary
+*.png binary
+*.jpg binary
+*.jpeg binary

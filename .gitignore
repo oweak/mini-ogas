@@ -2,6 +2,8 @@ services/central-api/secrets/*.json
 !services/central-api/secrets/.gitkeep
 services/ai-dispatcher/secrets/*.json
 !services/ai-dispatcher/secrets/.gitkeep
+**/secrets/*
+!**/secrets/.gitkeep
 
 # Runtime-generated deployment secrets. Examples stay committed under
 # deploy/env.*.example; actual node/edge env files and generated tokens do not.
@@ -16,6 +18,15 @@ services/ai-dispatcher/secrets/*.json
 **/.env.edge
 miniogas-token.txt
 **/miniogas-token.txt
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa
+id_rsa.*
+*credentials*.json
+*secret*.json
+*vault*.json
 
 # Local dependencies, runtime state, and browser-test artifacts.
 node_modules/
@@ -23,8 +34,19 @@ node_modules/
 .playwright-cli/
 .playwright-mcp/
 output/
+*.log
 *.out.log
 *.err.log
+coverage/
+htmlcov/
+.coverage
+*.coverage
+*.tmp
+*.bak
+*.zip
+*.7z
+*.tar
+*.tar.gz
 
 # Python local environments and test/runtime caches.
 .venv/
@@ -32,6 +54,10 @@ venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.nox/
 
 # Local databases and generated frontend builds.
 *.db
@@ -42,3 +68,20 @@ dist/
 
 # Local Superpowers brainstorming/session artifacts.
 .superpowers/
+.codex/
+
+# Local agent settings and superseded engineering-session artifacts. They remain
+# available in the local workspace but are not part of the public source tree.
+.claude/settings.local.json
+AGENTS.md
+CODEX_ISSUES.md
+CODEX_TARGET_PROMPT.md
+SYSTEM_ISSUES.md
+findings.md
+progress.md
+task_plan.md
+docs/CODEX_*.md
+docs/current-issue-status-*.md
+docs/handoff-*.md
+docs/work-progress-*.md
+docs/superpowers/

@@ -26,7 +26,7 @@ The clean Linux deployment command is the GitHub `Container Gate`, which execute
 
 | No. | Required state | Authoritative evidence inspected | Decision |
 | ---: | --- | --- | --- |
-| 1 | All known P0 blockers are closed. | `CODEX_ISSUES.md` records B1-B8 closed; `docs/audits/current-stage-baseline.md` preserves each reproduction/root cause; the canonical verifier reruns the corrected authorization, encoding, dependency, image-input, environment and controlled-clock gates. | Satisfied |
+| 1 | All known P0 blockers are closed. | `docs/audits/current-stage-baseline.md` preserves the B1-B8 reproduction/root-cause evidence; the canonical verifier reruns the corrected authorization, encoding, dependency, image-input, environment and controlled-clock gates. | Satisfied |
 | 2 | Central, Node, AI, Dashboard and Go tests all pass. | Canonical result: Central API 330, Python simulator 40, AI Dispatcher 13, Production Planner 2, CLI/workflow 41 plus 9 subtests, Dashboard 74 across 16 files, and both Go modules. | Satisfied |
 | 3 | Dashboard completes a production build. | `verify-miniogas.ps1` runs `npm.cmd run build`; the local gate passed and the clean container serves the Nginx production artifact. | Satisfied |
 | 4 | Central API and Node Agent images build and start from a clean environment. | GitHub Container Gate `29632887914` ran `docker compose up --build --detach`, reached Central health and observed authenticated SimPy heartbeats from all three node images. | Satisfied |

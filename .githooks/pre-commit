@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+repo_root=$(git rev-parse --show-toplevel)
+cd "$repo_root"
+
+python scripts/check_secrets.py
+
+tracked_ignored=$(git ls-files -ci --exclude-standard)
+if [ -n "$tracked_ignored" ]; then
+  echo "Commit blocked: tracked files match private/generated ignore rules." >&2
+  printf '%s\n' "$tracked_ignored" >&2
+  exit 1
+fi

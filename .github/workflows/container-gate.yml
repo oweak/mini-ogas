@@ -20,5 +20,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
+      - name: Verify repository hygiene
+        shell: bash
+        run: |
+          python3 scripts/check_secrets.py
+          if [ -n "$(git ls-files -ci --exclude-standard)" ]; then
+            echo "Tracked files match private/generated ignore rules."
+            git ls-files -ci --exclude-standard
+            exit 1
+          fi
+
       - name: Build images and verify container startup
         run: bash scripts/container-smoke.sh

@@ -100,6 +100,32 @@ mini-ogas/
 `-- README.md
 ```
 
+## Operation Manual and Repository Hygiene
+
+The public Chinese operation manual is available at
+[`docs/Mini-OGAS_操作手册_2026-07-18.pdf`](docs/Mini-OGAS_操作手册_2026-07-18.pdf).
+It covers installation, startup, preflight, login, AI provenance, dispatch,
+alarm handling, shutdown, backup, troubleshooting and release checks without
+publishing any credential value.
+
+Enable the local pre-commit hygiene gate once per clone:
+
+```powershell
+.\scripts\install-git-hooks.ps1
+```
+
+Before publishing, verify that the secret scan passes and that no ignored file
+is still tracked:
+
+```powershell
+python .\scripts\check_secrets.py
+git ls-files -ci --exclude-standard
+```
+
+The second command must produce no output. Real `.env` files, vaults, tokens,
+credentials, runtime logs, databases, archives and local agent/session artifacts
+are intentionally excluded from the public source tree.
+
 ## Implemented Technology
 
 - Dashboard: Vue 3 + TypeScript + Vite.

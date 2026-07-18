@@ -292,7 +292,7 @@ Resolution evidence:
 
 Problem:
 
-- `CODEX_ISSUES.md` and `PROJECT_STATUS.md` still reported the 2026-07-13 test
+- The local issue ledger and `PROJECT_STATUS.md` still reported the 2026-07-13 test
   counts and an eight-process runtime.
 - `PROJECT_STATUS.md` stated that Redis and NATS were inactive even though the
   verified Supervisor runtime owned Redis, NATS, MinIO and 11 total processes.
@@ -310,7 +310,7 @@ Impact:
 
 Resolution evidence:
 
-- `README.md`, `PROJECT_STATUS.md`, `CODEX_ISSUES.md` and this baseline now use the
+- `README.md`, `PROJECT_STATUS.md` and this baseline now use the
   same 2026-07-15 test counts and runtime boundaries.
 - All four documents explicitly state that PostgreSQL is authoritative, Redis is a
   rebuildable projection, NATS is Shadow, key images are clean-build verified, and
